@@ -4,7 +4,7 @@ v1 is a local shelf: CLZ import, barcode scan, collection browsing, and a dashbo
 
 ## eBay pricing
 
-`PriceProvider` in `src/lib/pricing/types.ts` is the contract. `EbayPriceProvider` reads `EBAY_CLIENT_ID` and `EBAY_CLIENT_SECRET` and returns an empty quote. The implementation should:
+`PriceProvider` in `src/lib/pricing/types.ts` is the contract. `EbayPriceProvider` reads the eBay client id and secret from Settings (environment variables are the fallback) and returns an empty quote. The implementation should:
 
 - Search sold and active listings by series, issue, and grade.
 - Write each quote to `price_snapshots` (comic, source, amount, currency, fetched time, raw payload).

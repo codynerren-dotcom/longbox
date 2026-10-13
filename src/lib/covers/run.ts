@@ -21,9 +21,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function metronTransport(): MetronTransport {
-  const auth = metronBasicAuth();
-  if (!auth) throw new Error("Set METRON_USERNAME and METRON_PASSWORD to backfill covers.");
+export async function metronTransport(): Promise<MetronTransport> {
+  const auth = await metronBasicAuth();
+  if (!auth) throw new Error("Set Metron username and password in Settings or the environment.");
   return {
     fetch,
     limiter: new MetronLimiter(
@@ -34,7 +34,7 @@ export function metronTransport(): MetronTransport {
     ),
     username: auth.username,
     password: auth.password,
-    baseUrl: metronBaseUrl(),
+    baseUrl: await metronBaseUrl(),
     now: () => Date.now(),
   };
 }
@@ -77,7 +77,7 @@ function statusFrom(summary: BackfillSummary, running: boolean, startedAt: strin
 export async function runCoverBackfill(log: (line: string) => void = console.log): Promise<BackfillSummary> {
   const startedAt = new Date().toISOString();
   const dir = coversDir();
-  const lookup = createMetronCoverLookup(metronTransport());
+  const lookup = createMetronCoverLookup(await metronTransport());
   writeBackfillStatus(statusFrom({ pending: 0, matched: 0, unmatched: 0, skipped: 0, stoppedReason: null }, true, startedAt, "Looking up covers on Metron."));
   const comics = await loadComics();
   const summary = await backfillCovers({
@@ -115,8 +115,8 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
   return summary;
 }
 
-export function startCoverBackfillInBackground(): "started" | "busy" | "unconfigured" {
-  if (!metronBasicAuth()) return "unconfigured";
+export async function startCoverBackfillInBackground(): Promise<"started" | "busy" | "unconfigured"> {
+  if (!(await metronBasicAuth())) return "unconfigured";
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) return "busy";
   if (!acquireBackfillLock()) return "busy";
   globalBackfill.longboxCoverBackfill = runCoverBackfill()
@@ -143,9 +143,9 @@ export function startCoverBackfillInBackground(): "started" | "busy" | "unconfig
 
 export async function attachMetronCover(comicId: string, metronIssueId: string): Promise<void> {
   if (!/^\d+$/.test(metronIssueId)) throw new Error("Enter a numeric Metron issue id.");
-  if (!metronBasicAuth()) throw new Error("Set METRON_USERNAME and METRON_PASSWORD to fetch a cover.");
+  if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) throw new Error("A cover backfill is already running.");
-  const issue = await fetchMetronIssue(metronTransport(), metronIssueId);
+  const issue = await fetchMetronIssue(await metronTransport(), metronIssueId);
   if (!issue?.imageUrl) throw new Error(`Metron issue ${metronIssueId} has no cover image.`);
   const filename = await downloadCover(issue.imageUrl, issue.id);
   await prisma.comic.update({

@@ -13,10 +13,20 @@ until npx prisma migrate deploy; do
   sleep 2
 done
 
-if [ "${SEED_ON_EMPTY:-false}" = "true" ]; then
-  echo "Seeding the synthetic shelf when the database is empty..."
-  npx tsx prisma/seed.ts
+data_dir="${LONGBOX_DATA_DIR:-${COVERS_DIR:-/data/covers}}"
+mkdir -p "$data_dir"
+if [ -z "${LONGBOX_SECRET_KEY:-}" ]; then
+  key_file="$data_dir/longbox-secret.key"
+  if [ ! -s "$key_file" ]; then
+    openssl rand -base64 32 | tr -d '\n' > "$key_file"
+    chmod 600 "$key_file"
+  fi
+  LONGBOX_SECRET_KEY="$(tr -d '\n' < "$key_file")"
+  export LONGBOX_SECRET_KEY
 fi
+
+echo "Seeding the synthetic shelf when that setting is on and the database is empty..."
+npx tsx prisma/seed.ts
 
 echo "Starting Longbox on port ${PORT:-3210}"
 exec npx next start -p "${PORT:-3210}" -H 0.0.0.0

@@ -36,7 +36,9 @@ See `.env.example`. Nothing secret is committed.
 | `DATABASE_URL` | Postgres connection string. |
 | `TZ` | `America/Chicago` in Compose. |
 | `LONGBOX_USER_EMAIL` | Identity when Cloudflare Access is not in front. |
-| `SEED_ON_EMPTY` | Import the synthetic shelf when `comics` is empty. |
+| `SEED_ON_EMPTY` | Import the synthetic shelf when `comics` is empty. A saved Settings toggle overrides this. |
+| `LONGBOX_SECRET_KEY` | 32-byte key (base64 or hex) for credentials saved in Settings. Unset, the first boot writes `longbox-secret.key` on the data volume. |
+| `COMICVINE_API_KEY` | Comic Vine. Blank skips it. Settings can override it. |
 | `METRON_API_TOKEN` or `METRON_USERNAME` + `METRON_PASSWORD` | Metron catalog. Blank skips Metron. |
 | `METRON_API_BASE` | Default `https://metron.cloud/api`. |
 | `COVERS_DIR` | Where downloaded covers are stored. Compose uses `/data/covers` on the `longbox_covers` volume. Unset on the host, the app uses `./data/covers`. |
@@ -84,6 +86,12 @@ docker compose exec app npm run covers:backfill
 ```
 
 The same job is the **Backfill covers** button on the Cover backfill page.
+
+## Settings
+
+**Settings** is in the desktop sidebar and on the mobile More tab. Metron username and password, a Comic Vine API key, and the eBay client id and secret can be saved there. `SEED_ON_EMPTY` is a toggle on the same page. A value saved in the database overrides the environment variable. Clear removes the database value and the environment is the fallback again.
+
+Saved secrets are encrypted with AES-GCM. The key is `LONGBOX_SECRET_KEY`, or a key file written on the data volume the first time that variable is empty. The browser only sees a mask, plus Replace and Clear. Test connection checks Metron, Comic Vine, and eBay without returning the saved secret.
 
 ## ZimaOS
 

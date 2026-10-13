@@ -11,7 +11,7 @@ import { formatIssue } from "@/lib/format";
 export const metadata = { title: "Covers" };
 
 export default async function CoversPage() {
-  const [matched, pending, unmatched, status] = await Promise.all([
+  const [matched, pending, unmatched, status, configuredAuth] = await Promise.all([
     prisma.comic.count({ where: { coverStatus: "matched" } }),
     prisma.comic.count({
       where: { coverFile: null, OR: [{ coverStatus: null }, { coverStatus: "matched" }] },
@@ -31,8 +31,9 @@ export default async function CoversPage() {
       },
     }),
     Promise.resolve(readBackfillStatus()),
+    metronBasicAuth(),
   ]);
-  const configured = Boolean(metronBasicAuth());
+  const configured = Boolean(configuredAuth);
 
   return (
     <div className="max-w-3xl">
@@ -49,7 +50,7 @@ export default async function CoversPage() {
       <section className="rounded-2xl bg-panel p-5 ring-1 ring-white/5">
         <BackfillButton />
         {!configured ? (
-          <p className="mt-3 text-sm text-mist">Metron basic auth is not set. Add METRON_USERNAME and METRON_PASSWORD, then run the backfill.</p>
+          <p className="mt-3 text-sm text-mist">Metron username and password are not set. Add them in Settings, then run the backfill.</p>
         ) : null}
         {status?.message ? <p className="mt-3 text-sm text-paper">{status.message}</p> : null}
         {status?.running ? <p className="mt-2 text-sm text-mist">Running. This page refreshes every few seconds.</p> : null}

@@ -118,6 +118,14 @@ model WishlistItem {
   @@index([series])
 }
 
+/// Encrypted integration secrets and plain toggles. Secrets never go back to the browser.
+model AppSetting {
+  key       String   @id
+  secret    String?
+  plain     String?
+  updatedAt DateTime @updatedAt
+}
+
 /// History table for a future PriceProvider. v1 does not write rows.
 model PriceSnapshot {
   id        String   @id @default(cuid())

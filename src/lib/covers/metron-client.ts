@@ -1,6 +1,7 @@
 import { coverYearOf } from "@/lib/covers/match";
 import { retryAfterMs, type MetronLimiter } from "@/lib/covers/limiter";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
+import { getSettings } from "@/lib/settings/service";
 
 export type MetronTransport = {
   fetch: typeof fetch;
@@ -16,15 +17,14 @@ type MetronPage = {
   results?: unknown[];
 };
 
-export function metronBasicAuth(): { username: string; password: string } | null {
-  const username = process.env.METRON_USERNAME?.trim() ?? "";
-  const password = process.env.METRON_PASSWORD ?? "";
-  if (!username || !password) return null;
-  return { username, password };
+export async function metronBasicAuth(): Promise<{ username: string; password: string } | null> {
+  const { metron } = await getSettings();
+  if (!metron.username || !metron.password) return null;
+  return { username: metron.username, password: metron.password };
 }
 
-export function metronBaseUrl(): string {
-  return (process.env.METRON_API_BASE || "https://metron.cloud/api").replace(/\/$/, "");
+export async function metronBaseUrl(): Promise<string> {
+  return (await getSettings()).metron.baseUrl;
 }
 
 export function basicAuthHeader(username: string, password: string): string {

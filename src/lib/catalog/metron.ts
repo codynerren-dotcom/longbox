@@ -1,5 +1,8 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { getSettings } from "@/lib/settings/service";
+import { probeMetron, type ProbeResult } from "@/lib/settings/probe";
+import { metronAuthorization } from "@/lib/settings/resolve";
 import { safeImageUrl } from "@/lib/url";
 
 type MetronIssue = {
@@ -22,27 +25,21 @@ type MetronPage = {
   results?: MetronIssue[];
 };
 
-export function metronConfigured(): boolean {
-  return Boolean(process.env.METRON_API_TOKEN || (process.env.METRON_USERNAME && process.env.METRON_PASSWORD));
+export async function metronConfigured(): Promise<boolean> {
+  return metronAuthorization(await getSettings()) !== null;
 }
 
-function metronBase(): string {
-  return (process.env.METRON_API_BASE || "https://metron.cloud/api").replace(/\/$/, "");
-}
-
-function authHeader(): string {
-  const token = process.env.METRON_API_TOKEN;
-  if (token) return `Bearer ${token}`;
-  const username = process.env.METRON_USERNAME ?? "";
-  const password = process.env.METRON_PASSWORD ?? "";
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+export async function testMetronConnection(fetchImpl?: typeof fetch): Promise<ProbeResult> {
+  return probeMetron(await getSettings(), fetchImpl);
 }
 
 async function metronGet(pathAndQuery: string): Promise<MetronPage> {
-  const response = await fetch(`${metronBase()}${pathAndQuery}`, {
+  const auth = metronAuthorization(await getSettings());
+  if (!auth) return { results: [] };
+  const response = await fetch(`${auth.baseUrl}${pathAndQuery}`, {
     headers: {
       Accept: "application/json",
-      Authorization: authHeader(),
+      Authorization: auth.header,
       "User-Agent": "longbox/1.0",
     },
     signal: AbortSignal.timeout(8000),
@@ -85,7 +82,7 @@ function toMatch(issue: MetronIssue, barcode: string | null): CatalogMatch | nul
 }
 
 export async function metronByBarcode(parsed: ParsedBarcode): Promise<CatalogMatch[]> {
-  if (!metronConfigured()) return [];
+  if (!(await metronConfigured())) return [];
   const queries = [`/issue/?upc=${encodeURIComponent(parsed.combined)}`];
   if (parsed.upc && parsed.upc !== parsed.combined) {
     queries.push(`/issue/?upc_starts_with=${encodeURIComponent(parsed.upc)}`);
@@ -103,7 +100,7 @@ export async function metronByBarcode(parsed: ParsedBarcode): Promise<CatalogMat
 }
 
 export async function metronSearch(query: string, issueNo?: string): Promise<CatalogMatch[]> {
-  if (!metronConfigured() || !query.trim()) return [];
+  if (!query.trim() || !(await metronConfigured())) return [];
   const params = new URLSearchParams({ series_name: query.trim() });
   if (issueNo?.trim()) params.set("number", issueNo.trim());
   const page = await metronGet(`/issue/?${params.toString()}`);

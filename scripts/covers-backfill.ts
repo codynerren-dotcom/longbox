@@ -5,8 +5,8 @@ import { runCoverBackfill } from "../src/lib/covers/run";
 import { prisma } from "../src/lib/db";
 
 async function main() {
-  if (!metronBasicAuth()) {
-    console.error("Set METRON_USERNAME and METRON_PASSWORD before running covers:backfill.");
+  if (!(await metronBasicAuth())) {
+    console.error("Set Metron username and password in Settings or the environment before running covers:backfill.");
     process.exit(1);
   }
   if (!acquireBackfillLock()) {

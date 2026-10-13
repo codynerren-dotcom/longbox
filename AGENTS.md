@@ -20,6 +20,7 @@ Longbox is a single-user Next.js app for a physical comic shelf. Cody runs it on
 - Identity is `viewerFromHeaders`. Trust `Cf-Access-Authenticated-User-Email` when it is present. Otherwise use `LONGBOX_USER_EMAIL`. v1 does not authorize requests.
 - CLZ imports dedupe on a positive integer `Core ComicID` plus variant and index. `0`, blank, and non-numeric ids fall back to series + issue + variant + barcode + index. The original 66-column row is stored on `rawRow`.
 - Cover backfill is `npm run covers:backfill`. It uses Metron basic auth, keeps about 20 requests per minute and 5000 per day, and skips issues that already have a local file. Unmatched rows are listed at `/covers`.
+- Integration credentials go through `src/lib/settings`. Database values override env vars. Secrets are AES-GCM encrypted with `LONGBOX_SECRET_KEY` and are never returned to the browser.
 - Dates from CLZ are stored at 12:00 UTC so America/Chicago does not shift the calendar day.
 - No secrets in git. `.env.example` documents every variable.
 

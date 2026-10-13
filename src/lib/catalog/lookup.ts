@@ -55,17 +55,18 @@ export async function lookupBarcode(raw: string): Promise<{
 }> {
   const parsed = parseComicBarcode(raw);
   const warnings: string[] = [];
+  const metron = await metronConfigured();
   if (!parsed) {
-    return { parsed: null, owned: null, matches: [], warnings: ["That barcode is not a UPC-A or UPC-A plus add-on."], metron: metronConfigured() };
+    return { parsed: null, owned: null, matches: [], warnings: ["That barcode is not a UPC-A or UPC-A plus add-on."], metron };
   }
 
   const owned = await findByBarcode(parsed);
   if (owned) {
-    return { parsed, owned, matches: [comicToMatch(owned)], warnings, metron: metronConfigured() };
+    return { parsed, owned, matches: [comicToMatch(owned)], warnings, metron };
   }
 
   const matches: CatalogMatch[] = [];
-  if (metronConfigured()) {
+  if (metron) {
     try {
       matches.push(...(await metronByBarcode(parsed)));
     } catch (error) {
@@ -86,7 +87,7 @@ export async function lookupBarcode(raw: string): Promise<{
     owned: null,
     matches: dedupeMatches(matches).slice(0, 3),
     warnings,
-    metron: metronConfigured(),
+    metron,
   };
 }
 
@@ -119,7 +120,7 @@ export async function searchCatalog(query: string, issueNo?: string): Promise<{
   const matches: CatalogMatch[] = local.map(comicToMatch);
   if (matches.length >= 3) return { matches, warnings };
 
-  if (metronConfigured()) {
+  if (await metronConfigured()) {
     try {
       matches.push(...(await metronSearch(q, issueNo)));
     } catch (error) {

@@ -9,10 +9,10 @@ export type BackfillActionState = {
 };
 
 export async function startCoverBackfillAction(): Promise<BackfillActionState> {
-  const result = startCoverBackfillInBackground();
+  const result = await startCoverBackfillInBackground();
   revalidatePath("/covers");
   if (result === "unconfigured") {
-    return { status: "error", message: "Set METRON_USERNAME and METRON_PASSWORD, then start the backfill again." };
+    return { status: "error", message: "Add Metron username and password in Settings, then start the backfill again." };
   }
   if (result === "busy") {
     return { status: "busy", message: "A cover backfill is already running. Refresh in a moment." };

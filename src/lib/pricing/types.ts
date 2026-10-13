@@ -22,6 +22,6 @@ export type PriceQuote = {
  */
 export interface PriceProvider {
   readonly id: string;
-  isConfigured(): boolean;
+  isConfigured(): Promise<boolean>;
   quote(comic: PriceQuery): Promise<PriceQuote>;
 }

@@ -1,0 +1,168 @@
+export const SECRET_KEYS = ["metron.username", "metron.password", "comicvine.apiKey", "ebay.clientId", "ebay.clientSecret"] as const;
+
+export type SecretKey = (typeof SECRET_KEYS)[number];
+
+export const SEED_ON_EMPTY_KEY = "seedOnEmpty";
+
+export const SECRET_MASK = "••••••••";
+
+export type ValueSource = "database" | "environment" | "unset";
+
+export type EnvSnapshot = {
+  metronUsername: string;
+  metronPassword: string;
+  metronToken: string;
+  metronBase: string;
+  comicvineApiKey: string;
+  ebayClientId: string;
+  ebayClientSecret: string;
+  seedOnEmpty: string;
+};
+
+export type StoredSettings = {
+  secrets: Partial<Record<SecretKey, string | null>>;
+  seedOnEmpty: string | null;
+};
+
+export type ResolvedString = { value: string; source: Exclude<ValueSource, "unset"> } | { value: null; source: "unset" };
+
+export type FieldView = {
+  source: ValueSource;
+  mask: typeof SECRET_MASK | null;
+};
+
+export type SettingsView = {
+  metron: { username: FieldView; password: FieldView };
+  comicvine: { apiKey: FieldView };
+  ebay: { clientId: FieldView; clientSecret: FieldView };
+  seedOnEmpty: { enabled: boolean; source: "database" | "environment" };
+};
+
+export type IntegrationConfig = {
+  metron: {
+    username: string;
+    password: string;
+    token: string | null;
+    baseUrl: string;
+    configured: boolean;
+    usernameSource: ValueSource;
+    passwordSource: ValueSource;
+  };
+  comicvine: { apiKey: string | null; source: ValueSource; configured: boolean };
+  ebay: {
+    clientId: string;
+    clientSecret: string;
+    configured: boolean;
+    clientIdSource: ValueSource;
+    clientSecretSource: ValueSource;
+  };
+  seedOnEmpty: { enabled: boolean; source: "database" | "environment" };
+};
+
+export function isSecretKey(value: string): value is SecretKey {
+  return (SECRET_KEYS as readonly string[]).includes(value);
+}
+
+export function readEnv(env: NodeJS.ProcessEnv = process.env): EnvSnapshot {
+  return {
+    metronUsername: env.METRON_USERNAME ?? "",
+    metronPassword: env.METRON_PASSWORD ?? "",
+    metronToken: env.METRON_API_TOKEN ?? "",
+    metronBase: env.METRON_API_BASE || "https://metron.cloud/api",
+    comicvineApiKey: env.COMICVINE_API_KEY ?? "",
+    ebayClientId: env.EBAY_CLIENT_ID ?? "",
+    ebayClientSecret: env.EBAY_CLIENT_SECRET ?? "",
+    seedOnEmpty: env.SEED_ON_EMPTY ?? "",
+  };
+}
+
+export function resolveString(db: string | null | undefined, env: string | null | undefined): ResolvedString {
+  const stored = db?.trim() ?? "";
+  if (stored) return { value: stored, source: "database" };
+  const fallback = env?.trim() ?? "";
+  if (fallback) return { value: fallback, source: "environment" };
+  return { value: null, source: "unset" };
+}
+
+function parseBool(value: string | null | undefined): boolean | null {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return null;
+}
+
+export function resolveBoolean(
+  db: string | null | undefined,
+  env: string | null | undefined,
+  fallback: boolean,
+): { value: boolean; source: "database" | "environment" } {
+  const stored = parseBool(db);
+  if (stored != null) return { value: stored, source: "database" };
+  const fromEnv = parseBool(env);
+  if (fromEnv != null) return { value: fromEnv, source: "environment" };
+  return { value: fallback, source: "environment" };
+}
+
+function fieldView(source: ValueSource): FieldView {
+  return { source, mask: source === "unset" ? null : SECRET_MASK };
+}
+
+export function buildConfig(stored: StoredSettings, env: EnvSnapshot): IntegrationConfig {
+  const username = resolveString(stored.secrets["metron.username"], env.metronUsername);
+  const password = resolveString(stored.secrets["metron.password"], env.metronPassword);
+  const token = env.metronToken.trim();
+  const comicvine = resolveString(stored.secrets["comicvine.apiKey"], env.comicvineApiKey);
+  const clientId = resolveString(stored.secrets["ebay.clientId"], env.ebayClientId);
+  const clientSecret = resolveString(stored.secrets["ebay.clientSecret"], env.ebayClientSecret);
+  const seed = resolveBoolean(stored.seedOnEmpty, env.seedOnEmpty, false);
+  return {
+    metron: {
+      username: username.value ?? "",
+      password: password.value ?? "",
+      token: token || null,
+      baseUrl: (env.metronBase || "https://metron.cloud/api").replace(/\/$/, ""),
+      configured: Boolean((username.value && password.value) || token),
+      usernameSource: username.source,
+      passwordSource: password.source,
+    },
+    comicvine: {
+      apiKey: comicvine.value,
+      source: comicvine.source,
+      configured: Boolean(comicvine.value),
+    },
+    ebay: {
+      clientId: clientId.value ?? "",
+      clientSecret: clientSecret.value ?? "",
+      configured: Boolean(clientId.value && clientSecret.value),
+      clientIdSource: clientId.source,
+      clientSecretSource: clientSecret.source,
+    },
+    seedOnEmpty: { enabled: seed.value, source: seed.source },
+  };
+}
+
+export function toSettingsView(config: IntegrationConfig): SettingsView {
+  return {
+    metron: {
+      username: fieldView(config.metron.usernameSource),
+      password: fieldView(config.metron.passwordSource),
+    },
+    comicvine: { apiKey: fieldView(config.comicvine.source) },
+    ebay: {
+      clientId: fieldView(config.ebay.clientIdSource),
+      clientSecret: fieldView(config.ebay.clientSecretSource),
+    },
+    seedOnEmpty: config.seedOnEmpty,
+  };
+}
+
+export function metronAuthorization(config: IntegrationConfig): { header: string; baseUrl: string } | null {
+  if (config.metron.username && config.metron.password) {
+    const token = Buffer.from(`${config.metron.username}:${config.metron.password}`).toString("base64");
+    return { header: `Basic ${token}`, baseUrl: config.metron.baseUrl };
+  }
+  if (config.metron.token) return { header: `Bearer ${config.metron.token}`, baseUrl: config.metron.baseUrl };
+  return null;
+}

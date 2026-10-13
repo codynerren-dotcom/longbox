@@ -4,14 +4,16 @@ import path from "node:path";
 import { parseClzCsv } from "../src/lib/clz/parse";
 import { persistClzComics } from "../src/lib/clz/persist";
 import { prisma } from "../src/lib/db";
+import { getSettings, shouldSeedShelf } from "../src/lib/settings/service";
 
 async function main() {
+  const settings = await getSettings();
   const count = await prisma.comic.count();
-  if (count > 0) {
-    console.log(`Database already has ${count} comics. Skipping seed.`);
+  if (!shouldSeedShelf(settings.seedOnEmpty.enabled, count)) {
+    if (!settings.seedOnEmpty.enabled) console.log("SEED_ON_EMPTY is off. Skipping seed.");
+    else console.log(`Database already has ${count} comics. Skipping seed.`);
     return;
   }
-
   const file = path.join(process.cwd(), "fixtures/clz-synthetic.csv");
   const parsed = parseClzCsv(readFileSync(file, "utf8"));
   const summary = await persistClzComics(parsed.comics);
