@@ -81,6 +81,12 @@ model Comic {
   soldYear           Int?
   value              Decimal?  @db.Decimal(12, 2)
   coverUrl           String?
+  metronIssueId      String?
+  coverFile          String?
+  /// null = not checked, matched = local file, unmatched = needs a hand fix.
+  coverStatus        String?
+  coverNote          String?   @db.Text
+  coverCheckedAt     DateTime?
   source             String    @default("clz")
   /// Full original CLZ row, keyed by all 66 headers. Non-CLZ adds store the source payload.
   rawRow             Json
@@ -96,6 +102,7 @@ model Comic {
   @@index([keyLevel])
   @@index([rawOrSlabbed])
   @@index([read])
+  @@index([coverStatus])
 }
 
 model WishlistItem {

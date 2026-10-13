@@ -19,7 +19,7 @@ export function CoverTile({ title, issue, coverUrl, keyLevel, slab, variant, hre
   const inner = (
     <div className={`relative aspect-[2/3] overflow-hidden rounded-xl bg-panel2 ${className ?? ""}`}>
       {image ? (
-        // Remote catalog covers are arbitrary https URLs. next/image would need a host allowlist.
+        // Local files are served by the app. A catalog hit can still be an https URL until backfill downloads it.
         // eslint-disable-next-line @next/next/no-img-element
         <img src={image} alt={`${title}${issue ? ` #${issue}` : ""}`} className="h-full w-full object-cover" />
       ) : (

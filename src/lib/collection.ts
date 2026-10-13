@@ -28,9 +28,10 @@ export type SeriesCardModel = {
 };
 
 export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
-  const map = new Map<string, SeriesCardModel & { issueSort: number }>();
+  const map = new Map<string, SeriesCardModel & { issueSort: number; coverSort: number }>();
   for (const comic of comics) {
     const id = seriesRouteId(comic);
+    const sort = comic.issueSort ?? Number.MAX_SAFE_INTEGER;
     let card = map.get(id);
     if (!card) {
       card = {
@@ -44,7 +45,8 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
         slabs: 0,
         coverUrl: comic.coverUrl,
         sampleIssue: comic.issueNo,
-        issueSort: comic.issueSort ?? Number.MAX_SAFE_INTEGER,
+        issueSort: sort,
+        coverSort: comic.coverUrl ? sort : Number.MAX_SAFE_INTEGER,
       };
       map.set(id, card);
     }
@@ -55,10 +57,13 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
       if (comic.keyLevel === "Major" || card.keyLevel !== "Major") card.keyLevel = comic.keyLevel;
     }
     if (comic.rawOrSlabbed === "Slabbed") card.slabs += 1;
-    const sort = comic.issueSort ?? Number.MAX_SAFE_INTEGER;
     if (sort < card.issueSort) {
       card.issueSort = sort;
+      if (!card.coverUrl) card.sampleIssue = comic.issueNo;
+    }
+    if (comic.coverUrl && sort <= card.coverSort) {
       card.coverUrl = comic.coverUrl;
+      card.coverSort = sort;
       card.sampleIssue = comic.issueNo;
     }
   }

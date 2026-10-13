@@ -58,6 +58,9 @@ export function AppShell({ viewer, children }: { viewer: Viewer; children: React
           <Link href="/import" className="block font-medium text-paper hover:text-comic">
             Import CLZ CSV
           </Link>
+          <Link href="/covers" className="block font-medium text-paper hover:text-comic">
+            Cover backfill
+          </Link>
           <p>
             {viewer.source === "cloudflare-access" ? "Access" : "Single user"} · {viewer.email}
           </p>

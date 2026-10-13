@@ -39,6 +39,7 @@ See `.env.example`. Nothing secret is committed.
 | `SEED_ON_EMPTY` | Import the synthetic shelf when `comics` is empty. |
 | `METRON_API_TOKEN` or `METRON_USERNAME` + `METRON_PASSWORD` | Metron catalog. Blank skips Metron. |
 | `METRON_API_BASE` | Default `https://metron.cloud/api`. |
+| `COVERS_DIR` | Where downloaded covers are stored. Compose uses `/data/covers` on the `longbox_covers` volume. Unset on the host, the app uses `./data/covers`. |
 | `GCD_API_BASE` | Default `https://www.comics.org`. |
 | `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | Reserved for the eBay price stub. Unused in v1. |
 
@@ -66,6 +67,24 @@ docker compose exec app npm run import:clz -- /path/to/clz.csv
 
 Copy the file into the container first, or mount it. Do not commit a real export.
 
+## Cover backfill
+
+Issues start without cover art. The backfill asks Metron for each one that does not already have a local file, using `METRON_USERNAME` and `METRON_PASSWORD` (basic auth). A barcode match wins. Otherwise it searches Metron series by name, then the issue number and cover year. The image is downloaded onto the `longbox_covers` volume and served by the app at `/covers/files/…`. The grid and the issue page use that file, and fall back to the gradient placeholder when it is missing.
+
+Requests stay under Metron's burst (about 20 per minute) and daily cap (5000). A `429` waits for `Retry-After` and then resumes. The run is safe to start again: matched files are skipped, and unmatched issues stay on **Cover backfill** until you queue them again or paste a Metron issue id.
+
+```bash
+npm run covers:backfill
+```
+
+Inside Compose:
+
+```bash
+docker compose exec app npm run covers:backfill
+```
+
+The same job is the **Backfill covers** button on the Cover backfill page.
+
 ## ZimaOS
 
 1. Copy this repo onto the ZimaOS machine.
@@ -73,7 +92,7 @@ Copy the file into the container first, or mount it. Do not commit a real export
 3. `docker compose up -d --build`
 4. Browse to `http://192.168.220.5:3210`.
 
-The stack is the `app` service plus `postgres:16`, with the named volume `longbox_postgres`. Both services set `TZ=America/Chicago`. The app listens on 3210. A phone can install it as a PWA (manifest, icons, service worker). Chrome on Android expects HTTPS for a durable install, which is a Cloudflare tunnel follow-up. See `docs/PLAN.md`.
+The stack is the `app` service plus `postgres:16`, with the named volumes `longbox_postgres` and `longbox_covers`. Both services set `TZ=America/Chicago`. The app listens on 3210. A phone can install it as a PWA (manifest, icons, service worker). Chrome on Android expects HTTPS for a durable install, which is a Cloudflare tunnel follow-up. See `docs/PLAN.md`.
 
 ## Checks
 
@@ -81,10 +100,10 @@ The stack is the `app` service plus `postgres:16`, with the named volume `longbo
 npm run validate
 ```
 
-Lint, the TypeScript check, and unit tests. Tests cover the synthetic CLZ fixture and barcode parsing. They do not need Postgres.
+Lint, the TypeScript check, and unit tests. Tests cover the synthetic CLZ fixture, barcode parsing, and the Metron cover backfill with a mocked client. They do not need Postgres.
 
 ## Project map
 
 - Collection, series runs, key issues, storage boxes, wishlist, dashboard.
 - Scan page: camera via the Barcode Detector API, with ZXing as the fallback, reading UPC-A and a 5-digit add-on. Local shelf first ("You own this"), then Metron, then GCD. Top three matches, add one, or queue a stack.
-- `PriceProvider` and `CoverMatcher` are stubs. `price_snapshots` is ready for history. No PriceCharting.
+- Cover backfill stores Metron issue ids and local cover files. `CoverMatcher` is still the stub for photo recognition. `PriceProvider` is the eBay stub. `price_snapshots` is ready for history. No PriceCharting.

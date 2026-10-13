@@ -8,7 +8,8 @@ Longbox is a single-user Next.js app for a physical comic shelf. Cody runs it on
 - `src/lib/clz` — CLZ CSV parsing and the Postgres upsert. Parsing is pure and is what the unit tests cover.
 - `src/lib/barcode.ts` — UPC-A plus add-on parsing. Strings only. Never coerce a barcode through `Number`.
 - `src/lib/catalog` — local lookup, then Metron, then the Grand Comics Database.
-- `src/lib/pricing` and `src/lib/covers` — stub interfaces only. Do not implement eBay or cover matching here, and do not add PriceCharting.
+- `src/lib/pricing` — eBay price stub. Do not add PriceCharting.
+- `src/lib/covers` — Metron cover backfill: match, rate limit, and files on `COVERS_DIR`. `matcher.ts` is still the unimplemented photo matcher. Do not hotlink covers.
 - `fixtures/clz-synthetic.csv` — synthetic shelf used by tests and the empty-database seed. Do not commit a real CLZ export.
 - `prisma/schema.prisma` — comics, wishlist items, and `price_snapshots`.
 
@@ -18,6 +19,7 @@ Longbox is a single-user Next.js app for a physical comic shelf. Cody runs it on
 - Tailwind tokens live in `tailwind.config.ts`: background `#0d0e12`, panels `#16181e` and `#22262f`, accent `#FFCC1A`. Bebas Neue for display, Inter for body.
 - Identity is `viewerFromHeaders`. Trust `Cf-Access-Authenticated-User-Email` when it is present. Otherwise use `LONGBOX_USER_EMAIL`. v1 does not authorize requests.
 - CLZ imports dedupe on a positive integer `Core ComicID` plus variant and index. `0`, blank, and non-numeric ids fall back to series + issue + variant + barcode + index. The original 66-column row is stored on `rawRow`.
+- Cover backfill is `npm run covers:backfill`. It uses Metron basic auth, keeps about 20 requests per minute and 5000 per day, and skips issues that already have a local file. Unmatched rows are listed at `/covers`.
 - Dates from CLZ are stored at 12:00 UTC so America/Chicago does not shift the calendar day.
 - No secrets in git. `.env.example` documents every variable.
 

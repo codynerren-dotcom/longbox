@@ -14,7 +14,7 @@ Do not add PriceCharting.
 
 ## Cover recognition
 
-`CoverMatcher` in `src/lib/covers/matcher.ts` is the contract. A later matcher should:
+Metron cover backfill already downloads issue images into `longbox_covers` and serves them from the app. `CoverMatcher` in `src/lib/covers/matcher.ts` is still the contract for a photo of a physical book. A later matcher should:
 
 - Embed the photo and compare it with Metron cover hashes and any covers already on the shelf.
 - OCR the title, issue number, and barcode box.

@@ -9,6 +9,7 @@ const links = [
   { href: "/boxes", label: "Storage boxes", detail: "Where each copy lives" },
   { href: "/wishlist", label: "Wishlist", detail: "Gaps you still want" },
   { href: "/import", label: "Import CLZ", detail: "Upload a 66-column export" },
+  { href: "/covers", label: "Cover backfill", detail: "Download Metron covers and review misses" },
   { href: "/scan", label: "Scan / Add", detail: "Barcode or manual search" },
 ];
 

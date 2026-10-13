@@ -32,11 +32,14 @@ services:
       METRON_USERNAME: ${METRON_USERNAME:-}
       METRON_PASSWORD: ${METRON_PASSWORD:-}
       METRON_API_BASE: ${METRON_API_BASE:-https://metron.cloud/api}
+      COVERS_DIR: /data/covers
       GCD_API_BASE: ${GCD_API_BASE:-https://www.comics.org}
       EBAY_CLIENT_ID: ${EBAY_CLIENT_ID:-}
       EBAY_CLIENT_SECRET: ${EBAY_CLIENT_SECRET:-}
     ports:
       - "${BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-3210}:3210"
+    volumes:
+      - longbox_covers:/data/covers
     healthcheck:
       test:
         [
@@ -52,3 +55,4 @@ services:
 
 volumes:
   longbox_postgres:
+  longbox_covers:
