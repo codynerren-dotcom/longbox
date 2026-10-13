@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
 import { prisma } from "@/lib/db";
+import { costBasis } from "@/lib/clz/parse";
 import { formatDate, formatIssue, formatMoney } from "@/lib/format";
 import { seriesRouteId } from "@/lib/series";
 
@@ -76,7 +77,11 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         <section className="mt-4 grid gap-3 sm:grid-cols-2">
           <Fact label="Signed by" value={comic.signedBy} />
           <Fact label="Storage box" value={comic.storageBox ? <Link href={`/boxes/${encodeURIComponent(comic.storageBox)}`} className="text-comic">{comic.storageBox}</Link> : null} />
-          <Fact label="Purchase price" value={formatMoney(comic.purchasePrice)} />
+          <Fact
+            label="Purchase price"
+            value={comic.purchasePrice != null ? `${formatMoney(comic.purchasePrice)} each` : null}
+          />
+          <Fact label="Cost basis" value={formatMoney(costBasis(comic.purchasePrice, comic.quantity))} />
           <Fact label="Purchase date" value={formatDate(comic.purchaseDate)} />
           <Fact label="Purchase store" value={comic.purchaseStore} />
           <Fact label="Cover date" value={comic.coverDate} />

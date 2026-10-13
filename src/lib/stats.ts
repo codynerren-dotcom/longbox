@@ -1,3 +1,4 @@
+import { costBasis } from "@/lib/clz/parse";
 import { AGE_ORDER, ageBucket } from "@/lib/series";
 
 export type StatsComic = {
@@ -34,7 +35,7 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
   let majorKeys = 0;
   let minorKeys = 0;
   let slabs = 0;
-  let spend = 0;
+  let spendCents = 0;
 
   for (const comic of comics) {
     copies += comic.quantity;
@@ -43,10 +44,8 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
     if (comic.keyLevel === "Major") majorKeys += 1;
     if (comic.keyLevel === "Minor") minorKeys += 1;
     if (comic.rawOrSlabbed === "Slabbed") slabs += 1;
-    if (comic.purchasePrice != null && comic.purchasePrice !== "") {
-      const amount = Number(comic.purchasePrice.toString());
-      if (Number.isFinite(amount)) spend += amount;
-    }
+    const line = costBasis(comic.purchasePrice, comic.quantity);
+    if (line) spendCents += Number(line.replace(".", ""));
     const bucket = ageBucket(comic.coverYear);
     ageCounts.set(bucket, (ageCounts.get(bucket) ?? 0) + comic.quantity);
     const publisher = comic.publisher ?? "Unknown";
@@ -65,7 +64,7 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
     majorKeys,
     minorKeys,
     slabs,
-    spend,
+    spend: spendCents / 100,
     ages: AGE_ORDER.filter((label) => (ageCounts.get(label) ?? 0) > 0).map((label) => ({
       label,
       count: ageCounts.get(label) ?? 0,

@@ -4,12 +4,14 @@ import { describe, expect, it } from "vitest";
 import { CLZ_HEADERS } from "@/lib/clz/headers";
 import {
   ClzParseError,
+  costBasis,
   mergeByDedupeKey,
   parseClzCsv,
   parseClzDate,
   parseClzPrice,
   planImport,
 } from "@/lib/clz/parse";
+import { computeStats } from "@/lib/stats";
 
 const fixturePath = path.join(process.cwd(), "fixtures/clz-synthetic.csv");
 const csv = readFileSync(fixturePath, "utf8");
@@ -88,11 +90,28 @@ describe("CLZ CSV import", () => {
     expect(byCore("900015").signedBy).toBe("Stan Lee");
     expect(byCore("900015").labelType).toBe("Signature Series");
     expect(byCore("900019").quantity).toBe(2);
+    expect(byCore("900019").purchasePrice).toBe("5.98");
+    expect(costBasis(byCore("900019").purchasePrice, byCore("900019").quantity)).toBe("11.96");
     expect(byCore("900001").notes).toBe('Bought at C2E2, "near mint" copy');
     expect(byCore("900001").rawRow.Notes).toBe('Bought at C2E2, "near mint" copy');
     expect(byCore("900001").rawRow.Tags).toBe("key,first issue");
     expect(byCore("900024").notes).toContain("\n");
     expect(byCore("900006").variant).toBe("B");
+  });
+
+  it("rolls spend up as purchase price times quantity", () => {
+    const stats = computeStats(parsed.comics);
+    const cents = parsed.comics.reduce((sum, comic) => {
+      const line = costBasis(comic.purchasePrice, comic.quantity);
+      return sum + (line ? Number(line.replace(".", "")) : 0);
+    }, 0);
+    expect(stats.spend).toBe(cents / 100);
+
+    const unitSum = parsed.comics.reduce((sum, comic) => sum + Number(comic.purchasePrice ?? 0), 0);
+    const doubledCopy = byCore("900019");
+    expect(stats.spend).toBeCloseTo(unitSum + Number(doubledCopy.purchasePrice), 2);
+    expect(costBasis("4.99", 1)).toBe("4.99");
+    expect(costBasis(null, 3)).toBeNull();
   });
 
   it("is idempotent on Core ComicID + variant + index", () => {

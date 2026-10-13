@@ -138,6 +138,28 @@ export function parseClzDate(value: string | null | undefined): Date | null {
   return null;
 }
 
+/**
+ * CLZ purchase price is per copy. Cost basis is that unit price times quantity.
+ * Returns a 2-decimal string, or null when there is no price.
+ */
+export function costBasis(
+  price: { toString(): string } | string | null | undefined,
+  quantity: number,
+): string | null {
+  if (price == null || price === "") return null;
+  const text = price.toString().trim();
+  if (!/^-?\d+(\.\d+)?$/.test(text)) return null;
+  const copies = Number.isInteger(quantity) && quantity > 0 ? quantity : 1;
+  const negative = text.startsWith("-");
+  const unsigned = negative ? text.slice(1) : text;
+  const [whole, fraction = ""] = unsigned.split(".");
+  let cents = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
+  if (Number(fraction[2] ?? "0") >= 5) cents += 1;
+  const total = cents * copies;
+  const sign = negative ? "-" : "";
+  return `${sign}${Math.floor(total / 100)}.${String(total % 100).padStart(2, "0")}`;
+}
+
 /** `$ 4.99`, `$4.99`, `$ 1,250.00`. Returned as a decimal string. */
 export function parseClzPrice(value: string | null | undefined): string | null {
   if (value == null) return null;

@@ -33,7 +33,7 @@ export default async function DashboardPage() {
         <Stat label="Major keys" value={String(stats.majorKeys)} />
         <Stat label="Minor keys" value={String(stats.minorKeys)} />
         <Stat label="Slabs" value={String(stats.slabs)} />
-        <Stat label="Recorded spend" value={formatMoney(stats.spend)} hint="Sum of purchase prices" />
+        <Stat label="Recorded spend" value={formatMoney(stats.spend)} hint="Purchase price × quantity" />
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-2">
