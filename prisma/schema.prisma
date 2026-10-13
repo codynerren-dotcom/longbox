@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One physical comic entry. CLZ rows upsert on dedupeKey
+/// (Core ComicID + variant + index). Scan and manual adds use their own keys.
+model Comic {
+  id                 String    @id @default(cuid())
+  dedupeKey          String    @unique
+  coreComicId        String?
+  coreSeriesId       String?
+  clzIndex           String?
+  series             String
+  seriesSort         String
+  issue              String?
+  issueNo            String?
+  issueSort          Int?
+  variantDescription String?
+  variant            String?
+  publisher          String?
+  releaseDate        DateTime?
+  format             String?
+  addedDate          DateTime?
+  coverDate          String?
+  barcode            String?
+  storyArc           String?
+  grade              String?
+  rawOrSlabbed       String?
+  keyLevel           String?
+  keyCategory        String?
+  keyReason          String?
+  purchasePrice      Decimal?  @db.Decimal(12, 2)
+  priceSold          Decimal?  @db.Decimal(12, 2)
+  covrPriceValue     Decimal?  @db.Decimal(12, 2)
+  coverPrice         Decimal?  @db.Decimal(12, 2)
+  notes              String?   @db.Text
+  quantity           Int       @default(1)
+  storageBox         String?
+  age                String?
+  country            String?
+  crossover          String?
+  fullTitle          String?
+  genre              String?
+  imprint            String?
+  language           String?
+  releaseYear        Int?
+  seriesGroup        String?
+  subtitle           String?
+  title              String?
+  coverYear          Int?
+  pageCount          Int?
+  addedYear          Int?
+  bagBoardDate       DateTime?
+  bagBoardYear       Int?
+  collectionStatus   String?
+  modifiedDate       DateTime?
+  myRating           Decimal?  @db.Decimal(4, 2)
+  owner              String?
+  plot               String?   @db.Text
+  read               Boolean   @default(false)
+  readDate           DateTime?
+  readYear           Int?
+  tags               String?
+  customLabel        String?
+  graderNotes        String?   @db.Text
+  gradingCompany     String?
+  labelType          String?
+  myValue            Decimal?  @db.Decimal(12, 2)
+  pageQuality        String?
+  purchaseDate       DateTime?
+  purchaseStore      String?
+  purchaseYear       Int?
+  signedBy           String?
+  slabCertNumber     String?
+  soldDate           DateTime?
+  soldYear           Int?
+  value              Decimal?  @db.Decimal(12, 2)
+  coverUrl           String?
+  source             String    @default("clz")
+  /// Full original CLZ row, keyed by all 66 headers. Non-CLZ adds store the source payload.
+  rawRow             Json
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  priceSnapshots     PriceSnapshot[]
+
+  @@index([seriesSort])
+  @@index([coreSeriesId])
+  @@index([publisher])
+  @@index([barcode])
+  @@index([storageBox])
+  @@index([keyLevel])
+  @@index([rawOrSlabbed])
+  @@index([read])
+}
+
+model WishlistItem {
+  id        String   @id @default(cuid())
+  series    String
+  /// Empty string when the publisher is unknown, so the unique key is stable.
+  publisher String   @default("")
+  issueNo   String
+  notes     String?
+  createdAt DateTime @default(now())
+
+  @@unique([series, publisher, issueNo])
+  @@index([series])
+}
+
+/// History table for a future PriceProvider. v1 does not write rows.
+model PriceSnapshot {
+  id        String   @id @default(cuid())
+  comicId   String
+  comic     Comic    @relation(fields: [comicId], references: [id], onDelete: Cascade)
+  source    String
+  amount    Decimal? @db.Decimal(12, 2)
+  currency  String   @default("USD")
+  fetchedAt DateTime @default(now())
+  raw       Json?
+
+  @@index([comicId, fetchedAt])
+}

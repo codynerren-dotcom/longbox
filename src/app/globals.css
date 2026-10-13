@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(255, 204, 26, 0.08), transparent 55%),
+    #0d0e12;
+  color: #f4f1ea;
+}
+
+.halftone {
+  background-image: radial-gradient(rgba(13, 14, 18, 0.5) 1.05px, transparent 1.2px);
+  background-size: 7px 7px;
+}
+
+.missing-slot {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 7px,
+    rgba(255, 204, 26, 0.14) 7px,
+    rgba(255, 204, 26, 0.14) 8px
+  );
+}
+
+::selection {
+  background: #ffcc1a;
+  color: #0d0e12;
+}
+
+input,
+select,
+textarea {
+  background: #22262f;
+  border: 1px solid #343a46;
+  color: #f4f1ea;
+  border-radius: 12px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid #ffcc1a;
+  outline-offset: 1px;
+}
+
+.field {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.95rem;
+}

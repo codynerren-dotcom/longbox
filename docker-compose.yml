@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      TZ: America/Chicago
+      PGTZ: America/Chicago
+      POSTGRES_USER: ${POSTGRES_USER:-longbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-longbox}
+      POSTGRES_DB: ${POSTGRES_DB:-longbox}
+    volumes:
+      - longbox_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-longbox} -d ${POSTGRES_DB:-longbox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: America/Chicago
+      PORT: "3210"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-longbox}:${POSTGRES_PASSWORD:-longbox}@db:5432/${POSTGRES_DB:-longbox}?schema=public
+      LONGBOX_USER_EMAIL: ${LONGBOX_USER_EMAIL:-cody@localhost}
+      SEED_ON_EMPTY: ${SEED_ON_EMPTY:-true}
+      METRON_API_TOKEN: ${METRON_API_TOKEN:-}
+      METRON_USERNAME: ${METRON_USERNAME:-}
+      METRON_PASSWORD: ${METRON_PASSWORD:-}
+      METRON_API_BASE: ${METRON_API_BASE:-https://metron.cloud/api}
+      GCD_API_BASE: ${GCD_API_BASE:-https://www.comics.org}
+      EBAY_CLIENT_ID: ${EBAY_CLIENT_ID:-}
+      EBAY_CLIENT_SECRET: ${EBAY_CLIENT_SECRET:-}
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-3210}:3210"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3210/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+volumes:
+  longbox_postgres:
