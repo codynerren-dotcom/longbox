@@ -17,7 +17,7 @@ Longbox is a single-user Next.js app for a physical comic shelf. Cody runs it on
 - TypeScript strict. Path alias `@/` points at `src/`.
 - Tailwind tokens live in `tailwind.config.ts`: background `#0d0e12`, panels `#16181e` and `#22262f`, accent `#FFCC1A`. Bebas Neue for display, Inter for body.
 - Identity is `viewerFromHeaders`. Trust `Cf-Access-Authenticated-User-Email` when it is present. Otherwise use `LONGBOX_USER_EMAIL`. v1 does not authorize requests.
-- CLZ imports dedupe on `Core ComicID + variant + index`. The original 66-column row is stored on `rawRow`.
+- CLZ imports dedupe on a positive integer `Core ComicID` plus variant and index. `0`, blank, and non-numeric ids fall back to series + issue + variant + barcode + index. The original 66-column row is stored on `rawRow`.
 - Dates from CLZ are stored at 12:00 UTC so America/Chicago does not shift the calendar day.
 - No secrets in git. `.env.example` documents every variable.
 

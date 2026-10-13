@@ -9,7 +9,7 @@ export default function ImportPage() {
       <PageHeader kicker="CLZ" title="Import" />
       <p className="mb-4 text-sm leading-relaxed text-mist">
         Upload the CSV from CLZ Comics. All 66 columns are stored. Known fields land in typed columns, and the original row is kept as JSON.
-        Re-importing the same Core ComicID, variant, and index updates the existing copy instead of duplicating it.
+        Re-importing the same comic updates it. A real Core ComicID matches with variant and index. An id of 0, blank, or non-numeric falls back to series, issue, variant, barcode, and index.
       </p>
       <ImportForm />
       <p className="mt-4 text-sm text-mist">

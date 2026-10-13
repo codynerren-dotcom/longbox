@@ -6,10 +6,12 @@ import {
   ClzParseError,
   costBasis,
   mergeByDedupeKey,
+  normalizeClzRecord,
   parseClzCsv,
   parseClzDate,
   parseClzPrice,
   planImport,
+  usableCoreId,
 } from "@/lib/clz/parse";
 import { computeStats } from "@/lib/stats";
 
@@ -133,5 +135,68 @@ describe("CLZ CSV import", () => {
     expect(merged).toHaveLength(30);
     expect(merged.find((comic) => comic.coreComicId === "900001")?.notes).toBe("replaced on reimport");
     expect(planImport(new Set(), [...parsed.comics, duplicate]).collapsed).toBe(1);
+  });
+});
+
+describe("Core ComicID 0", () => {
+  const zeroPath = path.join(process.cwd(), "fixtures/clz-core-id-zero.csv");
+  const zero = parseClzCsv(readFileSync(zeroPath, "utf8"));
+
+  function slammer(overrides: Record<string, string>) {
+    return normalizeClzRecord({
+      Series: "Planet Slammer",
+      Issue: "1",
+      "Issue No.": "1.0",
+      Variant: "",
+      Barcode: "07596060999900001",
+      Index: "1.0",
+      "Core ComicID": "0",
+      "Core SeriesID": "0",
+      ...overrides,
+    });
+  }
+
+  it("does not collapse Planet Slammer #1-#4 onto one comic", () => {
+    expect(zero.comics).toHaveLength(4);
+    expect(new Set(zero.comics.map((comic) => comic.dedupeKey)).size).toBe(4);
+    expect(zero.comics.map((comic) => comic.issueNo)).toEqual(["1", "2", "3", "4"]);
+    for (const comic of zero.comics) {
+      expect(comic.series).toBe("Planet Slammer");
+      expect(comic.coreComicId).toBeNull();
+      expect(comic.coreSeriesId).toBeNull();
+      expect(comic.rawRow["Core ComicID"]).toBe("0");
+      expect(comic.dedupeKey.startsWith("fallback:planet slammer|")).toBe(true);
+      expect(comic.dedupeKey).toContain("|07596060999900001|");
+    }
+    expect(mergeByDedupeKey([...zero.comics, ...zero.comics])).toHaveLength(4);
+    expect(planImport(new Set(zero.comics.map((comic) => comic.dedupeKey)), zero.comics)).toMatchObject({
+      create: 0,
+      update: 4,
+      collapsed: 0,
+    });
+  });
+
+  it("treats 0, blank, and non-numeric ids as missing", () => {
+    expect(usableCoreId("0")).toBeNull();
+    expect(usableCoreId("0.0")).toBeNull();
+    expect(usableCoreId("  ")).toBeNull();
+    expect(usableCoreId("n/a")).toBeNull();
+    expect(usableCoreId("900001")).toBe("900001");
+
+    const zero = slammer({ "Core ComicID": "0" });
+    const zeroDecimal = slammer({ "Core ComicID": "0.0" });
+    const blank = slammer({ "Core ComicID": "" });
+    const text = slammer({ "Core ComicID": "n/a", Issue: "2", "Issue No.": "2.0" });
+    const otherIndex = slammer({ Index: "2.0" });
+    const otherVariant = slammer({ Variant: "B" });
+    const realId = slammer({ "Core ComicID": "900100" });
+
+    expect(zero.dedupeKey).toBe(zeroDecimal.dedupeKey);
+    expect(zero.dedupeKey).toBe(blank.dedupeKey);
+    expect(zero.dedupeKey).not.toBe(text.dedupeKey);
+    expect(zero.dedupeKey).not.toBe(otherIndex.dedupeKey);
+    expect(zero.dedupeKey).not.toBe(otherVariant.dedupeKey);
+    expect(realId.dedupeKey).toBe("core:900100|var:|idx:1");
+    expect(text.coreComicId).toBeNull();
   });
 });

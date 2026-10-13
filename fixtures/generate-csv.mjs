@@ -782,3 +782,30 @@ const csv = [headerLine, ...rows.map((cells) => cells.map(encode).join(","))].jo
 const destination = path.join(path.dirname(fileURLToPath(import.meta.url)), "clz-synthetic.csv");
 writeFileSync(destination, csv);
 console.log(`Wrote ${rows.length} rows to ${destination}`);
+
+const sharedBarcode = "07596060999900001";
+const zeroIdRows = [1, 2, 3, 4].map((issue) =>
+  row({
+    Series: "Planet Slammer",
+    Issue: String(issue),
+    "Issue No.": `${issue}.0`,
+    Publisher: "Stone Robot",
+    "Cover Date": "Jan 2024",
+    Barcode: sharedBarcode,
+    "Core ComicID": "0",
+    "Core SeriesID": "0",
+    "Release Year": "2024.0",
+    "Cover Year": "2024.0",
+    "Purchase Price": "$ 4.99",
+    "Cover Price": "$ 4.99",
+    "Storage Box": "Shortbox 1",
+    Genre: "Science Fiction",
+    Plot: `Planet Slammer issue ${issue}, with no CLZ core id.`,
+    Index: "1.0",
+  }),
+);
+
+const zeroCsv = [headerLine, ...zeroIdRows.map((cells) => cells.map(encode).join(","))].join("\n") + "\n";
+const zeroDestination = path.join(path.dirname(fileURLToPath(import.meta.url)), "clz-core-id-zero.csv");
+writeFileSync(zeroDestination, zeroCsv);
+console.log(`Wrote ${zeroIdRows.length} zero-id rows to ${zeroDestination}`);

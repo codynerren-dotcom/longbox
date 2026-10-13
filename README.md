@@ -48,7 +48,7 @@ If the request has `Cf-Access-Authenticated-User-Email`, that address is the vie
 
 CLZ Comics can export the collection as CSV. The header must be the 66-column row documented in `src/lib/clz/headers.ts`, in that order. Barcodes stay strings (a 17-digit UPC is not a number). `0000-00-00` bag/board dates become null. Prices like `$ 4.99` and whole numbers like `2020.0` are parsed into typed columns. Purchase price is per copy, so recorded spend and cost basis are that price times quantity. The original row is stored as JSON so nothing is dropped.
 
-Re-importing is safe. A row matches an existing comic on `Core ComicID` + variant + index and updates it.
+Re-importing is safe. A real Core ComicID matches on that id plus variant and index. `0`, a blank, or a non-numeric id is treated as missing, and those rows match on series, issue, variant, barcode, and index instead.
 
 In the app, open **Import CLZ CSV** and upload the file.
 

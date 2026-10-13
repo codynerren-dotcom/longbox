@@ -234,20 +234,36 @@ export function issueNumberValue(issueNo: string | null | undefined): number | n
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * A usable CLZ core id is a positive integer. `0`, `0.0`, blanks, and
+ * anything that is not an integer are missing ids, not a shared comic.
+ */
+export function usableCoreId(value: string | null | undefined): string | null {
+  const normalized = normalizeNumericText(value);
+  if (!normalized || !/^\d+$/.test(normalized)) return null;
+  if (/^0+$/.test(normalized)) return null;
+  return normalized;
+}
+
 export function dedupeKeyFor(parts: {
   coreComicId: string | null;
   variant: string | null;
   clzIndex: string | null;
   series: string;
+  issue: string | null;
   issueNo: string | null;
   barcode: string | null;
 }): string {
   const variant = (parts.variant ?? "").trim().toLowerCase();
   const index = parts.clzIndex ?? "";
-  if (parts.coreComicId) {
-    return `core:${parts.coreComicId}|var:${variant}|idx:${index}`;
+  const coreId = usableCoreId(parts.coreComicId);
+  if (coreId) {
+    return `core:${coreId}|var:${variant}|idx:${index}`;
   }
-  return `fallback:${parts.series.trim().toLowerCase()}|${parts.issueNo ?? ""}|${variant}|${index}|${parts.barcode ?? ""}`;
+  const issueLabel = (parts.issue ?? "").trim().toLowerCase();
+  const issueNo = (parts.issueNo ?? "").trim().toLowerCase();
+  const issue = issueLabel && issueNo && issueLabel !== issueNo ? `${issueLabel}#${issueNo}` : issueLabel || issueNo;
+  return `fallback:${parts.series.trim().toLowerCase()}|${issue}|${variant}|${parts.barcode ?? ""}|${index}`;
 }
 
 export function normalizeClzRecord(record: Record<string, string>): NormalizedComic {
@@ -255,21 +271,30 @@ export function normalizeClzRecord(record: Record<string, string>): NormalizedCo
   for (const header of CLZ_HEADERS) rawRow[header] = cell(record, header);
 
   const series = cell(record, "Series").trim() || "Untitled";
+  const issue = normalizeNumericText(cell(record, "Issue"));
   const issueNo = normalizeNumericText(cell(record, "Issue No."));
   const variant = blankToNull(cell(record, "Variant"));
   const clzIndex = normalizeNumericText(cell(record, "Index"));
-  const coreComicId = blankToNull(cell(record, "Core ComicID"));
+  const coreComicId = usableCoreId(cell(record, "Core ComicID"));
   const barcode = parseClzBarcode(cell(record, "Barcode"));
   const quantity = parseClzWholeNumber(cell(record, "Quantity"));
 
   return {
-    dedupeKey: dedupeKeyFor({ coreComicId, variant, clzIndex, series, issueNo, barcode }),
+    dedupeKey: dedupeKeyFor({
+      coreComicId: cell(record, "Core ComicID"),
+      variant,
+      clzIndex,
+      series,
+      issue,
+      issueNo,
+      barcode,
+    }),
     coreComicId,
-    coreSeriesId: blankToNull(cell(record, "Core SeriesID")),
+    coreSeriesId: usableCoreId(cell(record, "Core SeriesID")),
     clzIndex,
     series,
     seriesSort: series.toLowerCase(),
-    issue: normalizeNumericText(cell(record, "Issue")),
+    issue,
     issueNo,
     issueSort: issueNumberValue(issueNo),
     variantDescription: blankToNull(cell(record, "Variant Description")),
