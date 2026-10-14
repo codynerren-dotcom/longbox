@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { CoverTile } from "@/components/cover-tile";
 import { paletteFor } from "@/lib/visual";
-import type { SeriesRow } from "@/lib/series-view";
+import type { RowFacts, SeriesRow } from "@/lib/series-view";
 
-export type DisplayRow = SeriesRow & { date?: string; image?: string | null };
+export type DisplayRow = SeriesRow & { date?: string; image?: string | null; facts: RowFacts };
 
 export function SeriesList({ series, rows }: { series: string; rows: DisplayRow[] }) {
   return (
@@ -16,12 +16,15 @@ export function SeriesList({ series, rows }: { series: string; rows: DisplayRow[
           >
             <Thumb title={series} image={row.image ?? null} />
             <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5">
+              <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate font-semibold text-paper">{series}</span>
                 {row.key ? <KeyBadge /> : null}
+                {row.facts.keyReason ? <span className="min-w-0 truncate text-xs text-mist">{row.facts.keyReason}</span> : null}
               </span>
               {row.description ? <span className="mt-0.5 block truncate text-sm text-mist">{row.description}</span> : null}
+              <MobileFacts facts={row.facts} />
             </span>
+            <DesktopFacts facts={row.facts} />
             <span className="flex shrink-0 items-center gap-2">
               <span className="flex flex-col items-end">
                 <IssueBadge badge={row.badge} />
@@ -57,6 +60,47 @@ export function SeriesGrid({ series, rows }: { series: string; rows: DisplayRow[
       ))}
     </ul>
   );
+}
+
+function MobileFacts({ facts }: { facts: RowFacts }) {
+  const story = [facts.story, facts.creators].filter(Boolean).join(" · ");
+  const meta = [facts.condition && !facts.condition.slab ? facts.condition.text : null, facts.copies, facts.box, facts.paid, facts.value, facts.signed]
+    .filter(Boolean)
+    .join(" · ");
+  if (!story && !meta && !facts.condition?.slab) return null;
+  return (
+    <span className="mt-0.5 block min-w-0 space-y-0.5 md:hidden">
+      {story ? <span className="block truncate text-xs text-mist">{story}</span> : null}
+      {facts.condition?.slab || meta ? (
+        <span className="flex min-w-0 items-center gap-1.5">
+          {facts.condition?.slab ? <SlabBadge text={facts.condition.text} /> : null}
+          {meta ? <span className="min-w-0 truncate text-xs text-mist">{meta}</span> : null}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function DesktopFacts({ facts }: { facts: RowFacts }) {
+  const pieces = [facts.story, facts.creators, facts.copies, facts.box, facts.paid, facts.value, facts.signed].filter(Boolean);
+  if (pieces.length === 0 && !facts.condition) return null;
+  return (
+    <span className="hidden min-w-0 items-center justify-end gap-x-3 text-xs md:flex">
+      {facts.story ? <span className="max-w-[9rem] truncate text-mist" title={facts.story}>{facts.story}</span> : null}
+      {facts.creators ? <span className="max-w-[14rem] truncate text-mist" title={facts.creators}>{facts.creators}</span> : null}
+      {facts.condition?.slab ? <SlabBadge text={facts.condition.text} /> : null}
+      {facts.condition && !facts.condition.slab ? <span className="shrink-0 text-mist">{facts.condition.text}</span> : null}
+      {facts.copies ? <span className="shrink-0 text-paper">{facts.copies}</span> : null}
+      {facts.box ? <span className="max-w-[7rem] truncate text-mist" title={facts.box}>{facts.box}</span> : null}
+      {facts.paid ? <span className="shrink-0 text-mist">{facts.paid}</span> : null}
+      {facts.value ? <span className="shrink-0 text-paper">{facts.value}</span> : null}
+      {facts.signed ? <span className="max-w-[8rem] truncate text-comic" title={facts.signed}>{facts.signed}</span> : null}
+    </span>
+  );
+}
+
+function SlabBadge({ text }: { text: string }) {
+  return <span className="shrink-0 rounded bg-slab px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink">{text}</span>;
 }
 
 function Thumb({ title, image }: { title: string; image: string | null }) {

@@ -12,6 +12,7 @@ import {
   haveRange,
   majorityPublisher,
   ownedIssueCount,
+  seriesRowFacts,
   seriesSpend,
   yearSpan,
   type SeriesCopy,
@@ -42,6 +43,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
       ...row,
       date: release && release !== "—" ? release : row.comic.coverDate?.trim() || "",
       image: safeImageUrl(row.comic.coverUrl),
+      facts: seriesRowFacts(row.comic, prefs.pricing.currency),
     };
   });
   const backdrop = rows.find((row) => row.kind === "owned" && row.image)?.image ?? null;
@@ -82,15 +84,21 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
   );
 }
 
+const seriesQuery = {
+  orderBy: [{ issueSort: "asc" as const }, { variant: "asc" as const }, { id: "asc" as const }],
+  include: {
+    priceSnapshots: {
+      where: { amount: { not: null } },
+      orderBy: { fetchedAt: "desc" as const },
+      take: 1,
+    },
+  },
+};
+
 async function loadSeriesComics(decoded: string) {
-  const byCore = await prisma.comic.findMany({
-    where: { coreSeriesId: decoded },
-    orderBy: [{ issueSort: "asc" }, { variant: "asc" }, { id: "asc" }],
-  });
+  const byCore = await prisma.comic.findMany({ where: { coreSeriesId: decoded }, ...seriesQuery });
   if (byCore.length > 0) return byCore;
-  const all = await prisma.comic.findMany({
-    orderBy: [{ issueSort: "asc" }, { variant: "asc" }, { id: "asc" }],
-  });
+  const all = await prisma.comic.findMany(seriesQuery);
   return all.filter((comic) => seriesRouteId(comic) === decoded);
 }
 
@@ -109,9 +117,23 @@ function toCopy(comic: Awaited<ReturnType<typeof loadSeriesComics>>[number]): Se
     seriesYear: comic.seriesYear,
     coverUrl: comic.coverUrl,
     keyLevel: comic.keyLevel,
+    keyReason: comic.keyReason,
+    title: comic.title,
+    storyArc: comic.storyArc,
+    writer: comic.writer,
+    coverArtist: comic.coverArtist,
+    grade: comic.grade,
+    gradingCompany: comic.gradingCompany,
     rawOrSlabbed: comic.rawOrSlabbed,
+    storageBox: comic.storageBox,
+    signedBy: comic.signedBy,
     read: comic.read,
     quantity: comic.quantity,
     purchasePrice: comic.purchasePrice,
+    value: comic.value,
+    myValue: comic.myValue,
+    priceQuote: comic.priceSnapshots[0]
+      ? { amount: comic.priceSnapshots[0].amount, currency: comic.priceSnapshots[0].currency }
+      : null,
   };
 }

@@ -1,4 +1,5 @@
 import { costBasis, issueNumberValue } from "@/lib/clz/parse";
+import { formatMoney } from "@/lib/format";
 
 export type SeriesCopy = {
   id: string;
@@ -14,10 +15,23 @@ export type SeriesCopy = {
   seriesYear: number | null;
   coverUrl: string | null;
   keyLevel: string | null;
+  keyReason: string | null;
+  title: string | null;
+  storyArc: string | null;
+  writer: string | null;
+  coverArtist: string | null;
+  grade: string | null;
+  gradingCompany: string | null;
   rawOrSlabbed: string | null;
+  storageBox: string | null;
+  signedBy: string | null;
   read: boolean;
   quantity: number;
   purchasePrice: { toString(): string } | string | null;
+  value: { toString(): string } | string | null;
+  myValue: { toString(): string } | string | null;
+  /** Latest priced quote, when a pricing run has stored one. */
+  priceQuote: { amount: { toString(): string } | string | null; currency: string | null } | null;
 };
 
 export type OwnedSeriesRow = {
@@ -191,4 +205,97 @@ function ownedRow(comic: SeriesCopy): OwnedSeriesRow {
 /** One owned copy per row, sorted by issue number then variant letter. Gaps are not included. */
 export function buildSeriesRows(comics: SeriesCopy[]): SeriesRow[] {
   return comics.slice().sort(compareCopies).map(ownedRow);
+}
+
+export type RowCondition = { text: string; slab: boolean };
+
+/** Fields worth showing on a series row. Empty values stay null so the row can skip them. */
+export type RowFacts = {
+  story: string | null;
+  keyReason: string | null;
+  creators: string | null;
+  condition: RowCondition | null;
+  copies: string | null;
+  box: string | null;
+  paid: string | null;
+  value: string | null;
+  signed: string | null;
+};
+
+function filled(value: string | null | undefined): string | null {
+  const text = value?.trim() ?? "";
+  return text ? text : null;
+}
+
+function sameAsSeries(title: string, series: string): boolean {
+  const value = title.trim().toLowerCase();
+  const name = series.trim().toLowerCase();
+  if (!name) return false;
+  return value === name || value.startsWith(`${name} #`) || value.startsWith(`${name}#`);
+}
+
+/** A real story title, otherwise the arc. A title that just repeats the series name is skipped. */
+export function storyLine(series: string, title: string | null | undefined, arc: string | null | undefined): string | null {
+  const storyTitle = filled(title);
+  const arcTitle = filled(arc);
+  const useful = storyTitle && !sameAsSeries(storyTitle, series) ? storyTitle : null;
+  if (useful && arcTitle && arcTitle.toLowerCase() !== useful.toLowerCase()) return `${useful} · ${arcTitle}`;
+  return useful ?? arcTitle;
+}
+
+/** Writer, then cover artist. One name is not repeated when both credits match. */
+export function creatorsLine(writer: string | null | undefined, coverArtist: string | null | undefined): string | null {
+  const written = filled(writer);
+  const cover = filled(coverArtist);
+  if (written && cover && written.toLowerCase() !== cover.toLowerCase()) return `Writer ${written} · Cover ${cover}`;
+  if (written) return `Writer ${written}`;
+  if (cover) return `Cover ${cover}`;
+  return null;
+}
+
+function conditionOf(comic: SeriesCopy): RowCondition | null {
+  const grade = filled(comic.grade);
+  const raw = filled(comic.rawOrSlabbed);
+  const company = filled(comic.gradingCompany);
+  const slab = raw != null && /^slab/i.test(raw);
+  if (slab) {
+    const head = company ?? "Slab";
+    return { text: grade ? `${head} ${grade}` : head, slab: true };
+  }
+  if (!grade && !raw) return null;
+  if (grade && raw) return { text: `${raw} ${grade}`, slab: false };
+  return { text: grade ?? raw ?? "", slab: false };
+}
+
+function moneyText(amount: { toString(): string } | string | null | undefined, currency: string): string | null {
+  if (amount == null || amount === "") return null;
+  const formatted = formatMoney(amount, currency);
+  return formatted === "—" ? null : formatted;
+}
+
+function signedLabel(signedBy: string | null | undefined): string | null {
+  const name = filled(signedBy);
+  if (!name) return null;
+  if (/^(yes|y|signed)$/i.test(name)) return "Signed";
+  return `Signed ${name}`;
+}
+
+export function seriesRowFacts(comic: SeriesCopy, currency = "USD"): RowFacts {
+  const quoteCurrency = filled(comic.priceQuote?.currency) ?? currency;
+  const quoted = comic.priceQuote ? moneyText(comic.priceQuote.amount, quoteCurrency) : null;
+  const storedValue = moneyText(comic.value, currency) ?? moneyText(comic.myValue, currency);
+  const current = quoted ?? storedValue;
+  const paid = moneyText(comic.purchasePrice, currency);
+  const copies = copyQuantity(comic);
+  return {
+    story: storyLine(comic.series, comic.title, comic.storyArc),
+    keyReason: isKeyIssue(comic.keyLevel) ? filled(comic.keyReason) : null,
+    creators: creatorsLine(comic.writer, comic.coverArtist),
+    condition: conditionOf(comic),
+    copies: copies > 1 ? `${copies} copies` : null,
+    box: filled(comic.storageBox),
+    paid: paid ? `Paid ${paid}` : null,
+    value: current ? `Value ${current}` : null,
+    signed: signedLabel(comic.signedBy),
+  };
 }

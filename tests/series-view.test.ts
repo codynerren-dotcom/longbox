@@ -8,6 +8,7 @@ import {
   issueBadge,
   majorityPublisher,
   ownedIssueCount,
+  seriesRowFacts,
   seriesSpend,
   variantLetter,
   yearSpan,
@@ -28,10 +29,22 @@ function copy(overrides: Partial<SeriesCopy> & Pick<SeriesCopy, "id">): SeriesCo
     seriesYear: null,
     coverUrl: null,
     keyLevel: "No",
+    keyReason: null,
+    title: null,
+    storyArc: null,
+    writer: null,
+    coverArtist: null,
+    grade: null,
+    gradingCompany: null,
     rawOrSlabbed: null,
+    storageBox: null,
+    signedBy: null,
     read: false,
     quantity: 1,
     purchasePrice: null,
+    value: null,
+    myValue: null,
+    priceQuote: null,
     ...overrides,
   };
 }
@@ -110,16 +123,87 @@ describe("series rows", () => {
     expect(isKeyIssue(null)).toBe(false);
   });
 
+  it("hides empty row details and keeps the ones that are filled", () => {
+    const bare = seriesRowFacts(copy({ id: "bare" }));
+    expect(bare).toEqual({
+      story: null,
+      keyReason: null,
+      creators: null,
+      condition: null,
+      copies: null,
+      box: null,
+      paid: null,
+      value: null,
+      signed: null,
+    });
+
+    const full = seriesRowFacts(
+      copy({
+        id: "full",
+        series: "Saga",
+        title: "Saga",
+        storyArc: "Chapter One",
+        keyLevel: "Major",
+        keyReason: "1st appearance of Hazel",
+        writer: "Brian K. Vaughan",
+        coverArtist: "Fiona Staples",
+        grade: "9.8",
+        gradingCompany: "CGC",
+        rawOrSlabbed: "Slabbed",
+        quantity: 2,
+        storageBox: "Longbox A",
+        purchasePrice: "9.99",
+        value: "40.00",
+        myValue: "45.00",
+        signedBy: "Fiona Staples",
+        priceQuote: { amount: "55.00", currency: "USD" },
+      }),
+    );
+    expect(full.story).toBe("Chapter One");
+    expect(full.keyReason).toBe("1st appearance of Hazel");
+    expect(full.creators).toBe("Writer Brian K. Vaughan · Cover Fiona Staples");
+    expect(full.condition).toEqual({ text: "CGC 9.8", slab: true });
+    expect(full.copies).toBe("2 copies");
+    expect(full.box).toBe("Longbox A");
+    expect(full.paid).toBe("Paid $9.99");
+    expect(full.value).toBe("Value $55.00");
+    expect(full.signed).toBe("Signed Fiona Staples");
+
+    const raw = seriesRowFacts(
+      copy({
+        id: "raw",
+        title: "The Wake",
+        grade: "NM",
+        rawOrSlabbed: "Raw",
+        keyLevel: "No",
+        keyReason: "Not a key",
+        value: null,
+        myValue: "12.00",
+        coverArtist: "Fiona Staples",
+      }),
+    );
+    expect(raw.story).toBe("The Wake");
+    expect(raw.keyReason).toBeNull();
+    expect(raw.creators).toBe("Cover Fiona Staples");
+    expect(raw.condition).toEqual({ text: "Raw NM", slab: false });
+    expect(raw.copies).toBeNull();
+    expect(raw.paid).toBeNull();
+    expect(raw.value).toBe("Value $12.00");
+    expect(raw.signed).toBeNull();
+  });
+
   it("does not group copies under one tile on the series page", () => {
     const page = readFileSync("src/app/series/[seriesId]/page.tsx", "utf8");
     const rows = readFileSync("src/app/series/series-rows.tsx", "utf8");
-    expect(page).not.toMatch(/copies/);
+    expect(page).not.toMatch(/owned\.length/);
     expect(page).not.toMatch(/owned\.map/);
     expect(page).not.toMatch(/[Mm]issing/);
     expect(page).not.toMatch(/dashed/);
-    expect(rows).not.toMatch(/copies/);
+    expect(rows).not.toMatch(/owned\.length/);
     expect(rows).not.toMatch(/[Mm]issing/);
     expect(rows).not.toMatch(/dashed/);
+    expect(rows).toMatch(/md:hidden/);
+    expect(rows).toMatch(/md:flex/);
     expect(rows).toMatch(/min-w-0/);
     expect(rows).toMatch(/truncate/);
   });
