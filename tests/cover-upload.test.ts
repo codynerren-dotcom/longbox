@@ -125,6 +125,7 @@ describe("cover photos", () => {
     expect(coverContentType(stored.coverFile)).toBe("image/webp");
     expect(coverContentType(stored.originalFile)).toBeNull();
     expect(safeImageUrl(`/covers/files/${stored.coverFile}`)).toBe(`/covers/files/${stored.coverFile}`);
+    expect(safeImageUrl(`/covers/files/${stored.coverFile}?v=1710000000000`)).toBe(`/covers/files/${stored.coverFile}?v=1710000000000`);
     expect(safeImageUrl(`/covers/files/${stored.originalFile}`)).toBeNull();
     expect(safeImageUrl("/covers/files/../user-cmv777zpl0000qxab8sd3hpyd.webp")).toBeNull();
   });

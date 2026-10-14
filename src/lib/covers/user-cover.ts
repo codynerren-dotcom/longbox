@@ -32,7 +32,7 @@ export async function saveUserCover(args: {
     where: { id: comic.id },
     data: {
       coverFile: stored.coverFile,
-      coverUrl: coverPublicPath(stored.coverFile),
+      coverUrl: `${coverPublicPath(stored.coverFile)}?v=${Date.now()}`,
       coverStatus: "manual",
       coverNote: null,
       coverCheckedAt: new Date(),
