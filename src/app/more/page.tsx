@@ -11,6 +11,7 @@ const links = [
   { href: "/import", label: "Import CLZ", detail: "Upload a 66-column export" },
   { href: "/covers", label: "Cover backfill", detail: "Download Metron covers and review misses" },
   { href: "/settings", label: "Settings", detail: "Import, covers, pricing, display, and credentials" },
+  { href: "/logs", label: "Logs", detail: "Imports, API calls, scans, and errors" },
   { href: "/scan", label: "Scan / Add", detail: "Barcode or manual search" },
 ];
 

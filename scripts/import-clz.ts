@@ -5,6 +5,7 @@ import { parseClzCsv } from "../src/lib/clz/parse";
 import { persistClzComics } from "../src/lib/clz/persist";
 import { prisma } from "../src/lib/db";
 import { recordImportRun } from "../src/lib/imports";
+import { logImportFailed, logImportFinished, logImportStarted } from "../src/lib/log/events";
 
 async function main() {
   const file = process.argv[2];
@@ -12,11 +13,20 @@ async function main() {
     console.error("Usage: npm run import:clz -- path/to/clz.csv");
     process.exit(1);
   }
-  const text = readFileSync(path.resolve(file), "utf8");
-  const parsed = parseClzCsv(text);
-  const summary = await persistClzComics(parsed.comics);
-  await recordImportRun({ filename: path.basename(file), source: "cli", summary });
-  console.log(JSON.stringify({ ...summary, warnings: parsed.warnings }, null, 2));
+  const filename = path.basename(file);
+  try {
+    await logImportStarted(filename);
+    const text = readFileSync(path.resolve(file), "utf8");
+    const parsed = parseClzCsv(text);
+    const summary = await persistClzComics(parsed.comics);
+    await recordImportRun({ filename, source: "cli", summary });
+    await logImportFinished(filename, summary, parsed.warnings);
+    console.log(JSON.stringify({ ...summary, warnings: parsed.warnings }, null, 2));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Import failed.";
+    await logImportFailed(filename, message);
+    throw error;
+  }
 }
 
 main()

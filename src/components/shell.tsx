@@ -14,6 +14,7 @@ const desktopNav = [
   { href: "/boxes", label: "Storage boxes" },
   { href: "/wishlist", label: "Wishlist" },
   { href: "/settings", label: "Settings" },
+  { href: "/logs", label: "Logs" },
 ];
 
 function isActive(pathname: string, href: string) {

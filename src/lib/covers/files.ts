@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
 import { emptyBudget, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
@@ -165,7 +166,21 @@ export async function downloadCover(imageUrl: string, metronIssueId: string, dir
   if (parsed.protocol === "http:") parsed.protocol = "https:";
   if (parsed.protocol !== "https:") throw new Error("Cover image URL is not https.");
 
-  const response = await fetch(parsed, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+  const started = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(parsed, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+  } catch (error) {
+    await recordFetch({
+      source: "covers/backfill",
+      url: parsed.toString(),
+      startedAt: started,
+      status: null,
+      error: error instanceof Error ? error.message : "Request failed.",
+    });
+    throw error;
+  }
+  await recordFetch({ source: "covers/backfill", url: parsed.toString(), startedAt: started, status: response.status });
   if (!response.ok) throw new Error(`Cover image returned ${response.status}.`);
   const ext = extensionFor(response.headers.get("content-type") ?? "", parsed.toString());
   if (!ext) throw new Error("Cover image is not a jpeg, png, webp, or gif.");

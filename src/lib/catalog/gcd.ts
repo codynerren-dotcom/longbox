@@ -1,5 +1,6 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { recordFetch } from "@/lib/log/api";
 import { safeImageUrl } from "@/lib/url";
 
 type UnknownRecord = Record<string, unknown>;
@@ -67,13 +68,28 @@ function gcdBase(): string {
 }
 
 async function gcdGet(pathAndQuery: string): Promise<unknown> {
-  const response = await fetch(`${gcdBase()}${pathAndQuery}`, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "longbox/1.0 (personal comic shelf)",
-    },
-    signal: AbortSignal.timeout(8000),
-  });
+  const url = `${gcdBase()}${pathAndQuery}`;
+  const started = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "longbox/1.0 (personal comic shelf)",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    await recordFetch({
+      source: "system",
+      url,
+      startedAt: started,
+      status: null,
+      error: error instanceof Error ? error.message : "Request failed.",
+    });
+    throw error;
+  }
+  await recordFetch({ source: "system", url, startedAt: started, status: response.status });
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) {

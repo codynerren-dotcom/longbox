@@ -1,4 +1,7 @@
 import { coverPublicPath, backfillCovers, type BackfillSummary } from "@/lib/covers/backfill";
+import { logCoverFinished, logCoverProgress, logCoverStarted } from "@/lib/log/events";
+import { coverLineLevel } from "@/lib/log/query";
+import { writeLog } from "@/lib/log/write";
 import {
   acquireBackfillLock,
   backfillLockHeld,
@@ -77,10 +80,27 @@ function statusFrom(summary: BackfillSummary, running: boolean, startedAt: strin
 
 export async function runCoverBackfill(log: (line: string) => void = console.log): Promise<BackfillSummary> {
   const startedAt = new Date().toISOString();
+  const emit = (line: string) => {
+    log(line);
+    void writeLog({ level: coverLineLevel(line), source: "covers/backfill", message: line });
+  };
+  try {
+    return await runCoverBackfillBody(emit, startedAt);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Cover backfill failed.";
+    log(message);
+    await writeLog({ level: "error", source: "covers/backfill", message });
+    throw error;
+  }
+}
+
+async function runCoverBackfillBody(emit: (line: string) => void, startedAt: string): Promise<BackfillSummary> {
   const dir = coversDir();
   const lookup = createMetronCoverLookup(await metronTransport());
   writeBackfillStatus(statusFrom({ pending: 0, matched: 0, unmatched: 0, skipped: 0, stoppedReason: null }, true, startedAt, "Looking up covers on Metron."));
   const comics = await loadComics();
+  await logCoverStarted(comics.length);
+  let progressMarks = 0;
   const summary = await backfillCovers({
     comics,
     lookup,
@@ -108,12 +128,21 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
         data: { coverStatus: "unmatched", coverNote: reason, coverCheckedAt: new Date() },
       });
     },
-    log,
-    onProgress: (current) => writeBackfillStatus(statusFrom(current, true, startedAt, null)),
+    log: emit,
+    onProgress: (current) => {
+      writeBackfillStatus(statusFrom(current, true, startedAt, null));
+      const checked = current.matched + current.unmatched;
+      const mark = Math.floor(checked / 10);
+      if (checked > 0 && mark > progressMarks) {
+        progressMarks = mark;
+        void logCoverProgress(current);
+      }
+    },
     shouldPause: async () => (await getPreferences()).covers.paused,
   });
   const message = summary.stoppedReason ?? `Matched ${summary.matched}. Unmatched ${summary.unmatched}.`;
   writeBackfillStatus(statusFrom(summary, false, startedAt, message));
+  await logCoverFinished(summary);
   return summary;
 }
 
@@ -218,8 +247,13 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       },
     });
     const label = `${comic.series} #${comic.issueNo || comic.issue || "?"}`;
-    if (summary.matched > 0) return `Fetched a cover for ${label}.`;
-    return summary.stoppedReason ?? `No cover matched for ${label}.`;
+    if (summary.matched > 0) {
+      await writeLog({ level: "info", source: "covers/backfill", message: `Fetched a cover for ${label}.`, details: summary });
+      return `Fetched a cover for ${label}.`;
+    }
+    const message = summary.stoppedReason ?? `No cover matched for ${label}.`;
+    await writeLog({ level: "warn", source: "covers/backfill", message, details: summary });
+    return message;
   } finally {
     releaseBackfillLock();
   }

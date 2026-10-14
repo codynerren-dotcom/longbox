@@ -139,6 +139,20 @@ model ImportRun {
   createdAt    DateTime @default(now())
 }
 
+/// Application events for the Logs page. Details are redacted before insert.
+model AppLog {
+  id        String   @id @default(cuid())
+  level     String
+  source    String
+  message   String
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([level, createdAt])
+  @@index([source, createdAt])
+}
+
 /// History table for a future PriceProvider. v1 does not write rows.
 model PriceSnapshot {
   id        String   @id @default(cuid())

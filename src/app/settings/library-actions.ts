@@ -3,6 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { refetchOneCover, startCoverBackfillInBackground } from "@/lib/covers/run";
 import { prisma } from "@/lib/db";
+import { changedKeys } from "@/lib/log/query";
+import { logSettingsChange } from "@/lib/log/events";
+import { pruneLogs } from "@/lib/log/write";
 import { DEMO_WISHLIST, isDemoCoreId, searchIndexFields } from "@/lib/maintenance";
 import { preferencesFromForm } from "@/lib/settings/preferences";
 import { getPreferences, savePreferences, setCoversPaused } from "@/lib/settings/service";
@@ -12,7 +15,10 @@ export type LibraryState = { status: "idle" | "ok" | "error"; message: string };
 export async function savePreferencesAction(_prev: LibraryState, formData: FormData): Promise<LibraryState> {
   try {
     const current = await getPreferences();
-    await savePreferences(preferencesFromForm(formData, current));
+    const next = preferencesFromForm(formData, current);
+    await savePreferences(next);
+    await logSettingsChange(changedKeys(current, next));
+    await pruneLogs(true);
     revalidatePath("/", "layout");
     return { status: "ok", message: "Preferences saved." };
   } catch (error) {
@@ -32,7 +38,9 @@ export async function runCoversAction(): Promise<LibraryState> {
 }
 
 export async function pauseCoversAction(): Promise<LibraryState> {
+  const before = await getPreferences();
   await setCoversPaused(true);
+  if (!before.covers.paused) await logSettingsChange(["covers.paused"]);
   revalidatePath("/settings");
   revalidatePath("/covers");
   return { status: "ok", message: "Pause requested. The backfill stops after the current issue." };

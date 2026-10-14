@@ -1,3 +1,5 @@
+import { recordFetch } from "@/lib/log/api";
+import type { LogSource } from "@/lib/log/types";
 import type { IntegrationConfig } from "@/lib/settings/resolve";
 
 export type ProbeResult = { ok: boolean; message: string };
@@ -12,8 +14,9 @@ export async function probeMetron(config: IntegrationConfig, fetchImpl: typeof f
       ? `Bearer ${config.metron.token}`
       : null;
   if (!header) return { ok: false, message: "Metron username and password are not set." };
+  const url = `${config.metron.baseUrl}/series/?name=Saga`;
   try {
-    const response = await fetchImpl(`${config.metron.baseUrl}/series/?name=Saga`, {
+    const response = await loggedFetch(fetchImpl, "metron", url, {
       headers: { Accept: "application/json", Authorization: header, "User-Agent": "longbox/1.0" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -37,7 +40,7 @@ export async function probeComicVine(config: IntegrationConfig, fetchImpl: typeo
   url.searchParams.set("limit", "1");
   url.searchParams.set("field_list", "id");
   try {
-    const response = await fetchImpl(url, {
+    const response = await loggedFetch(fetchImpl, "comicvine", url, {
       headers: { Accept: "application/json", "User-Agent": "longbox/1.0" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -56,7 +59,7 @@ export async function probeEbay(config: IntegrationConfig, fetchImpl: typeof fet
   if (!config.ebay.clientId || !config.ebay.clientSecret) return { ok: false, message: "eBay client id and secret are not set." };
   const header = `Basic ${Buffer.from(`${config.ebay.clientId}:${config.ebay.clientSecret}`).toString("base64")}`;
   try {
-    const response = await fetchImpl("https://api.ebay.com/identity/v1/oauth2/token", {
+    const response = await loggedFetch(fetchImpl, "ebay/pricing", "https://api.ebay.com/identity/v1/oauth2/token", {
       method: "POST",
       headers: {
         Authorization: header,
@@ -71,5 +74,25 @@ export async function probeEbay(config: IntegrationConfig, fetchImpl: typeof fet
     return { ok: false, message: `eBay returned ${response.status}.` };
   } catch {
     return { ok: false, message: "eBay could not be reached." };
+  }
+}
+
+async function loggedFetch(fetchImpl: typeof fetch, source: LogSource, url: string | URL, init: RequestInit): Promise<Response> {
+  const started = Date.now();
+  const target = typeof url === "string" ? url : url.toString();
+  try {
+    const response = await fetchImpl(url, init);
+    await recordFetch({ source, method: init.method, url: target, startedAt: started, status: response.status });
+    return response;
+  } catch (error) {
+    await recordFetch({
+      source,
+      method: init.method,
+      url: target,
+      startedAt: started,
+      status: null,
+      error: error instanceof Error ? error.message : "Request failed.",
+    });
+    throw error;
   }
 }

@@ -1,6 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { viewerFromHeaders } from "@/lib/auth";
 import type { AddComicInput } from "@/lib/catalog/types";
+import { logScanAdd } from "@/lib/log/events";
 import { addComics } from "@/lib/mutations";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,8 @@ export async function POST(request: Request) {
   }
   const viewer = viewerFromHeaders(request.headers);
   const results = await addComics(items, viewer.email);
+  const created = results.filter((item) => item.created).length;
+  await logScanAdd({ requested: items.length, created, existing: results.length - created });
   revalidatePath("/", "layout");
   return Response.json({ results });
 }

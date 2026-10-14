@@ -116,6 +116,19 @@ export function PreferencesForm({ prefs, sample }: { prefs: ShelfPreferences; sa
         </div>
       </Panel>
 
+      <Panel title="Logs" detail="Events older than this are deleted on their own. The default is 30 days.">
+        <Field label="Keep logs (days)">
+          <input
+            name="logRetentionDays"
+            type="number"
+            min={1}
+            max={3650}
+            defaultValue={prefs.logs.retentionDays}
+            className="field max-w-xs"
+          />
+        </Field>
+      </Panel>
+
       <button type="submit" disabled={pending} className="rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50">
         {pending ? "Saving…" : "Save preferences"}
       </button>

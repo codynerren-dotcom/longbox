@@ -32,6 +32,9 @@ export const ACCENT_RGB: Record<Accent, string> = {
 
 export const DEFAULT_GRADING_COMPANIES = ["CGC", "CBCS", "PGX"];
 export const DEFAULT_KEY_CATEGORIES = ["First appearance", "Origin", "Death", "Storyline"];
+export const DEFAULT_LOG_RETENTION_DAYS = 30;
+export const MIN_LOG_RETENTION_DAYS = 1;
+export const MAX_LOG_RETENTION_DAYS = 3650;
 
 export type ShelfPreferences = {
   collection: {
@@ -62,6 +65,9 @@ export type ShelfPreferences = {
   };
   covers: {
     paused: boolean;
+  };
+  logs: {
+    retentionDays: number;
   };
 };
 
@@ -94,6 +100,7 @@ export function defaultPreferences(): ShelfPreferences {
       vibrate: false,
     },
     covers: { paused: false },
+    logs: { retentionDays: DEFAULT_LOG_RETENTION_DAYS },
   };
 }
 
@@ -113,6 +120,7 @@ export function normalizePreferences(input: unknown, base: ShelfPreferences = de
   const pricing = object(source.pricing);
   const scanning = object(source.scanning);
   const covers = object(source.covers);
+  const logs = object(source.logs);
   return {
     collection: {
       sort: oneOf(collection.sort, COLLECTION_SORTS, base.collection.sort),
@@ -142,6 +150,9 @@ export function normalizePreferences(input: unknown, base: ShelfPreferences = de
     },
     covers: {
       paused: flag(covers.paused, base.covers.paused),
+    },
+    logs: {
+      retentionDays: retentionDays(logs.retentionDays, base.logs.retentionDays),
     },
   };
 }
@@ -176,6 +187,9 @@ export function preferencesFromForm(form: FormData, current: ShelfPreferences): 
         vibrate: form.get("vibrate") === "on",
       },
       covers: current.covers,
+      logs: {
+        retentionDays: form.has("logRetentionDays") ? form.get("logRetentionDays") : current.logs.retentionDays,
+      },
     },
     current,
   );
@@ -241,6 +255,12 @@ function stringList(value: unknown): string[] {
     if (list.length >= 40) break;
   }
   return list;
+}
+
+export function retentionDays(value: unknown, fallback = DEFAULT_LOG_RETENTION_DAYS): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(MAX_LOG_RETENTION_DAYS, Math.max(MIN_LOG_RETENTION_DAYS, Math.round(parsed)));
 }
 
 function timeZone(value: unknown, fallback: string): string {

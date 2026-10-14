@@ -1,6 +1,8 @@
 import { coverYearOf } from "@/lib/covers/match";
 import { retryAfterMs, type MetronLimiter } from "@/lib/covers/limiter";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
+import { recordFetch } from "@/lib/log/api";
+import { writeLog } from "@/lib/log/write";
 import { getSettings } from "@/lib/settings/service";
 
 export type MetronTransport = {
@@ -95,14 +97,29 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
   while (true) {
     await transport.limiter.acquire();
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
-    const response = await transport.fetch(url, {
-      headers: {
-        Accept: "application/json",
-        Authorization: basicAuthHeader(transport.username, transport.password),
-        "User-Agent": "longbox/1.0",
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
+    const started = transport.now();
+    let response: Response;
+    try {
+      response = await transport.fetch(url, {
+        headers: {
+          Accept: "application/json",
+          Authorization: basicAuthHeader(transport.username, transport.password),
+          "User-Agent": "longbox/1.0",
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      await recordFetch({
+        source: "metron",
+        url,
+        startedAt: started,
+        status: null,
+        error: error instanceof Error ? error.message : "Request failed.",
+        now: transport.now(),
+      });
+      throw error;
+    }
+    await recordFetch({ source: "metron", url, startedAt: started, status: response.status, now: transport.now() });
     if (response.status === 429) {
       attempt += 1;
       transport.limiter.observe(response.headers);
@@ -110,6 +127,12 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
       if (attempt >= 3 || delay > 120_000) {
         throw new MetronBudgetError("Metron rate limit reached. Stopping so the run can resume.");
       }
+      await writeLog({
+        level: "warn",
+        source: "covers/backfill",
+        message: `Metron rate limit, backing off ${delay}ms.`,
+        details: { delayMs: delay, attempt, status: 429 },
+      });
       transport.limiter.defer(delay);
       continue;
     }

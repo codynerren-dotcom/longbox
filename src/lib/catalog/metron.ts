@@ -1,5 +1,6 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { recordFetch } from "@/lib/log/api";
 import { getSettings } from "@/lib/settings/service";
 import { probeMetron, type ProbeResult } from "@/lib/settings/probe";
 import { metronAuthorization } from "@/lib/settings/resolve";
@@ -36,14 +37,29 @@ export async function testMetronConnection(fetchImpl?: typeof fetch): Promise<Pr
 async function metronGet(pathAndQuery: string): Promise<MetronPage> {
   const auth = metronAuthorization(await getSettings());
   if (!auth) return { results: [] };
-  const response = await fetch(`${auth.baseUrl}${pathAndQuery}`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: auth.header,
-      "User-Agent": "longbox/1.0",
-    },
-    signal: AbortSignal.timeout(8000),
-  });
+  const url = `${auth.baseUrl}${pathAndQuery}`;
+  const started = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        Authorization: auth.header,
+        "User-Agent": "longbox/1.0",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    await recordFetch({
+      source: "metron",
+      url,
+      startedAt: started,
+      status: null,
+      error: error instanceof Error ? error.message : "Request failed.",
+    });
+    throw error;
+  }
+  await recordFetch({ source: "metron", url, startedAt: started, status: response.status });
   if (!response.ok) {
     throw new Error(`Metron returned ${response.status}`);
   }

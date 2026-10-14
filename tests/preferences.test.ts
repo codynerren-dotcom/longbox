@@ -45,6 +45,7 @@ describe("shelf preferences", () => {
     expect(prefs.pricing.otherCadence).toBe("monthly");
     expect(prefs.collection.gradingCompanies).toEqual(["CGC", "CBCS", "PGX"]);
     expect(prefs.covers.paused).toBe(false);
+    expect(prefs.logs.retentionDays).toBe(30);
   });
 
   it("round-trips saved preferences and ignores unknown keys", async () => {
@@ -102,6 +103,7 @@ describe("shelf preferences", () => {
     expect(next.scanning.mode).toBe("auto");
     expect(next.scanning.beep).toBe(true);
     expect(next.scanning.vibrate).toBe(false);
+    expect(next.logs.retentionDays).toBe(30);
   });
 
   it("falls back when stored JSON is junk", () => {
