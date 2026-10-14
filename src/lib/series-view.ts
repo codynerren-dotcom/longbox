@@ -102,23 +102,198 @@ export function haveRange(comics: SeriesCopy[]): string | null {
   return min === max ? `Have: ${min}` : `Have: ${min}-${max}`;
 }
 
+/** A catalog run. `numbers` wins when it is non-empty; otherwise issues are `1..issueCount`. */
+export type CatalogRun = {
+  numbers: string[];
+  issueCount: number | null;
+};
+
+export type MissingChip = {
+  kind: "missing" | "gaps";
+  count: number;
+  parts: string[];
+};
+
+const MAX_SERIES_COUNT = 20_000;
+
+/** Positive issue count small enough to compare against a shelf. */
+export function catalogIssueCount(value: unknown): number | null {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value.trim())
+        ? Number.parseInt(value.trim(), 10)
+        : null;
+  if (parsed == null || !Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_SERIES_COUNT) return null;
+  return parsed;
+}
+
 /**
- * Integer gaps between the lowest and highest owned issue.
- * Consecutive holes collapse: `Missing: #13, #15-17, #20`.
- * Null when the numeric run has no holes, so the header can omit the line.
+ * One label per issue. Integers collapse so `01` and `1` are the same.
+ * Non-numeric labels such as annuals stay as written.
  */
-export function missingIssuesLabel(comics: SeriesCopy[]): string | null {
+export function distinctIssueLabels(raw: string[]): string[] {
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const item of raw) {
+    const label = canonicalIssueLabel(item);
+    if (!label) continue;
+    const key = issueKey(label);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels;
+}
+
+function canonicalIssueLabel(raw: string): string | null {
+  const label = raw.trim();
+  if (!label) return null;
+  const value = issueNumberValue(label);
+  if (value == null) return label;
+  return value > 0 ? String(value) : null;
+}
+
+function issueKey(label: string): string {
+  const value = issueNumberValue(label);
+  return value != null && value > 0 ? `n:${value}` : `s:${label.toLowerCase()}`;
+}
+
+/**
+ * Missing issues against a catalog run, or holes between the lowest and highest
+ * owned number when no run is known. Variants of one number count as owned.
+ * Null when nothing is missing, so the header can omit the clause.
+ */
+export function seriesMissing(comics: SeriesCopy[], run: CatalogRun | null): MissingChip | null {
+  if (run && run.numbers.length > 0) return missingFromLabels(comics, run.numbers);
+  const count = catalogIssueCount(run?.issueCount);
+  if (count != null) return missingFromCount(comics, count);
+  return gapsBetweenOwned(comics);
+}
+
+export function seriesHeaderSummary(comics: SeriesCopy[], run: CatalogRun | null): string {
+  const parts = [copyCountLabel(comics)];
+  const have = haveRange(comics);
+  if (have) parts.push(have);
+  const missing = seriesMissing(comics, run);
+  if (missing) parts.push(missingClause(missing));
+  return parts.join(" · ");
+}
+
+export function missingClause(missing: MissingChip, parts = missing.parts): string {
+  const word = missing.kind === "gaps" ? "Gaps" : "Missing";
+  return `${word} ${missing.count}: ${parts.join(", ")}`;
+}
+
+/** Keep the first collapsed parts that fit, so a long list can offer "show all". */
+export function truncateMissingParts(parts: string[], maxChars = 56): { shown: string[]; rest: number } {
+  if (parts.length === 0) return { shown: [], rest: 0 };
+  if (parts.join(", ").length <= maxChars) return { shown: parts, rest: 0 };
+  const shown: string[] = [];
+  let length = 0;
+  for (const part of parts) {
+    const next = shown.length === 0 ? part.length : length + 2 + part.length;
+    if (shown.length > 0 && next > maxChars) break;
+    shown.push(part);
+    length = next;
+  }
+  return { shown, rest: parts.length - shown.length };
+}
+
+function missingFromLabels(comics: SeriesCopy[], labels: string[]): MissingChip | null {
+  const owned = ownedKeys(comics);
+  const numeric: number[] = [];
+  const text: string[] = [];
+  for (const label of distinctIssueLabels(labels)) {
+    const value = issueNumberValue(label);
+    if (value != null && value > 0) {
+      if (!owned.has(`n:${value}`)) numeric.push(value);
+    } else if (!owned.has(issueKey(label))) {
+      text.push(label);
+    }
+  }
+  const collapsed = collapseNumbers(numeric);
+  const count = collapsed.count + text.length;
+  if (count === 0) return null;
+  return { kind: "missing", count, parts: [...collapsed.parts, ...text] };
+}
+
+function missingFromCount(comics: SeriesCopy[], max: number): MissingChip | null {
+  const present = ownedIssueNumbers(comics).filter((value) => value >= 1 && value <= max);
+  const collapsed = missingThrough(max, present);
+  if (collapsed.count === 0) return null;
+  return { kind: "missing", count: collapsed.count, parts: collapsed.parts };
+}
+
+function gapsBetweenOwned(comics: SeriesCopy[]): MissingChip | null {
   const owned = ownedIssueNumbers(comics);
   if (owned.length === 0) return null;
   const parts: string[] = [];
+  let count = 0;
   for (let index = 0; index < owned.length - 1; index += 1) {
     const from = owned[index] + 1;
     const to = owned[index + 1] - 1;
     if (from > to) continue;
+    count += to - from + 1;
     parts.push(from === to ? `#${from}` : `#${from}-${to}`);
   }
-  if (parts.length === 0) return null;
-  return `Missing: ${parts.join(", ")}`;
+  if (count === 0) return null;
+  return { kind: "gaps", count, parts };
+}
+
+function missingThrough(max: number, present: number[]): { count: number; parts: string[] } {
+  const parts: string[] = [];
+  let count = 0;
+  let cursor = 1;
+  for (const value of present) {
+    if (value > cursor) {
+      count += value - cursor;
+      parts.push(cursor === value - 1 ? `#${cursor}` : `#${cursor}-${value - 1}`);
+    }
+    cursor = value + 1;
+  }
+  if (cursor <= max) {
+    count += max - cursor + 1;
+    parts.push(cursor === max ? `#${cursor}` : `#${cursor}-${max}`);
+  }
+  return { count, parts };
+}
+
+function collapseNumbers(values: number[]): { count: number; parts: string[] } {
+  const sorted = [...new Set(values)].sort((a, b) => a - b);
+  const parts: string[] = [];
+  let count = 0;
+  let start: number | null = null;
+  let prev: number | null = null;
+  for (const value of sorted) {
+    if (start == null || prev == null) {
+      start = value;
+      prev = value;
+      continue;
+    }
+    if (value === prev + 1) {
+      prev = value;
+      continue;
+    }
+    parts.push(start === prev ? `#${start}` : `#${start}-${prev}`);
+    count += prev - start + 1;
+    start = value;
+    prev = value;
+  }
+  if (start != null && prev != null) {
+    parts.push(start === prev ? `#${start}` : `#${start}-${prev}`);
+    count += prev - start + 1;
+  }
+  return { count, parts };
+}
+
+function ownedKeys(comics: SeriesCopy[]): Set<string> {
+  const owned = new Set<string>();
+  for (const comic of comics) {
+    const label = canonicalIssueLabel(comic.issueNo ?? "");
+    if (label) owned.add(issueKey(label));
+  }
+  return owned;
 }
 
 function ownedIssueNumbers(comics: SeriesCopy[]): number[] {

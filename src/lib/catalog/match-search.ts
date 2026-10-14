@@ -1,4 +1,5 @@
 import { mapComicVineMatchHit, mapMetronMatchHit, orderMatchHits, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
+import { catalogIssueCount } from "@/lib/series-view";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { fetchMetronIssueBody, listMetronIssueRows, type MetronTransport } from "@/lib/covers/metron-client";
 import { recordFetch } from "@/lib/log/api";
@@ -145,6 +146,17 @@ function publisherOf(value: unknown): string | null {
 export async function metronCovers(transport: MetronTransport, issueId: string): Promise<MatchCover[]> {
   const body = await fetchMetronIssueBody(transport, issueId);
   return body ? variantCoversFrom(body) : [];
+}
+
+export function parseComicVineIssueCount(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  return catalogIssueCount((value as { count_of_issues?: unknown }).count_of_issues);
+}
+
+export async function fetchComicVineIssueCount(apiKey: string, volumeId: string, fetchImpl: typeof fetch = fetch): Promise<number | null> {
+  if (!apiKey.trim() || !/^\d+$/.test(volumeId) || volumeId === "0") return null;
+  const result = await comicVineGet(fetchImpl, apiKey, `/volume/4050-${volumeId}/`, { field_list: "count_of_issues" });
+  return parseComicVineIssueCount(result);
 }
 
 export async function comicVineIssue(apiKey: string, issueId: string, fetchImpl: typeof fetch = fetch): Promise<unknown | null> {

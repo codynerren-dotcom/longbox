@@ -1,6 +1,7 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
 import { recordFetch } from "@/lib/log/api";
+import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -202,6 +203,35 @@ export function parseGcdSeries(value: unknown): GcdSeriesRow | null {
     format: text(row.publishing_format),
     issues,
   };
+}
+
+/** Issue descriptors when the series lists them, otherwise `issue_count` as `1..N`. */
+export function parseGcdSeriesRun(value: unknown): { numbers: string[]; issueCount: number | null } | null {
+  const row = seriesRecord(value);
+  if (!row) return null;
+  const descriptors = Array.isArray(row.issue_descriptors) ? row.issue_descriptors.map((item) => text(item)).filter((item): item is string => item != null) : [];
+  const issueCount = catalogIssueCount(row.issue_count);
+  const numbers = distinctIssueLabels(descriptors);
+  if (numbers.length > 0) return { numbers, issueCount };
+  if (issueCount != null) return { numbers: [], issueCount };
+  return null;
+}
+
+function seriesRecord(value: unknown): UnknownRecord | null {
+  const row = asRecord(value);
+  if (!row) return null;
+  if (row.issue_descriptors != null || row.issue_count != null || row.active_issues != null) return row;
+  if (Array.isArray(row.results) && row.results.length > 0) return asRecord(row.results[0]);
+  return asRecord(row.results) ?? row;
+}
+
+export async function fetchGcdSeriesRun(
+  seriesId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ numbers: string[]; issueCount: number | null } | null> {
+  if (!/^\d{1,12}$/.test(seriesId) || seriesId === "0") return null;
+  const body = await gcdFetch(fetchImpl, `/api/series/${seriesId}/`);
+  return parseGcdSeriesRun(body);
 }
 
 export function parseGcdIssue(value: unknown, seriesYear: number | null = null): GcdIssueRow | null {

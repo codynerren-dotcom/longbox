@@ -2,17 +2,19 @@ import { notFound } from "next/navigation";
 import { AddSeriesIssue } from "@/app/series/add-issue";
 import { SeriesGrid, SeriesList, type DisplayRow } from "@/app/series/series-rows";
 import { SeriesShelf } from "@/app/series/series-shelf";
+import { SeriesSummary } from "@/app/series/series-summary";
 import { SeriesCatalogLinks } from "@/components/catalog-links";
 import { prisma } from "@/lib/db";
 import { formatDate, formatMoney } from "@/lib/format";
 import { seriesRouteId } from "@/lib/series";
+import { resolveSeriesRun, seriesRunIdentity } from "@/lib/series-run";
 import {
   buildSeriesRows,
   copyCountLabel,
   haveRange,
   majorityPublisher,
-  missingIssuesLabel,
   ownedIssueCount,
+  seriesMissing,
   seriesRowFacts,
   seriesSpend,
   yearSpan,
@@ -51,7 +53,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
   const spend = seriesSpend(comics);
   const years = yearSpan(comics);
   const have = haveRange(comics);
-  const missing = missingIssuesLabel(comics);
+  const missing = seriesMissing(comics, await loadSeriesRun(loaded));
   const owned = ownedIssueCount(comics);
   const coreSeriesId = loaded.find((comic) => comic.coreSeriesId)?.coreSeriesId ?? decoded;
 
@@ -70,11 +72,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
           <h1 className="min-w-0 flex-1 font-display text-5xl tracking-wide text-paper sm:text-6xl">{series}</h1>
           <AddSeriesIssue series={series} publisher={publisher} seriesId={decoded} coreSeriesId={coreSeriesId} />
         </div>
-        <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 rounded-2xl bg-panel/75 px-4 py-3 text-sm ring-1 ring-white/5">
-          <span className="font-semibold text-paper">{copyCountLabel(comics)}</span>
-          {have ? <span className="text-mist">{have}</span> : null}
-          {missing ? <span className="basis-full text-mist">{missing}</span> : null}
-        </div>
+        <SeriesSummary copies={copyCountLabel(comics)} have={have} missing={missing} />
         <p className="mt-2 text-sm text-mist">
           {[years, `${owned} owned`, spend ? `Cost basis ${formatMoney(spend, prefs.pricing.currency)}` : null]
             .filter(Boolean)
@@ -97,6 +95,14 @@ const seriesQuery = {
     },
   },
 };
+
+async function loadSeriesRun(comics: Awaited<ReturnType<typeof loadSeriesComics>>) {
+  try {
+    return await resolveSeriesRun(seriesRunIdentity(comics));
+  } catch {
+    return null;
+  }
+}
 
 async function loadSeriesComics(decoded: string) {
   const byCore = await prisma.comic.findMany({ where: { coreSeriesId: decoded }, ...seriesQuery });

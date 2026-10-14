@@ -1,16 +1,22 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { SeriesSummary } from "@/app/series/series-summary";
 import {
   buildSeriesRows,
   copyCountLabel,
+  distinctIssueLabels,
   haveRange,
   isKeyIssue,
-  missingIssuesLabel,
   issueBadge,
   majorityPublisher,
   ownedIssueCount,
+  seriesHeaderSummary,
+  seriesMissing,
   seriesRowFacts,
   seriesSpend,
+  truncateMissingParts,
   variantLetter,
   yearSpan,
   type SeriesCopy,
@@ -115,9 +121,9 @@ describe("series rows", () => {
     expect(copyCountLabel([copy({ id: "only" })])).toBe("1 comic");
     expect(haveRange(comics)).toBe("Have: 1-12");
     expect(haveRange([copy({ id: "only", issueNo: "5" })])).toBe("Have: 5");
-    expect(missingIssuesLabel(comics)).toBe("Missing: #2-11");
-    expect(missingIssuesLabel([copy({ id: "only", issueNo: "5" })])).toBeNull();
-    expect(missingIssuesLabel([copy({ id: "annual", issueNo: "Annual 1" })])).toBeNull();
+    expect(seriesMissing(comics, null)).toEqual({ kind: "gaps", count: 10, parts: ["#2-11"] });
+    expect(seriesMissing([copy({ id: "only", issueNo: "5" })], null)).toBeNull();
+    expect(seriesMissing([copy({ id: "annual", issueNo: "Annual 1" })], null)).toBeNull();
     expect(ownedIssueCount(comics)).toBe(3);
     expect(yearSpan(comics)).toBe("2012\u20132021");
     expect(seriesSpend(comics)).toBe("12.98");
@@ -132,17 +138,68 @@ describe("series rows", () => {
       copy({ id: `n${index}`, issueNo, variant: index === 0 ? "A" : null }),
     );
     comics.push(copy({ id: "dup", issueNo: "12", variant: "B" }));
-    expect(missingIssuesLabel(comics)).toBe("Missing: #2-11, #13, #15-17, #20");
+    expect(seriesMissing(comics, null)).toEqual({
+      kind: "gaps",
+      count: 15,
+      parts: ["#2-11", "#13", "#15-17", "#20"],
+    });
     expect(
-      missingIssuesLabel([
-        copy({ id: "a", issueNo: "1" }),
-        copy({ id: "b", issueNo: "2" }),
-        copy({ id: "c", issueNo: "3" }),
-      ]),
+      seriesMissing(
+        [copy({ id: "a", issueNo: "1" }), copy({ id: "b", issueNo: "2" }), copy({ id: "c", issueNo: "3" })],
+        null,
+      ),
     ).toBeNull();
-    expect(missingIssuesLabel([copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })])).toBe(
-      "Missing: #2-399",
+    expect(seriesMissing([copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })], null)).toEqual({
+      kind: "gaps",
+      count: 398,
+      parts: ["#2-399"],
+    });
+  });
+
+  it("counts missing issues against the full series run", () => {
+    const owned = [copy({ id: "a", issueNo: "1" }), copy({ id: "variant", issueNo: "1", variant: "B" })];
+    const run = { numbers: ["1", "01", "2", "3", "4", "5"], issueCount: 20 };
+    expect(distinctIssueLabels(run.numbers)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(seriesMissing(owned, run)).toEqual({ kind: "missing", count: 4, parts: ["#2-5"] });
+    expect(seriesHeaderSummary(owned, run)).toBe("2 comics · Have: 1 · Missing 4: #2-5");
+    expect(seriesHeaderSummary([copy({ id: "only", issueNo: "1" })], { numbers: ["1", "2", "3", "4", "5"], issueCount: null })).toBe(
+      "1 comic · Have: 1 · Missing 4: #2-5",
     );
+    expect(seriesMissing([copy({ id: "only", issueNo: "01" })], { numbers: ["1", "2"], issueCount: null })).toEqual({
+      kind: "missing",
+      count: 1,
+      parts: ["#2"],
+    });
+    expect(
+      seriesMissing([copy({ id: "a", issueNo: "1" }), copy({ id: "annual", issueNo: "Annual 1" })], {
+        numbers: [],
+        issueCount: 5,
+      }),
+    ).toEqual({ kind: "missing", count: 4, parts: ["#2-5"] });
+    expect(
+      seriesMissing([copy({ id: "a", issueNo: "1" }), copy({ id: "outside", issueNo: "8" })], { numbers: [], issueCount: 5 }),
+    ).toEqual({ kind: "missing", count: 4, parts: ["#2-5"] });
+    expect(seriesMissing([copy({ id: "a", issueNo: "1" })], { numbers: ["1", "2", "Annual 1", "1.5"], issueCount: null })).toEqual({
+      kind: "missing",
+      count: 3,
+      parts: ["#2", "Annual 1", "1.5"],
+    });
+    expect(
+      seriesMissing([copy({ id: "a", issueNo: "1" }), copy({ id: "annual", issueNo: "Annual 1" })], {
+        numbers: ["1", "Annual 1"],
+        issueCount: null,
+      }),
+    ).toBeNull();
+    expect(seriesHeaderSummary([copy({ id: "a", issueNo: "1" }), copy({ id: "b", issueNo: "2" })], { numbers: ["1", "2"], issueCount: 9 })).toBe(
+      "2 comics · Have: 1-2",
+    );
+    const holes = ["1", "12", "14", "18", "19", "21"].map((issueNo, index) => copy({ id: `g${index}`, issueNo }));
+    expect(seriesHeaderSummary(holes, null)).toBe("6 comics · Have: 1-21 · Gaps 15: #2-11, #13, #15-17, #20");
+    const parts = Array.from({ length: 20 }, (_, index) => `#${index + 2}`);
+    const cut = truncateMissingParts(parts);
+    expect(cut.shown.join(", ").length).toBeLessThanOrEqual(56);
+    expect(cut.rest).toBeGreaterThan(0);
+    expect(truncateMissingParts(["#2-5"]).rest).toBe(0);
   });
 
   it("hides empty row details and keeps the ones that are filled", () => {
@@ -219,8 +276,43 @@ describe("series rows", () => {
     const rows = readFileSync("src/app/series/series-rows.tsx", "utf8");
     expect(page).not.toMatch(/owned\.length/);
     expect(page).not.toMatch(/owned\.map/);
-    expect(page).toMatch(/missingIssuesLabel/);
+    expect(page).toMatch(/SeriesSummary/);
+    expect(page).toMatch(/seriesMissing/);
+    expect(page).not.toMatch(/missingIssuesLabel/);
     expect(page).not.toMatch(/dashed/);
+    const summary = readFileSync("src/app/series/series-summary.tsx", "utf8");
+    expect(summary).toMatch(/flex-wrap/);
+    expect(summary).toMatch(/min-w-0/);
+    expect(summary).toMatch(/min-h-11/);
+    expect(summary).toMatch(/show all/);
+    expect(summary).not.toMatch(/\u2014/);
+    const chip = renderToStaticMarkup(
+      createElement(SeriesSummary, {
+        copies: "1 comic",
+        have: "Have: 1",
+        missing: { kind: "missing", count: 4, parts: ["#2-5"] },
+      }),
+    );
+    expect(chip).toContain("1 comic");
+    expect(chip).toContain("Have: 1");
+    expect(chip).toContain("Missing 4: #2-5");
+    expect(chip).not.toContain("show all");
+    const long = renderToStaticMarkup(
+      createElement(SeriesSummary, {
+        copies: "1 comic",
+        have: "Have: 1",
+        missing: { kind: "gaps", count: 40, parts: Array.from({ length: 20 }, (_, index) => `#${index + 2}`) },
+      }),
+    );
+    expect(long).toContain("Gaps 40:");
+    expect(long).toContain("show all");
+    expect(long).toContain("min-h-11");
+    expect(long).not.toContain("#21");
+    const hidden = renderToStaticMarkup(
+      createElement(SeriesSummary, { copies: "3 comics", have: "Have: 1-3", missing: null }),
+    );
+    expect(hidden).not.toContain("Missing");
+    expect(hidden).not.toContain("Gaps");
     expect(rows).not.toMatch(/owned\.length/);
     expect(rows).not.toMatch(/[Mm]issing/);
     expect(rows).not.toMatch(/dashed/);

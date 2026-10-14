@@ -1,3 +1,4 @@
+import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
 import { budgetDay, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
@@ -242,6 +243,66 @@ export async function fetchMetronIssueBody(transport: MetronTransport, metronIss
 export async function fetchMetronIssueRecord(transport: MetronTransport, metronIssueId: string): Promise<MetronDetails | null> {
   const row = await fetchMetronIssueBody(transport, metronIssueId);
   return row ? mapMetronDetails(row) : null;
+}
+
+const SERIES_RUN_PAGES = 15;
+
+export function readMetronIssueCount(body: unknown): number | null {
+  const row = record(body);
+  if (!row) return null;
+  const direct = catalogIssueCount(row.issue_count);
+  if (direct != null) return direct;
+  const nested = record(row.results);
+  return nested ? catalogIssueCount(nested.issue_count) : null;
+}
+
+export function readMetronIssueNumber(value: unknown): string | null {
+  const row = record(value);
+  return row ? text(row.number) : null;
+}
+
+/**
+ * Prefer a finished issue list. A truncated list with a larger `issue_count`
+ * falls back to that count, because variant rows inflate the count.
+ */
+export function selectMetronSeriesRun(args: {
+  numbers: string[];
+  issueCount: number | null;
+  complete: boolean;
+}): { numbers: string[]; issueCount: number | null } | null {
+  const numbers = distinctIssueLabels(args.numbers);
+  const issueCount = catalogIssueCount(args.issueCount);
+  if (args.complete && numbers.length > 0) return { numbers, issueCount };
+  if (!args.complete && issueCount != null && issueCount > numbers.length) return { numbers: [], issueCount };
+  if (numbers.length > 0) return { numbers, issueCount };
+  if (issueCount != null) return { numbers: [], issueCount };
+  return null;
+}
+
+/** Series `issue_count` plus distinct issue numbers from `/issue/?series_id=`. */
+export async function fetchMetronSeriesRun(
+  transport: MetronTransport,
+  seriesId: string,
+): Promise<{ numbers: string[]; issueCount: number | null } | null> {
+  if (!/^\d+$/.test(seriesId) || seriesId === "0") return null;
+  const seriesBody = await getJson(transport, `/series/${seriesId}/`);
+  const issueCount = readMetronIssueCount(seriesBody);
+  const numbers: string[] = [];
+  let complete = true;
+  let next: string | null = `/issue/?series_id=${encodeURIComponent(seriesId)}`;
+  for (let page = 0; page < SERIES_RUN_PAGES && next; page += 1) {
+    const body = await getJson(transport, next);
+    for (const row of body.results ?? []) {
+      const number = readMetronIssueNumber(row);
+      if (number) numbers.push(number);
+    }
+    next = typeof body.next === "string" && body.next ? body.next : null;
+    if (next && page === SERIES_RUN_PAGES - 1) {
+      complete = false;
+      next = null;
+    }
+  }
+  return selectMetronSeriesRun({ numbers, issueCount, complete });
 }
 
 export async function fetchMetronIssue(transport: MetronTransport, metronIssueId: string): Promise<MetronIssueHit | null> {
