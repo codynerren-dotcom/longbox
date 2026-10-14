@@ -109,8 +109,10 @@ export function gcdDetails(issue: GcdIssueRow): MetronDetails {
     seriesVolume: null,
     metronIssueUrl: null,
     metronSeriesUrl: null,
-    comicvineIssueId: null,
+    comicvineIssueId: issue.comicvineIssueId,
     comicvineSeriesId: null,
+    gcdIssueId: null,
+    gcdSeriesId: null,
   };
 }
 

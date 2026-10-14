@@ -91,6 +91,9 @@ export type GcdIssueRow = {
   coverArtist: string | null;
   characters: string | null;
   seriesYear: number | null;
+  /** Present only when the GCD payload itself names another catalog. */
+  comicvineIssueId: string | null;
+  metronIssueId: string | null;
 };
 
 export type GcdCatalog = {
@@ -231,7 +234,17 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     coverArtist: creditText(cover?.pencils),
     characters: creditText(story?.characters),
     seriesYear,
+    comicvineIssueId: foreignDigits(row, ["cv_id", "comicvine_id", "comicvine_issue_id"]),
+    metronIssueId: foreignDigits(row, ["metron_id", "metron_issue_id"]),
   };
+}
+
+function foreignDigits(row: UnknownRecord, keys: string[]): string | null {
+  for (const key of keys) {
+    const raw = text(row[key]);
+    if (raw && /^\d{1,12}$/.test(raw) && raw !== "0") return raw;
+  }
+  return null;
 }
 
 function pageCount(value: unknown): number | null {

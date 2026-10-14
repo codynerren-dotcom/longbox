@@ -3,6 +3,7 @@ import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-p
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
 import { manualLinkJson, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
+import { linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
 import { gcdDetails, gcdHit, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { coverPublicPath } from "@/lib/covers/backfill";
@@ -45,6 +46,8 @@ async function comicForLink(id: string) {
       metronSeriesUrl: true,
       comicvineIssueId: true,
       comicvineSeriesId: true,
+      gcdIssueId: true,
+      gcdSeriesId: true,
       fieldSources: true,
       manualLink: true,
       coverDate: true,
@@ -68,10 +71,12 @@ async function comicForLink(id: string) {
   });
 }
 
-function currentFields(comic: NonNullable<Awaited<ReturnType<typeof comicForLink>>>): Partial<Record<MetronField, unknown>> {
+function currentFields(
+  comic: NonNullable<Awaited<ReturnType<typeof comicForLink>>>,
+): Partial<Record<MetronField, unknown>> & { gcdIssueId: string | null; gcdSeriesId: string | null } {
   const current: Partial<Record<MetronField, unknown>> = {};
   for (const field of METRON_FIELDS) current[field] = comic[field];
-  return current;
+  return { ...current, gcdIssueId: comic.gcdIssueId, gcdSeriesId: comic.gcdSeriesId };
 }
 
 function storedLink(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
@@ -161,14 +166,27 @@ export async function linkIssueToCatalog(args: {
       current: currentFields(comic),
       fieldSources: comic.fieldSources,
       manualLink: comic.manualLink,
-      detail: args.fillMissing ? loaded.detail : null,
+      detail: loaded.detail,
       fillMissing: args.fillMissing,
       cover,
       issueUrl: loaded.issueUrl,
       seriesUrl: loaded.seriesUrl,
     });
     await prisma.comic.update({ where: { id: comic.id }, data: { ...update.data, manualLink: storedLink(update.data.manualLink) } });
-    const message = `Linked ${label} to ${catalogName(args.source)} ${args.hit.id}.`;
+    let message = `Linked ${label} to ${catalogName(args.source)} ${args.hit.id}.`;
+    if (args.source === "metron") {
+      if (typeof update.data.comicvineIssueId === "string") message += ` Stored Comic Vine ${update.data.comicvineIssueId}.`;
+      if (typeof update.data.gcdIssueId === "string") message += ` Stored GCD ${update.data.gcdIssueId}.`;
+    }
+    if ((args.source === "comicvine" || args.source === "gcd") && !comic.metronIssueId && !readManualLink(comic.manualLink).metronIssueId) {
+      try {
+        const follow = await linkMetronFromForeignIds(comic.id, loaded.embeddedMetronIssueId);
+        if (follow) message = `${message} ${follow}`;
+      } catch (error) {
+        const note = error instanceof Error ? error.message : "Metron cross-link failed.";
+        await writeLog({ level: "warn", source: "metron", message: note, details: { comicId: comic.id } });
+      }
+    }
     await writeLog({
       level: "info",
       source: logSource(args.source),
@@ -186,11 +204,14 @@ export async function linkIssueToCatalog(args: {
 async function loadLinkTarget(
   source: CatalogSource,
   hit: MatchHit,
-): Promise<{ ok: true; hit: MatchHit; detail: ReturnType<typeof mapMetronDetails>; covers: MatchCover[]; issueUrl: string | null; seriesUrl: string | null } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; hit: MatchHit; detail: ReturnType<typeof mapMetronDetails>; covers: MatchCover[]; issueUrl: string | null; seriesUrl: string | null; embeddedMetronIssueId: string | null }
+  | { ok: false; message: string }
+> {
   if (source === "gcd") {
     const issue = await createGcdCatalog().issue(hit.id);
     const detail = issue ? gcdDetails(issue) : null;
-    return { ok: true, hit: issue ? gcdHit(issue) : hit, detail, covers: [], issueUrl: null, seriesUrl: null };
+    return { ok: true, hit: issue ? gcdHit(issue) : hit, detail, covers: [], issueUrl: null, seriesUrl: null, embeddedMetronIssueId: issue?.metronIssueId ?? null };
   }
   if (source === "metron") {
     if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
@@ -204,6 +225,7 @@ async function loadLinkTarget(
       covers: body ? variantCoversFrom(body) : hit.covers,
       issueUrl: detail?.metronIssueUrl ?? null,
       seriesUrl: detail?.metronSeriesUrl ?? null,
+      embeddedMetronIssueId: null,
     };
   }
   const settings = await getSettings();
@@ -218,6 +240,7 @@ async function loadLinkTarget(
     covers: body ? variantCoversFrom(body) : hit.covers,
     issueUrl: null,
     seriesUrl: null,
+    embeddedMetronIssueId: null,
   };
 }
 

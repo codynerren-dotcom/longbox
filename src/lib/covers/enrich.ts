@@ -75,6 +75,9 @@ export type MetronDetails = {
   metronSeriesUrl: string | null;
   comicvineIssueId: string | null;
   comicvineSeriesId: string | null;
+  /** GCD issue id stored on the Metron issue, when Metron sends one. */
+  gcdIssueId: string | null;
+  gcdSeriesId: string | null;
 };
 
 export type FieldMark = "metron" | "gcd" | "user";
@@ -164,6 +167,8 @@ export function mapMetronDetails(value: unknown): MetronDetails | null {
     metronSeriesUrl: series ? metronPage(series, "series") : null,
     comicvineIssueId: externalId(row.cv_id),
     comicvineSeriesId: externalId(series?.cv_id ?? row.series_cv_id),
+    gcdIssueId: externalId(row.gcd_id),
+    gcdSeriesId: externalId(series?.gcd_id ?? row.series_gcd_id),
   };
 }
 

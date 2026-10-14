@@ -2,6 +2,8 @@ import type { Prisma } from "@prisma/client";
 import { saveChosenCover } from "@/lib/catalog/link-issue";
 import { readManualLink, stripLockedCover, withLinkedId } from "@/lib/catalog/manual-link";
 import { coverPublicPath, backfillCovers, type BackfillSummary } from "@/lib/covers/backfill";
+import { blankCrossIds } from "@/lib/covers/cross-link";
+import { crossLinkShelf, linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { planEnrichment, type EnrichmentPlan, type MetronDetails, type MetronField } from "@/lib/covers/enrich";
 import { logCoverFinished, logCoverProgress, logCoverStarted, logEnrichFinished, logEnrichStarted, logMetronFill } from "@/lib/log/events";
 import { coverLineLevel } from "@/lib/log/query";
@@ -19,7 +21,7 @@ import {
 import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
-import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
+import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
 import { getPreferences, setCoversPaused } from "@/lib/settings/service";
@@ -48,6 +50,8 @@ const enrichSelect = {
   metronSeriesUrl: true,
   comicvineIssueId: true,
   comicvineSeriesId: true,
+  gcdIssueId: true,
+  gcdSeriesId: true,
   fieldSources: true,
   manualLink: true,
 } as const;
@@ -78,6 +82,7 @@ async function loadComics(): Promise<CoverRecord[]> {
       coverStatus: true,
       metronIssueId: true,
       gcdIssueId: true,
+      comicvineIssueId: true,
       manualLink: true,
     },
   });
@@ -103,6 +108,7 @@ async function loadComics(): Promise<CoverRecord[]> {
       coverStatus: row.coverStatus,
       metronIssueId: row.metronIssueId,
       gcdIssueId: row.gcdIssueId,
+      comicvineIssueId: row.comicvineIssueId,
       manualMetronIssueId: link.metronIssueId,
       manualGcdIssueId: link.gcdIssueId,
       manualCoverImageUrl: link.coverImageUrl,
@@ -152,10 +158,31 @@ async function applyEnrichment(
   if (plan && plan.filled.length > 0) {
     Object.assign(data, enrichmentPatch(plan));
   }
+  if (detail && current) {
+    const cross = blankCrossIds(current, current.fieldSources, current.manualLink, detail);
+    Object.assign(data, cross);
+    if (cross.comicvineIssueId) {
+      await writeLog({
+        level: "info",
+        source: "metron",
+        message: `Stored Comic Vine ${cross.comicvineIssueId} from Metron ${detail.id}.`,
+        details: { comicId: id, metronIssueId: detail.id, comicvineIssueId: cross.comicvineIssueId },
+      });
+    }
+    if (cross.gcdIssueId) {
+      await writeLog({
+        level: "info",
+        source: "metron",
+        message: `Stored GCD ${cross.gcdIssueId} from Metron ${detail.id}.`,
+        details: { comicId: id, metronIssueId: detail.id, gcdIssueId: cross.gcdIssueId },
+      });
+    }
+  }
   const replacingLink = extra.manualLink !== undefined;
   const link = readManualLink(current?.manualLink);
   if (!replacingLink && link.metronIssueId) data.metronIssueId = link.metronIssueId;
   if (!replacingLink && link.comicvineIssueId) data.comicvineIssueId = link.comicvineIssueId;
+  if (!replacingLink && link.gcdIssueId) data.gcdIssueId = link.gcdIssueId;
   stripLockedCover(data, current?.manualLink);
   if (Object.keys(data).length > 0) {
     await prisma.comic.update({ where: { id }, data });
@@ -181,6 +208,9 @@ async function applyGcdLink(
     coverCheckedAt: new Date(),
   };
   if (plan && plan.filled.length > 0) Object.assign(data, enrichmentPatch(plan));
+  if (detail && current) Object.assign(data, blankCrossIds(current, current.fieldSources, current.manualLink, detail));
+  const gcdLink = readManualLink(current?.manualLink);
+  if (gcdLink.gcdIssueId) data.gcdIssueId = gcdLink.gcdIssueId;
   stripLockedCover(data, current?.manualLink);
   await prisma.comic.update({ where: { id }, data });
   return plan?.filled ?? [];
@@ -253,6 +283,7 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
   const dir = coversDir();
   const transport = await metronTransport();
   const lookup = createMetronCoverLookup(transport);
+  await crossLinkShelf(emit);
   writeBackfillStatus(statusFrom({ pending: 0, matched: 0, unmatched: 0, skipped: 0, stoppedReason: null }, true, startedAt, "Looking up covers on Metron."));
   const comics = await loadComics();
   const labels = new Map(comics.map((comic) => [comic.id, issueLabel(comic.series, comic.issueNo, comic.issue)]));
@@ -288,10 +319,15 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
       });
     },
     gcd: (comic) => resolveGcdCover(comic, createGcdCatalog()),
+    crossLookup: {
+      byComicVine: (id) => metronIssuesByCrossId(transport, "cv_id", id),
+      byGcd: (id) => metronIssuesByCrossId(transport, "gcd_id", id),
+    },
     markGcd: async (id, update) => {
       const issue = await createGcdCatalog().issue(update.gcdIssueId);
       const detail = issue ? gcdDetails(issue) : null;
       const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail);
+      if (issue?.metronIssueId) await linkMetronFromForeignIds(id, issue.metronIssueId);
       if (detail && filled.length > 0) {
         await writeLog({
           level: "info",
@@ -409,6 +445,7 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       coverStatus: true,
       metronIssueId: true,
       gcdIssueId: true,
+      comicvineIssueId: true,
       manualLink: true,
     },
   });
@@ -469,10 +506,15 @@ export async function refetchOneCover(comicId: string): Promise<string> {
         });
       },
       gcd: (row) => resolveGcdCover(row, createGcdCatalog()),
+      crossLookup: {
+        byComicVine: (id) => metronIssuesByCrossId(transport, "cv_id", id),
+        byGcd: (id) => metronIssuesByCrossId(transport, "gcd_id", id),
+      },
       markGcd: async (id, update) => {
         const issue = await createGcdCatalog().issue(update.gcdIssueId);
         const detail = issue ? gcdDetails(issue) : null;
         const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail);
+        if (issue?.metronIssueId) await linkMetronFromForeignIds(id, issue.metronIssueId);
         if (detail && filled.length > 0) {
           await writeLog({
             level: "info",

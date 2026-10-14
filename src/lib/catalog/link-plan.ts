@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { manualLinkJson, withLinkedId, withoutLinkedId, type CatalogSource } from "@/lib/catalog/manual-link";
+import { blankCrossIds } from "@/lib/covers/cross-link";
 import { plainText, type MatchHit } from "@/lib/catalog/match-hits";
 import { planEnrichment, readFieldSources, type FieldSources, type MetronDetails, type MetronField } from "@/lib/covers/enrich";
 import { coverYearOf } from "@/lib/covers/match";
@@ -38,6 +39,8 @@ export function comicVineDetails(value: unknown, hit: MatchHit): MetronDetails {
     metronSeriesUrl: null,
     comicvineIssueId: hit.id,
     comicvineSeriesId: hit.seriesId,
+    gcdIssueId: null,
+    gcdSeriesId: null,
   };
 }
 
@@ -52,7 +55,7 @@ function dropFields(plan: ReturnType<typeof planEnrichment>, fields: readonly Me
 export function linkUpdate(args: {
   source: CatalogSource;
   hit: MatchHit;
-  current: Partial<Record<MetronField, unknown>>;
+  current: Partial<Record<MetronField, unknown>> & { gcdIssueId?: string | null; gcdSeriesId?: string | null };
   fieldSources: unknown;
   manualLink: unknown;
   detail: MetronDetails | null;
@@ -80,6 +83,7 @@ export function linkUpdate(args: {
     if (args.hit.seriesId) data.metronSeriesId = args.hit.seriesId;
     if (args.issueUrl) data.metronIssueUrl = args.issueUrl;
     if (args.seriesUrl) data.metronSeriesUrl = args.seriesUrl;
+    if (args.detail) Object.assign(data, blankCrossIds(args.current, args.fieldSources, args.manualLink, args.detail));
   } else if (args.source === "comicvine") {
     data.comicvineIssueId = args.hit.id;
     if (args.hit.seriesId) data.comicvineSeriesId = args.hit.seriesId;

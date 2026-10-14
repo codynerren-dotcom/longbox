@@ -254,6 +254,8 @@ describe("cover backfill", () => {
           metronSeriesUrl: null,
           comicvineIssueId: null,
           comicvineSeriesId: null,
+          gcdIssueId: null,
+          gcdSeriesId: null,
         };
       },
       saveImage: async (hit) => {
@@ -375,7 +377,7 @@ describe("Metron rate limit", () => {
       },
     };
     const hits = await createMetronCoverLookup(transport).issuesByUpc("07596060000100001");
-    expect(hits).toEqual([issue({ publisher: null, releaseYear: null, seriesYear: 2012, upc: null, variant: null })]);
+    expect(hits).toEqual([issue({ publisher: null, releaseYear: null, seriesYear: 2012, upc: null, variant: null, cvId: null, gcdId: null })]);
     expect(urls[0]).toBe("https://metron.cloud/api/issue/?upc=07596060000100001");
     expect(waits).toContain(30_000);
     expect(calls).toBe(2);

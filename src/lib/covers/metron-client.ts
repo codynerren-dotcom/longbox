@@ -99,7 +99,15 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     upc: text(row.upc),
     publisher: text(record(series?.publisher)?.name) ?? (typeof series?.publisher === "string" ? text(series.publisher) : null),
     variant,
+    cvId: externalDigits(row.cv_id),
+    gcdId: externalDigits(row.gcd_id),
   };
+}
+
+function externalDigits(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw || !/^\d{1,12}$/.test(raw) || raw === "0") return null;
+  return raw;
 }
 
 export function mapSeries(value: unknown): MetronSeriesHit | null {
@@ -203,6 +211,14 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
       return hits as MetronIssueHit[];
     },
   };
+}
+
+/** Metron filters an issue list by Comic Vine id (`cv_id`) or GCD id (`gcd_id`). */
+export async function metronIssuesByCrossId(transport: MetronTransport, key: "cv_id" | "gcd_id", id: string): Promise<MetronIssueHit[]> {
+  const digits = externalDigits(id);
+  if (!digits) return [];
+  const hits = await collect(transport, `/issue/?${key}=${encodeURIComponent(digits)}`, mapIssue);
+  return hits as MetronIssueHit[];
 }
 
 export async function listMetronIssueRows(transport: MetronTransport, path: string): Promise<unknown[]> {

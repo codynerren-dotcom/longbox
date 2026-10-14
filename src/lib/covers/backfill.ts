@@ -1,4 +1,5 @@
 import { GcdBudgetError } from "@/lib/catalog/gcd";
+import { crossLinkLine, lookupCrossIssue, type CrossLookup } from "@/lib/covers/cross-link";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { coverFileKey } from "@/lib/covers/files";
 import { resolveCover } from "@/lib/covers/match";
@@ -40,6 +41,8 @@ export async function backfillCovers(args: {
   markUnmatched: (id: string, reason: string) => Promise<void>;
   gcd?: (comic: CoverRecord) => Promise<CoverDecision>;
   markGcd?: (id: string, update: { gcdIssueId: string; gcdSeriesId: string | null; score: number }) => Promise<void>;
+  /** Comic Vine id and GCD id lookups on Metron. An exact hit is linked before a name search. */
+  crossLookup?: CrossLookup;
   log?: (line: string) => void;
   onProgress?: (summary: BackfillSummary) => void;
   shouldPause?: () => Promise<boolean> | boolean;
@@ -119,7 +122,114 @@ export async function backfillCovers(args: {
       }
       continue;
     }
+    const storedMetronId = comic.metronIssueId?.trim() || "";
+    if (storedMetronId) {
+      try {
+        const detail = args.loadIssue ? await args.loadIssue(storedMetronId) : null;
+        const imageUrl = detail?.imageUrl || "";
+        if (!imageUrl) {
+          summary.skipped += 1;
+          args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}; no cover image.`);
+          args.onProgress?.(summary);
+          continue;
+        }
+        const filename = await args.saveImage({
+          id: coverFileKey(storedMetronId, imageUrl, detail?.imageUrl ?? null),
+          seriesId: detail?.seriesId ?? null,
+          seriesName: comic.series,
+          number: issueNo,
+          coverYear: comic.coverYear,
+          imageUrl,
+          label: null,
+        });
+        await args.markMatched(
+          comic.id,
+          { metronIssueId: storedMetronId, coverFile: filename, coverUrl: coverPublicPath(filename) },
+          detail,
+        );
+        summary.matched += 1;
+        args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}.`);
+        args.onProgress?.(summary);
+      } catch (error) {
+        if (error instanceof MetronBudgetError) {
+          summary.stoppedReason = error.message;
+          args.log?.(summary.stoppedReason);
+          args.onProgress?.(summary);
+          break;
+        }
+        const reason = error instanceof Error ? error.message : "Could not download the linked cover.";
+        summary.skipped += 1;
+        args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}; ${reason}`);
+        args.onProgress?.(summary);
+      }
+      continue;
+    }
     try {
+      if (args.crossLookup && (comic.comicvineIssueId || comic.gcdIssueId || comic.embeddedMetronIssueId)) {
+        const cross = await lookupCrossIssue(
+          {
+            id: comic.id,
+            series: comic.series,
+            issueNo: comic.issueNo,
+            issue: comic.issue,
+            metronIssueId: comic.metronIssueId,
+            manualMetronIssueId: comic.manualMetronIssueId,
+            comicvineIssueId: comic.comicvineIssueId,
+            gcdIssueId: comic.gcdIssueId,
+            embeddedMetronIssueId: comic.embeddedMetronIssueId,
+            userCover: comic.userCover,
+            coverFile: comic.coverFile,
+            coverStatus: comic.coverStatus,
+          },
+          args.crossLookup,
+        );
+        const line = crossLinkLine(
+          { id: comic.id, series: comic.series, issueNo: comic.issueNo, issue: comic.issue, metronIssueId: comic.metronIssueId },
+          cross,
+        );
+        if (cross.status === "many") {
+          await args.markUnmatched(comic.id, cross.reason);
+          summary.unmatched += 1;
+          if (line) args.log?.(line);
+          args.onProgress?.(summary);
+          continue;
+        }
+        if (cross.status === "linked") {
+          let detail: MetronDetails | null = null;
+          if (args.loadDetail) detail = await args.loadDetail(cross.hit.id);
+          const metronIssueId = detail?.id || cross.hit.id;
+          const imageUrl = detail?.imageUrl || cross.hit.imageUrl;
+          if (!imageUrl) {
+            await args.markUnmatched(comic.id, `Metron issue ${metronIssueId} has no cover image.`);
+            summary.unmatched += 1;
+            args.log?.(`${comic.series} #${issueNo} unmatched: Metron issue ${metronIssueId} has no cover image.`);
+            args.onProgress?.(summary);
+            continue;
+          }
+          let filename: string;
+          try {
+            filename = await args.saveImage({ ...cross.hit, id: metronIssueId, imageUrl });
+          } catch (error) {
+            if (error instanceof MetronBudgetError) throw error;
+            const reason = error instanceof Error ? error.message : "Could not download the Metron cover.";
+            await args.markUnmatched(comic.id, reason);
+            summary.unmatched += 1;
+            args.log?.(`${comic.series} #${issueNo} unmatched: ${reason}`);
+            args.onProgress?.(summary);
+            continue;
+          }
+          await args.markMatched(
+            comic.id,
+            { metronIssueId, coverFile: filename, coverUrl: coverPublicPath(filename) },
+            detail,
+          );
+          summary.matched += 1;
+          if (line) args.log?.(line);
+          args.onProgress?.(summary);
+          continue;
+        }
+        if (line) args.log?.(line);
+      }
       const decision = await resolveCover(comic, args.lookup);
       if (decision.status === "matched") {
         let detail: MetronDetails | null = null;

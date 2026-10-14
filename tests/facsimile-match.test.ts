@@ -88,6 +88,8 @@ function gcdIssue(overrides: Partial<GcdIssueRow> = {}): GcdIssueRow {
     coverArtist: "Steve Ditko",
     characters: "Spider-Man",
     seriesYear: 2022,
+    comicvineIssueId: null,
+    metronIssueId: null,
     ...overrides,
   };
 }
@@ -356,6 +358,8 @@ describe("GCD catalog", () => {
       metronSeriesUrl: null,
       comicvineIssueId: null,
       comicvineSeriesId: null,
+      gcdIssueId: null,
+      gcdSeriesId: null,
     };
     const plan = planEnrichment({ writer: null, metronIssueId: null }, detail, {}, "gcd");
     expect(plan.filled).toContain("writer");

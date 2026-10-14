@@ -11,6 +11,8 @@ export type MetronIssueHit = {
   upc?: string | null;
   publisher?: string | null;
   variant?: string | null;
+  cvId?: string | null;
+  gcdId?: string | null;
 };
 
 export type MetronSeriesHit = {
@@ -62,6 +64,10 @@ export type CoverRecord = CoverQuery & {
   /** Set when this copy is already linked on GCD. Backfill does not search again. */
   gcdIssueId?: string | null;
   manualGcdIssueId?: string | null;
+  /** Comic Vine issue id already stored on the copy. Used to ask Metron for the same issue. */
+  comicvineIssueId?: string | null;
+  /** Metron issue id carried on a GCD record, when that catalog sends one. */
+  embeddedMetronIssueId?: string | null;
 };
 
 export class MetronBudgetError extends Error {
