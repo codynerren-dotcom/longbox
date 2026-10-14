@@ -61,12 +61,12 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
   const coreSeriesId = loaded.find((comic) => comic.coreSeriesId)?.coreSeriesId ?? decoded;
 
   return (
-    <div className="relative isolate">
+    <div className="relative isolate overflow-x-hidden">
       {backdrop ? (
         <div className="pointer-events-none absolute -inset-x-4 -top-5 bottom-0 -z-10 overflow-hidden md:-inset-x-8 md:-top-8" aria-hidden="true">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={backdrop} alt="" className="h-72 w-full scale-110 object-cover opacity-30 blur-2xl" />
-          <div className="absolute inset-0 bg-gradient-to-b from-ink/55 via-ink/80 to-ink" />
+          <img src={backdrop} alt="" className="h-96 w-full scale-125 object-cover opacity-70 blur-3xl" />
+          <div className="absolute inset-0 bg-gradient-to-b from-ink/15 via-ink/72 to-ink" />
         </div>
       ) : null}
       <header className="mb-5">
