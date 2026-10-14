@@ -11,6 +11,7 @@ import {
   copyCountLabel,
   haveRange,
   majorityPublisher,
+  missingIssuesLabel,
   ownedIssueCount,
   seriesRowFacts,
   seriesSpend,
@@ -50,6 +51,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
   const spend = seriesSpend(comics);
   const years = yearSpan(comics);
   const have = haveRange(comics);
+  const missing = missingIssuesLabel(comics);
   const owned = ownedIssueCount(comics);
   const coreSeriesId = loaded.find((comic) => comic.coreSeriesId)?.coreSeriesId ?? decoded;
 
@@ -71,6 +73,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
         <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 rounded-2xl bg-panel/75 px-4 py-3 text-sm ring-1 ring-white/5">
           <span className="font-semibold text-paper">{copyCountLabel(comics)}</span>
           {have ? <span className="text-mist">{have}</span> : null}
+          {missing ? <span className="basis-full text-mist">{missing}</span> : null}
         </div>
         <p className="mt-2 text-sm text-mist">
           {[years, `${owned} owned`, spend ? `Cost basis ${formatMoney(spend, prefs.pricing.currency)}` : null]

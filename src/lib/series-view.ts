@@ -95,13 +95,39 @@ export function copyCountLabel(comics: SeriesCopy[]): string {
 
 /** Owned numeric span, `Have: 1-12`, or `Have: 5` when only one number is on the shelf. */
 export function haveRange(comics: SeriesCopy[]): string | null {
-  const numbers = comics
-    .map((comic) => issueNumberValue(comic.issueNo))
-    .filter((value): value is number => value != null);
+  const numbers = ownedIssueNumbers(comics);
   if (numbers.length === 0) return null;
-  const min = Math.min(...numbers);
-  const max = Math.max(...numbers);
+  const min = numbers[0];
+  const max = numbers[numbers.length - 1];
   return min === max ? `Have: ${min}` : `Have: ${min}-${max}`;
+}
+
+/**
+ * Integer gaps between the lowest and highest owned issue.
+ * Consecutive holes collapse: `Missing: #13, #15-17, #20`.
+ * Null when the numeric run has no holes, so the header can omit the line.
+ */
+export function missingIssuesLabel(comics: SeriesCopy[]): string | null {
+  const owned = ownedIssueNumbers(comics);
+  if (owned.length === 0) return null;
+  const parts: string[] = [];
+  for (let index = 0; index < owned.length - 1; index += 1) {
+    const from = owned[index] + 1;
+    const to = owned[index + 1] - 1;
+    if (from > to) continue;
+    parts.push(from === to ? `#${from}` : `#${from}-${to}`);
+  }
+  if (parts.length === 0) return null;
+  return `Missing: ${parts.join(", ")}`;
+}
+
+function ownedIssueNumbers(comics: SeriesCopy[]): number[] {
+  const owned = new Set<number>();
+  for (const comic of comics) {
+    const value = issueNumberValue(comic.issueNo);
+    if (value != null) owned.add(value);
+  }
+  return [...owned].sort((a, b) => a - b);
 }
 
 export function ownedIssueCount(comics: SeriesCopy[]): number {

@@ -5,6 +5,7 @@ import {
   copyCountLabel,
   haveRange,
   isKeyIssue,
+  missingIssuesLabel,
   issueBadge,
   majorityPublisher,
   ownedIssueCount,
@@ -114,6 +115,9 @@ describe("series rows", () => {
     expect(copyCountLabel([copy({ id: "only" })])).toBe("1 comic");
     expect(haveRange(comics)).toBe("Have: 1-12");
     expect(haveRange([copy({ id: "only", issueNo: "5" })])).toBe("Have: 5");
+    expect(missingIssuesLabel(comics)).toBe("Missing: #2-11");
+    expect(missingIssuesLabel([copy({ id: "only", issueNo: "5" })])).toBeNull();
+    expect(missingIssuesLabel([copy({ id: "annual", issueNo: "Annual 1" })])).toBeNull();
     expect(ownedIssueCount(comics)).toBe(3);
     expect(yearSpan(comics)).toBe("2012\u20132021");
     expect(seriesSpend(comics)).toBe("12.98");
@@ -121,6 +125,24 @@ describe("series rows", () => {
     expect(isKeyIssue("Major")).toBe(true);
     expect(isKeyIssue("No")).toBe(false);
     expect(isKeyIssue(null)).toBe(false);
+  });
+
+  it("collapses missing issue numbers into one header line", () => {
+    const comics = ["1", "12", "14", "18", "19", "21"].map((issueNo, index) =>
+      copy({ id: `n${index}`, issueNo, variant: index === 0 ? "A" : null }),
+    );
+    comics.push(copy({ id: "dup", issueNo: "12", variant: "B" }));
+    expect(missingIssuesLabel(comics)).toBe("Missing: #2-11, #13, #15-17, #20");
+    expect(
+      missingIssuesLabel([
+        copy({ id: "a", issueNo: "1" }),
+        copy({ id: "b", issueNo: "2" }),
+        copy({ id: "c", issueNo: "3" }),
+      ]),
+    ).toBeNull();
+    expect(missingIssuesLabel([copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })])).toBe(
+      "Missing: #2-399",
+    );
   });
 
   it("hides empty row details and keeps the ones that are filled", () => {
@@ -197,7 +219,7 @@ describe("series rows", () => {
     const rows = readFileSync("src/app/series/series-rows.tsx", "utf8");
     expect(page).not.toMatch(/owned\.length/);
     expect(page).not.toMatch(/owned\.map/);
-    expect(page).not.toMatch(/[Mm]issing/);
+    expect(page).toMatch(/missingIssuesLabel/);
     expect(page).not.toMatch(/dashed/);
     expect(rows).not.toMatch(/owned\.length/);
     expect(rows).not.toMatch(/[Mm]issing/);
