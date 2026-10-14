@@ -10,8 +10,11 @@ export function backfillPollPlan(pathname: string, running: boolean): { poll: bo
   return { poll: onPage || running, navigate: false };
 }
 
-export function backfillProgressLabel(status: Pick<BackfillStatus, "running" | "matched" | "unmatched"> | null): string | null {
+export function backfillProgressLabel(
+  status: Pick<BackfillStatus, "running" | "matched" | "unmatched"> & { task?: string | null; skipped?: number } | null,
+): string | null {
   if (!status?.running) return null;
+  if (status.task === "enrich") return `Metron details · ${status.matched} filled · ${status.skipped ?? 0} unchanged`;
   return `Covers running · ${status.matched} matched · ${status.unmatched} unmatched`;
 }
 
@@ -28,6 +31,7 @@ export function normalizeBackfillStatus(value: unknown): BackfillStatus | null {
     pending: count(row.pending),
     stoppedReason: text(row.stoppedReason),
     message: text(row.message),
+    task: row.task === "enrich" ? "enrich" : "covers",
   };
 }
 

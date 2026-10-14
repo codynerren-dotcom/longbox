@@ -150,7 +150,7 @@ export async function savePreferences(input: unknown): Promise<ShelfPreferences>
 export async function setCoversPaused(paused: boolean): Promise<void> {
   const service = liveService();
   const current = await service.getPreferences();
-  await service.savePreferences({ ...current, covers: { paused } });
+  await service.savePreferences({ ...current, covers: { ...current.covers, paused } });
 }
 
 export function shouldSeedShelf(enabled: boolean, comicCount: number): boolean {

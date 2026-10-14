@@ -56,6 +56,36 @@ export async function logCoverFinished(summary: BackfillSummary): Promise<void> 
   });
 }
 
+export async function logEnrichStarted(total: number): Promise<void> {
+  await writeLog({
+    level: "info",
+    source: "covers/backfill",
+    message: `Metron enrichment started for ${total} matched issues.`,
+    details: { total },
+  });
+}
+
+export async function logEnrichFinished(summary: { filled: number; unchanged: number; failed: number; stoppedReason: string | null }): Promise<void> {
+  await writeLog({
+    level: summary.stoppedReason ? "warn" : "info",
+    source: "covers/backfill",
+    message: `Metron enrichment finished: ${summary.filled} filled, ${summary.unchanged} unchanged, ${summary.failed} failed.`,
+    details: summary,
+  });
+}
+
+export async function logMetronFill(label: string, metronIssueId: string, fields: string[]): Promise<void> {
+  await writeLog({
+    level: "info",
+    source: "metron",
+    message:
+      fields.length > 0
+        ? `Filled ${fields.join(", ")} on ${label} from Metron ${metronIssueId}.`
+        : `${label} had nothing missing on Metron ${metronIssueId}.`,
+    details: { metronIssueId, fields },
+  });
+}
+
 export async function logCoverProgress(summary: BackfillSummary): Promise<void> {
   const checked = summary.matched + summary.unmatched;
   await writeLog({

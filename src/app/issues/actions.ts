@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { refreshIssueFromMetron } from "@/lib/covers/run";
 import { setReadState } from "@/lib/mutations";
 
 export async function setReadAction(formData: FormData): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -17,4 +18,13 @@ export async function setReadAction(formData: FormData): Promise<{ ok: true } | 
   revalidatePath("/");
   revalidatePath("/collection");
   return { ok: true };
+}
+
+export async function refreshFromMetronAction(comicId: string): Promise<{ ok: boolean; message: string }> {
+  const result = await refreshIssueFromMetron(comicId);
+  if (result.ok) {
+    revalidatePath(`/issues/${comicId}`);
+    revalidatePath("/logs");
+  }
+  return result;
 }

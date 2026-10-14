@@ -22,6 +22,7 @@ export type BackfillStatus = {
   pending: number;
   stoppedReason: string | null;
   message: string | null;
+  task?: "covers" | "enrich" | null;
 };
 
 export function coversDir(): string {

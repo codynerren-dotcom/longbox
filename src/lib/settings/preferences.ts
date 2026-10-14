@@ -65,6 +65,7 @@ export type ShelfPreferences = {
   };
   covers: {
     paused: boolean;
+    fillMissing: boolean;
   };
   logs: {
     retentionDays: number;
@@ -99,7 +100,7 @@ export function defaultPreferences(): ShelfPreferences {
       beep: false,
       vibrate: false,
     },
-    covers: { paused: false },
+    covers: { paused: false, fillMissing: true },
     logs: { retentionDays: DEFAULT_LOG_RETENTION_DAYS },
   };
 }
@@ -150,6 +151,7 @@ export function normalizePreferences(input: unknown, base: ShelfPreferences = de
     },
     covers: {
       paused: flag(covers.paused, base.covers.paused),
+      fillMissing: flag(covers.fillMissing, base.covers.fillMissing),
     },
     logs: {
       retentionDays: retentionDays(logs.retentionDays, base.logs.retentionDays),

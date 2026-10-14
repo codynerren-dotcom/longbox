@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { refetchOneCover, startCoverBackfillInBackground } from "@/lib/covers/run";
+import { refetchOneCover, startCoverBackfillInBackground, startMetronEnrichmentInBackground } from "@/lib/covers/run";
 import { prisma } from "@/lib/db";
 import { changedKeys } from "@/lib/log/query";
 import { logSettingsChange } from "@/lib/log/events";
@@ -35,6 +35,32 @@ export async function runCoversAction(): Promise<LibraryState> {
   }
   if (result === "busy") return { status: "ok", message: "A cover backfill is already running." };
   return { status: "ok", message: "Backfill started." };
+}
+
+export async function saveFillMissingAction(fillMissing: boolean): Promise<LibraryState> {
+  const current = await getPreferences();
+  if (current.covers.fillMissing !== fillMissing) {
+    await savePreferences({ ...current, covers: { ...current.covers, fillMissing } });
+    await logSettingsChange(["covers.fillMissing"]);
+  }
+  revalidatePath("/settings");
+  return {
+    status: "ok",
+    message: fillMissing ? "Missing details will be filled from Metron." : "Metron will leave missing details blank.",
+  };
+}
+
+export async function enrichMatchedAction(): Promise<LibraryState> {
+  if (!(await getPreferences()).covers.fillMissing) {
+    return { status: "error", message: "Turn on Fill missing details from Metron to enrich matched issues." };
+  }
+  const result = await startMetronEnrichmentInBackground();
+  revalidatePath("/settings");
+  revalidatePath("/covers");
+  if (result === "unconfigured") return { status: "error", message: "Add Metron username and password, then try enrichment again." };
+  if (result === "disabled") return { status: "error", message: "Turn on Fill missing details from Metron to enrich matched issues." };
+  if (result === "busy") return { status: "ok", message: "A Metron run is already going." };
+  return { status: "ok", message: "Enrichment started for matched issues." };
 }
 
 export async function pauseCoversAction(): Promise<LibraryState> {

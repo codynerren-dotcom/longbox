@@ -95,12 +95,12 @@ export default async function SettingsPage() {
         </div>
       </Panel>
 
-      <Panel title="Covers" detail="Run or pause the Metron backfill. Unmatched issues stay on the cover report.">
+      <Panel title="Covers" detail="Run or pause the Metron backfill. A match can fill blank issue details from that same Metron issue.">
         <CoverLiveStatus />
         <p className="text-sm text-mist">
           Shelf: {counts.matched} matched, {counts.pending} still need a cover, {counts.unmatched} unmatched.
         </p>
-        <CoverControls paused={paused} running={Boolean(status?.running)} />
+        <CoverControls paused={paused} running={Boolean(status?.running)} fillMissing={prefs.covers.fillMissing} />
         <Link href="/covers" className="inline-block text-sm font-semibold text-comic">
           Open the unmatched report
         </Link>

@@ -1,5 +1,6 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { legacyZeroCoreKeys, planZeroIdCleanup, type LegacyZeroRow } from "@/lib/clz/legacy-zero";
+import { protectMetronFields } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
 import { mergeByDedupeKey, planImport, type NormalizedComic } from "@/lib/clz/parse";
 
@@ -78,6 +79,15 @@ function data(comic: NormalizedComic): Prisma.ComicUpdateInput {
   };
 }
 
+function clzWrite(comic: NormalizedComic, fieldSources: unknown): Prisma.ComicUpdateInput {
+  const guarded = protectMetronFields(data(comic) as Record<string, unknown>, fieldSources);
+  const update = guarded.update as Prisma.ComicUpdateInput;
+  if (guarded.changedSources) {
+    update.fieldSources = Object.keys(guarded.sources).length > 0 ? guarded.sources : Prisma.DbNull;
+  }
+  return update;
+}
+
 export type ImportSummary = {
   rows: number;
   unique: number;
@@ -124,12 +134,17 @@ export async function persistClzComics(comics: NormalizedComic[]): Promise<Impor
   const chunkSize = 40;
   for (let index = 0; index < merged.length; index += chunkSize) {
     const chunk = merged.slice(index, index + chunkSize);
+    const stored = await prisma.comic.findMany({
+      where: { dedupeKey: { in: chunk.map((comic) => comic.dedupeKey) } },
+      select: { dedupeKey: true, fieldSources: true },
+    });
+    const sources = new Map(stored.map((row) => [row.dedupeKey, row.fieldSources]));
     await prisma.$transaction(
       chunk.map((comic) =>
         prisma.comic.upsert({
           where: { dedupeKey: comic.dedupeKey },
           create: { dedupeKey: comic.dedupeKey, ...data(comic) } as Prisma.ComicCreateInput,
-          update: data(comic),
+          update: clzWrite(comic, sources.get(comic.dedupeKey) ?? null),
         }),
       ),
     );

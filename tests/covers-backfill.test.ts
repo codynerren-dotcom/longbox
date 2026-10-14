@@ -212,6 +212,58 @@ describe("cover backfill", () => {
     expect(needsCover(comics[1], () => false)).toBe(false);
   });
 
+  it("reads the matched Metron issue once and uses that image", async () => {
+    const loaded: string[] = [];
+    let seenUrl = "";
+    const client = lookup({
+      async issuesByUpc() {
+        return [issue({ imageUrl: "https://static.metron.cloud/list.jpg" })];
+      },
+    });
+    await backfillCovers({
+      comics: [record()],
+      lookup: client,
+      fileExists: () => false,
+      loadDetail: async (issueId) => {
+        loaded.push(issueId);
+        return {
+          id: issueId,
+          seriesId: "15",
+          seriesName: "Saga",
+          number: "1",
+          imageUrl: "https://static.metron.cloud/detail.jpg",
+          coverDate: null,
+          coverYear: null,
+          releaseDate: null,
+          title: null,
+          storyArc: null,
+          plot: null,
+          pageCount: null,
+          coverPrice: null,
+          barcode: null,
+          writer: null,
+          artist: null,
+          coverArtist: null,
+          characters: null,
+          teams: null,
+          imprint: null,
+          seriesYear: null,
+          seriesVolume: null,
+        };
+      },
+      saveImage: async (hit) => {
+        seenUrl = hit.imageUrl ?? "";
+        return `metron-${hit.id}.jpg`;
+      },
+      markMatched: async () => undefined,
+      markUnmatched: async () => {
+        throw new Error("should not unmatch");
+      },
+    });
+    expect(loaded).toEqual(["50"]);
+    expect(seenUrl).toBe("https://static.metron.cloud/detail.jpg");
+  });
+
   it("stops on the Metron budget without marking the current issue unmatched", async () => {
     const unmatched: string[] = [];
     const client = lookup({

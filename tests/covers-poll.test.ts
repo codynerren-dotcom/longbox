@@ -14,6 +14,9 @@ describe("cover backfill progress polling", () => {
   it("keeps a non-navigating poll for the sidebar chip while a run is still going", () => {
     expect(backfillPollPlan("/collection", true)).toEqual({ poll: true, navigate: false });
     expect(backfillProgressLabel({ running: true, matched: 4, unmatched: 1 })).toBe("Covers running · 4 matched · 1 unmatched");
+    expect(backfillProgressLabel({ running: true, matched: 3, unmatched: 0, skipped: 2, task: "enrich" })).toBe(
+      "Metron details · 3 filled · 2 unchanged",
+    );
     expect(backfillProgressLabel({ running: false, matched: 4, unmatched: 1 })).toBeNull();
   });
 

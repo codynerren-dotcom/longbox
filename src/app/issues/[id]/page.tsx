@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import { RefreshFromMetron } from "@/app/issues/refresh-metron";
 import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
+import { fromMetron } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
 import { costBasis } from "@/lib/clz/parse";
 import { formatDate, formatIssue, formatMoney } from "@/lib/format";
@@ -23,6 +25,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   const when = dateOptions(prefs);
   const money = prefs.pricing.currency;
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
+  const sourced = (field: string) => fromMetron(comic.fieldSources, field);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -88,13 +91,39 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           <Fact label="Cost basis" value={formatMoney(costBasis(comic.purchasePrice, comic.quantity), money)} />
           <Fact label="Purchase date" value={formatDate(comic.purchaseDate, when)} />
           <Fact label="Purchase store" value={comic.purchaseStore} />
-          <Fact label="Cover date" value={comic.coverDate} />
-          <Fact label="Barcode" value={comic.barcode} />
-          <Fact label="Story arc" value={comic.storyArc} />
+          <Fact label="Cover date" value={comic.coverDate} fromMetron={sourced("coverDate")} />
+          <Fact label="Barcode" value={comic.barcode} fromMetron={sourced("barcode")} />
+          <Fact label="Story arc" value={comic.storyArc} fromMetron={sourced("storyArc")} />
         </section>
 
         <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
-          <h2 className="font-display text-3xl tracking-wide">Plot</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-display text-3xl tracking-wide">Details</h2>
+            <RefreshFromMetron comicId={comic.id} />
+          </div>
+          <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Fact label="Story title" value={comic.title} fromMetron={sourced("title")} />
+            <Fact label="Release date" value={comic.releaseDate ? formatDate(comic.releaseDate, when) : null} fromMetron={sourced("releaseDate")} />
+            <Fact label="Page count" value={comic.pageCount ? String(comic.pageCount) : null} fromMetron={sourced("pageCount")} />
+            <Fact label="Cover price" value={comic.coverPrice != null ? formatMoney(comic.coverPrice, money) : null} fromMetron={sourced("coverPrice")} />
+            <Fact label="Writer" value={comic.writer} fromMetron={sourced("writer")} />
+            <Fact label="Artist" value={comic.artist} fromMetron={sourced("artist")} />
+            <Fact label="Cover artist" value={comic.coverArtist} fromMetron={sourced("coverArtist")} />
+            <Fact label="Characters" value={comic.characters} fromMetron={sourced("characters")} />
+            <Fact label="Teams" value={comic.teams} fromMetron={sourced("teams")} />
+            <Fact label="Imprint" value={comic.imprint} fromMetron={sourced("imprint")} />
+            <Fact label="Series year" value={comic.seriesYear ? String(comic.seriesYear) : null} fromMetron={sourced("seriesYear")} />
+            <Fact label="Series volume" value={comic.seriesVolume ? String(comic.seriesVolume) : null} fromMetron={sourced("seriesVolume")} />
+            <Fact label="Metron issue" value={comic.metronIssueId} fromMetron={sourced("metronIssueId")} />
+            <Fact label="Metron series" value={comic.metronSeriesId} fromMetron={sourced("metronSeriesId")} />
+          </dl>
+        </section>
+
+        <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-display text-3xl tracking-wide">Plot</h2>
+            {sourced("plot") ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
+          </div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-paper/90">{comic.plot || "No plot on this copy."}</p>
         </section>
 
@@ -126,10 +155,13 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   );
 }
 
-function Fact({ label, value }: { label: string; value: ReactNode }) {
+function Fact({ label, value, fromMetron: metron }: { label: string; value: ReactNode; fromMetron?: boolean }) {
   return (
     <div className="rounded-xl bg-panel2 px-3 py-3 ring-1 ring-white/5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">{label}</div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">{label}</div>
+        {metron ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
+      </div>
       <div className="mt-1 text-sm text-paper">{value || "—"}</div>
     </div>
   );

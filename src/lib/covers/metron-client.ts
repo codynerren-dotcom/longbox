@@ -1,3 +1,4 @@
+import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { coverYearOf } from "@/lib/covers/match";
 import { retryAfterMs, type MetronLimiter } from "@/lib/covers/limiter";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
@@ -180,9 +181,23 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
   };
 }
 
-export async function fetchMetronIssue(transport: MetronTransport, metronIssueId: string): Promise<MetronIssueHit | null> {
+export async function fetchMetronIssueRecord(transport: MetronTransport, metronIssueId: string): Promise<MetronDetails | null> {
   if (!/^\d+$/.test(metronIssueId)) return null;
   const body = await getJson(transport, `/issue/${metronIssueId}/`);
   const row = (body as { results?: unknown }).results ?? body;
-  return mapIssue(row);
+  return mapMetronDetails(row);
+}
+
+export async function fetchMetronIssue(transport: MetronTransport, metronIssueId: string): Promise<MetronIssueHit | null> {
+  const detail = await fetchMetronIssueRecord(transport, metronIssueId);
+  if (!detail) return null;
+  return {
+    id: detail.id,
+    seriesId: detail.seriesId,
+    seriesName: detail.seriesName,
+    number: detail.number,
+    coverYear: detail.coverYear,
+    imageUrl: detail.imageUrl,
+    label: detail.title,
+  };
 }

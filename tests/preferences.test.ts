@@ -45,6 +45,7 @@ describe("shelf preferences", () => {
     expect(prefs.pricing.otherCadence).toBe("monthly");
     expect(prefs.collection.gradingCompanies).toEqual(["CGC", "CBCS", "PGX"]);
     expect(prefs.covers.paused).toBe(false);
+    expect(prefs.covers.fillMissing).toBe(true);
     expect(prefs.logs.retentionDays).toBe(30);
   });
 
@@ -61,6 +62,7 @@ describe("shelf preferences", () => {
     expect(saved.pricing.currency).toBe("CAD");
     expect(saved.pricing.enabled).toBe(true);
     expect(saved.covers.paused).toBe(true);
+    expect(saved.covers.fillMissing).toBe(true);
     expect(saved.collection.sort).toBe("series");
     const stored = repo.rows.find((row) => row.key === PREFERENCES_KEY);
     expect(stored?.secret).toBeNull();
@@ -89,6 +91,7 @@ describe("shelf preferences", () => {
     form.set("keyCategories", "");
     const next = preferencesFromForm(form, current);
     expect(next.covers.paused).toBe(true);
+    expect(next.covers.fillMissing).toBe(true);
     expect(next.collection.sort).toBe("added");
     expect(next.collection.density).toBe("compact");
     expect(next.collection.showSold).toBe(true);
@@ -109,6 +112,8 @@ describe("shelf preferences", () => {
   it("falls back when stored JSON is junk", () => {
     expect(parsePreferences("not-json").display.accent).toBe("yellow");
     expect(parsePreferences(JSON.stringify({ display: { accent: "purple" } })).display.accent).toBe("yellow");
+    expect(parsePreferences(JSON.stringify({ covers: { paused: true } })).covers).toEqual({ paused: true, fillMissing: true });
+    expect(normalizePreferences({ covers: { fillMissing: false } }).covers.fillMissing).toBe(false);
   });
 
   it("does not mix preferences into secret storage", async () => {

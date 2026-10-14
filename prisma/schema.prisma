@@ -82,6 +82,16 @@ model Comic {
   value              Decimal?  @db.Decimal(12, 2)
   coverUrl           String?
   metronIssueId      String?
+  metronSeriesId     String?
+  writer             String?
+  artist             String?
+  coverArtist        String?
+  characters         String?   @db.Text
+  teams              String?   @db.Text
+  seriesYear         Int?
+  seriesVolume       Int?
+  /// Keys filled from Metron. Each value is "metron". Absent keys came from CLZ or an edit.
+  fieldSources       Json?
   coverFile          String?
   /// null = not checked, matched = local file, unmatched = needs a hand fix.
   coverStatus        String?
@@ -103,6 +113,7 @@ model Comic {
   @@index([rawOrSlabbed])
   @@index([read])
   @@index([coverStatus])
+  @@index([metronIssueId])
 }
 
 model WishlistItem {

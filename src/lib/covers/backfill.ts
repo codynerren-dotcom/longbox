@@ -1,3 +1,4 @@
+import type { MetronDetails } from "@/lib/covers/enrich";
 import { resolveCover } from "@/lib/covers/match";
 import { MetronBudgetError, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
 
@@ -24,7 +25,12 @@ export async function backfillCovers(args: {
   lookup: CoverLookup;
   fileExists: (filename: string) => boolean;
   saveImage: (issue: MetronIssueHit) => Promise<string>;
-  markMatched: (id: string, update: { metronIssueId: string; coverFile: string; coverUrl: string }) => Promise<void>;
+  loadDetail?: (issueId: string) => Promise<MetronDetails | null>;
+  markMatched: (
+    id: string,
+    update: { metronIssueId: string; coverFile: string; coverUrl: string },
+    detail: MetronDetails | null,
+  ) => Promise<void>;
   markUnmatched: (id: string, reason: string) => Promise<void>;
   log?: (line: string) => void;
   onProgress?: (summary: BackfillSummary) => void;
@@ -53,9 +59,14 @@ export async function backfillCovers(args: {
     try {
       const decision = await resolveCover(comic, args.lookup);
       if (decision.status === "matched") {
+        let detail: MetronDetails | null = null;
+        if (args.loadDetail) detail = await args.loadDetail(decision.issue.id);
+        const metronIssueId = detail?.id || decision.issue.id;
+        const imageUrl = detail?.imageUrl || decision.issue.imageUrl;
         let filename: string;
         try {
-          filename = await args.saveImage(decision.issue);
+          if (!imageUrl) throw new Error(`Metron issue ${metronIssueId} has no cover image.`);
+          filename = await args.saveImage({ ...decision.issue, id: metronIssueId, imageUrl });
         } catch (error) {
           const reason = error instanceof Error ? error.message : "Could not download the Metron cover.";
           await args.markUnmatched(comic.id, reason);
@@ -64,11 +75,15 @@ export async function backfillCovers(args: {
           args.onProgress?.(summary);
           continue;
         }
-        await args.markMatched(comic.id, {
-          metronIssueId: decision.issue.id,
-          coverFile: filename,
-          coverUrl: coverPublicPath(filename),
-        });
+        await args.markMatched(
+          comic.id,
+          {
+            metronIssueId,
+            coverFile: filename,
+            coverUrl: coverPublicPath(filename),
+          },
+          detail,
+        );
         summary.matched += 1;
         args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}`);
       } else {
