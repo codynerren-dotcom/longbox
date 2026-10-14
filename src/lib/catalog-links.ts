@@ -2,8 +2,11 @@ const SLUG = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 
 export type CatalogTarget = {
   metron: string | null;
+  metronId: string | null;
   comicVine: string | null;
+  comicVineId: string | null;
   gcd: string | null;
+  gcdId: string | null;
   gcdCover: string | null;
 };
 
@@ -66,8 +69,11 @@ export function issueCatalogLinks(comic: {
 }): CatalogTarget {
   return {
     metron: metronIssueHref(comic.metronIssueId, comic.metronIssueUrl),
+    metronId: digits(comic.metronIssueId),
     comicVine: comicVineIssueHref(comic.comicvineIssueId),
+    comicVineId: digits(comic.comicvineIssueId),
     gcd: gcdIssueHref(comic.gcdIssueId),
+    gcdId: digits(comic.gcdIssueId),
     gcdCover: gcdCoverHref(comic.gcdIssueId),
   };
 }
@@ -86,7 +92,16 @@ export function seriesCatalogLinks(
   );
   const metron = site ?? (seriesId ? `https://metron.cloud/series/${seriesId}/` : mostCommon(comics.map((comic) => metronSiteUrl(comic.metronSeriesUrl, "series"))));
   const volumeId = mostCommon(comics.map((comic) => digits(comic.comicvineSeriesId)));
-  return { metron, comicVine: comicVineVolumeHref(volumeId), gcd: gcdSeriesHref(mostCommon(comics.map((comic) => digits(comic.gcdSeriesId)))), gcdCover: null };
+  const gcdId = mostCommon(comics.map((comic) => digits(comic.gcdSeriesId)));
+  return {
+    metron,
+    metronId: seriesId,
+    comicVine: comicVineVolumeHref(volumeId),
+    comicVineId: volumeId,
+    gcd: gcdSeriesHref(gcdId),
+    gcdId,
+    gcdCover: null,
+  };
 }
 
 function metronHref(kind: "issue" | "series", id: string | null | undefined, siteUrl: string | null | undefined): string | null {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { linkMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
+import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 
@@ -14,6 +15,7 @@ type Props = {
   metronReady: boolean;
   comicVineReady: boolean;
   metronIssueId: string | null;
+  metronIssueUrl?: string | null;
   comicvineIssueId: string | null;
   gcdIssueId: string | null;
   canRepull: boolean;
@@ -46,15 +48,15 @@ export function MatchPanel(props: Props) {
       <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">Metron</dt>
-          <dd className="text-paper">{props.metronIssueId ? props.metronIssueId : "Not linked"}</dd>
+          <dd className="text-paper">{props.metronIssueId ? <CatalogIdLink kind="metron-issue" id={props.metronIssueId} siteUrl={props.metronIssueUrl} /> : "Not linked"}</dd>
         </div>
         <div>
           <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">Comic Vine</dt>
-          <dd className="text-paper">{props.comicvineIssueId ? props.comicvineIssueId : "Not linked"}</dd>
+          <dd className="text-paper">{props.comicvineIssueId ? <CatalogIdLink kind="comicvine-issue" id={props.comicvineIssueId} /> : "Not linked"}</dd>
         </div>
         <div>
           <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">GCD</dt>
-          <dd className="text-paper">{props.gcdIssueId ? props.gcdIssueId : "Not linked"}</dd>
+          <dd className="text-paper">{props.gcdIssueId ? <CatalogIdLink kind="gcd-issue" id={props.gcdIssueId} /> : "Not linked"}</dd>
         </div>
       </dl>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -83,7 +85,11 @@ export function MatchPanel(props: Props) {
           Re-pull cover
         </button>
       </div>
-      {message ? <p className={ok ? "mt-2 text-sm text-paper" : "mt-2 text-sm text-red-300"}>{message}</p> : null}
+      {message ? (
+        <p className={ok ? "mt-2 text-sm text-paper" : "mt-2 text-sm text-red-300"}>
+          <LinkedMessage text={message} />
+        </p>
+      ) : null}
       {open ? (
         <MatchSheet
           {...props}
@@ -227,7 +233,8 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         {selected ? (
           <div className="mt-4 rounded-2xl bg-ink/30 p-3 ring-1 ring-white/5">
             <p className="text-sm text-paper">
-              Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {source === "metron" ? "Metron" : source === "gcd" ? "GCD" : "Comic Vine"}. The other catalogs stay as they are.
+              Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {source === "metron" ? "Metron" : source === "gcd" ? "GCD" : "Comic Vine"}{" "}
+              <CatalogIdLink kind={source === "metron" ? "metron-issue" : source === "gcd" ? "gcd-issue" : "comicvine-issue"} id={selected.id} />. The other catalogs stay as they are.
             </p>
             {covers.length > 1 ? (
               <div className="mt-3 flex gap-2 overflow-x-auto">

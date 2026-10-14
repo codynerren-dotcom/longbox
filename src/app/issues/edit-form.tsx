@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition, type ReactNode } from "react";
 import { saveIssueAction } from "@/app/issues/actions";
 import { RefreshFromMetron } from "@/app/issues/refresh-metron";
+import { CatalogIdLink, catalogIdHref } from "@/components/catalog-id-link";
+import type { CatalogIdKind } from "@/lib/catalog-id-text";
 import {
   ISSUE_FIELDS,
   KEY_LEVELS,
@@ -15,12 +17,23 @@ import {
   type IssueFieldKey,
 } from "@/lib/issue-fields";
 
+const CATALOG_FIELD: Partial<Record<IssueFieldKey, CatalogIdKind>> = {
+  metronIssueId: "metron-issue",
+  metronSeriesId: "metron-series",
+  comicvineIssueId: "comicvine-issue",
+  comicvineSeriesId: "comicvine-series",
+  gcdIssueId: "gcd-issue",
+  gcdSeriesId: "gcd-series",
+};
+
 export function IssueEditor({
   draft,
   boxes,
   categories,
   companies,
   coverTools,
+  metronIssueUrl,
+  metronSeriesUrl,
   children,
 }: {
   draft: IssueDraft;
@@ -28,6 +41,8 @@ export function IssueEditor({
   categories: string[];
   companies: string[];
   coverTools?: ReactNode;
+  metronIssueUrl?: string | null;
+  metronSeriesUrl?: string | null;
   children: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -39,6 +54,8 @@ export function IssueEditor({
         categories={categories}
         companies={companies}
         coverTools={coverTools}
+        metronIssueUrl={metronIssueUrl}
+        metronSeriesUrl={metronSeriesUrl}
         onCancel={() => setEditing(false)}
         onSaved={() => setEditing(false)}
       />
@@ -67,6 +84,8 @@ function IssueForm({
   categories,
   companies,
   coverTools,
+  metronIssueUrl,
+  metronSeriesUrl,
   onCancel,
   onSaved,
 }: {
@@ -75,6 +94,8 @@ function IssueForm({
   categories: string[];
   companies: string[];
   coverTools?: ReactNode;
+  metronIssueUrl?: string | null;
+  metronSeriesUrl?: string | null;
   onCancel: () => void;
   onSaved: () => void;
 }) {
@@ -135,6 +156,7 @@ function IssueForm({
                 categories={categories}
                 companies={companies}
                 error={messageFor(field.key)}
+                siteUrl={field.key === "metronIssueId" ? metronIssueUrl : field.key === "metronSeriesId" ? metronSeriesUrl : null}
               />
             ))}
           </div>
@@ -176,6 +198,7 @@ function Field({
   categories,
   companies,
   error,
+  siteUrl,
 }: {
   field: IssueFieldDef;
   draft: IssueDraft;
@@ -183,20 +206,30 @@ function Field({
   categories: string[];
   companies: string[];
   error?: string;
+  siteUrl?: string | null;
 }) {
   const id = `edit-${field.key}`;
   const value = draft.values[field.key as IssueFieldKey];
+  const catalog = CATALOG_FIELD[field.key as IssueFieldKey];
+  const [live, setLive] = useState(value);
   const span = field.full ? "sm:col-span-2" : "";
   return (
-    <label className={`block ${span}`} htmlFor={id}>
-      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">{field.label}</span>
-      <span className="mt-1 block">{control(field, id, value, { boxes, categories, companies })}</span>
-      {error ? (
-        <span id={`${id}-error`} className="mt-1 block text-sm text-red-200">
-          {error}
+    <div className={span}>
+      <label className="block" htmlFor={id}>
+        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">{field.label}</span>
+        <span className="mt-1 block">{control(field, id, value, { boxes, categories, companies }, catalog ? setLive : undefined)}</span>
+        {error ? (
+          <span id={`${id}-error`} className="mt-1 block text-sm text-red-200">
+            {error}
+          </span>
+        ) : null}
+      </label>
+      {catalog && catalogIdHref(catalog, live, siteUrl) ? (
+        <span className="mt-1 block text-sm">
+          <CatalogIdLink kind={catalog} id={live} siteUrl={siteUrl} fallback={false} />
         </span>
       ) : null}
-    </label>
+    </div>
   );
 }
 
@@ -205,6 +238,7 @@ function control(
   id: string,
   value: string,
   lists: { boxes: string[]; categories: string[]; companies: string[] },
+  onValue?: (value: string) => void,
 ) {
   const described = `${id}-error`;
   if (field.kind === "bool") {
@@ -265,6 +299,7 @@ function control(
       required={field.key === "series" || field.kind === "quantity"}
       className="field min-h-11"
       aria-describedby={described}
+      onChange={onValue ? (event) => onValue(event.target.value) : undefined}
     />
   );
 }

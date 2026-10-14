@@ -33,11 +33,22 @@ describe("catalog links", () => {
     expect(gcdIssueHref("256114")).toBe("https://www.comics.org/issue/256114/");
     expect(gcdCoverHref("256114")).toBe("https://www.comics.org/issue/256114/cover/4/");
     expect(gcdIssueHref("0")).toBeNull();
-    expect(issueCatalogLinks({})).toEqual({ metron: null, comicVine: null, gcd: null, gcdCover: null });
+    expect(issueCatalogLinks({})).toEqual({
+      metron: null,
+      metronId: null,
+      comicVine: null,
+      comicVineId: null,
+      gcd: null,
+      gcdId: null,
+      gcdCover: null,
+    });
     expect(issueCatalogLinks({ metronIssueId: "50", comicvineIssueId: "9", gcdIssueId: "256114" })).toEqual({
       metron: "https://metron.cloud/issue/50/",
+      metronId: "50",
       comicVine: "https://comicvine.gamespot.com/issue/4000-9/",
+      comicVineId: "9",
       gcd: "https://www.comics.org/issue/256114/",
+      gcdId: "256114",
       gcdCover: "https://www.comics.org/issue/256114/cover/4/",
     });
   });
@@ -49,7 +60,18 @@ describe("catalog links", () => {
       { metronSeriesId: "99", comicvineSeriesId: "8" },
     ]);
     expect(links.metron).toBe("https://metron.cloud/series/saga-2012/");
+    expect(links.metronId).toBe("15");
     expect(links.comicVine).toBe("https://comicvine.gamespot.com/volume/4050-77/");
-    expect(seriesCatalogLinks([{}])).toEqual({ metron: null, comicVine: null, gcd: null, gcdCover: null });
+    expect(links.comicVineId).toBe("77");
+    expect(seriesCatalogLinks([{ gcdSeriesId: "99" }]).gcdId).toBe("99");
+    expect(seriesCatalogLinks([{}])).toEqual({
+      metron: null,
+      metronId: null,
+      comicVine: null,
+      comicVineId: null,
+      gcd: null,
+      gcdId: null,
+      gcdCover: null,
+    });
   });
 });

@@ -4,6 +4,7 @@ import { retryCoverAction } from "@/app/covers/actions";
 import { BackfillButton } from "@/app/covers/backfill-button";
 import { SuspectActions } from "@/app/covers/suspect-actions";
 import { CoverLiveStatus } from "@/components/backfill-status";
+import { CatalogIdLink } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { suspectMatchReason } from "@/lib/covers/edition";
@@ -51,6 +52,7 @@ export default async function CoversPage() {
         releaseYear: true,
         coverPrice: true,
         metronIssueId: true,
+        metronIssueUrl: true,
         gcdIssueId: true,
         manualLink: true,
       },
@@ -104,9 +106,19 @@ export default async function CoversPage() {
                   {comic.series} {formatIssue(comic.issueNo)}
                 </Link>
                 <p className="mt-1 text-sm text-mist">
-                  {[comic.publisher, comic.metronIssueId ? `Metron ${comic.metronIssueId}` : null, comic.gcdIssueId ? `GCD ${comic.gcdIssueId}` : null]
-                    .filter(Boolean)
-                    .join(" · ")}
+                  {comic.publisher ? <span>{comic.publisher}</span> : null}
+                  {comic.metronIssueId ? (
+                    <>
+                      {comic.publisher ? " · " : null}
+                      Metron <CatalogIdLink kind="metron-issue" id={comic.metronIssueId} siteUrl={comic.metronIssueUrl} />
+                    </>
+                  ) : null}
+                  {comic.gcdIssueId ? (
+                    <>
+                      {comic.publisher || comic.metronIssueId ? " · " : null}
+                      GCD <CatalogIdLink kind="gcd-issue" id={comic.gcdIssueId} />
+                    </>
+                  ) : null}
                 </p>
                 <p className="mt-2 text-sm text-paper">{comic.reason}</p>
                 <SuspectActions id={comic.id} manual={comic.manual} />

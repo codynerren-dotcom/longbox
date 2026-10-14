@@ -104,6 +104,8 @@ export const ISSUE_FIELDS = [
   { key: "metronSeriesId", label: "Metron series id", kind: "text", group: "Catalog", max: 20 },
   { key: "comicvineIssueId", label: "Comic Vine issue id", kind: "text", group: "Catalog", max: 20 },
   { key: "comicvineSeriesId", label: "Comic Vine series id", kind: "text", group: "Catalog", max: 20 },
+  { key: "gcdIssueId", label: "GCD issue id", kind: "text", group: "Catalog", max: 20 },
+  { key: "gcdSeriesId", label: "GCD series id", kind: "text", group: "Catalog", max: 20 },
 ] as const satisfies readonly IssueFieldDef[];
 
 export type IssueFieldKey = (typeof ISSUE_FIELDS)[number]["key"];

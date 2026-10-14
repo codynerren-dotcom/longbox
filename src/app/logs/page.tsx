@@ -1,7 +1,7 @@
+import { LinkedJson, LinkedMessage } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
 import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
-import { redactValue } from "@/lib/log/redact";
 import { logFiltersFrom, logQueryString, logWhere } from "@/lib/log/query";
 import { LOG_LEVELS, LOG_SOURCES, SOURCE_LABELS, type LogSource } from "@/lib/log/types";
 import { pruneLogs } from "@/lib/log/write";
@@ -121,11 +121,15 @@ export default async function LogsPage({
                 <span className={`text-xs font-semibold uppercase tracking-wide ${levelClass(row.level)}`}>{row.level}</span>
                 <span className="text-xs text-mist">{sourceLabel(row.source)}</span>
               </div>
-              <p className="mt-1 text-sm text-paper">{row.message}</p>
+              <p className="mt-1 text-sm text-paper">
+                <LinkedMessage text={row.message} />
+              </p>
               {row.details != null ? (
                 <details className="mt-2">
                   <summary className="cursor-pointer text-xs text-mist">Details</summary>
-                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-paper/80">{detailText(row.details)}</pre>
+                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-paper/80">
+                    <LinkedJson value={row.details} />
+                  </pre>
                 </details>
               ) : null}
             </li>
@@ -149,12 +153,4 @@ function levelClass(level: string): string {
 
 function labelize(value: string): string {
   return value.slice(0, 1).toUpperCase() + value.slice(1);
-}
-
-function detailText(details: unknown): string {
-  try {
-    return JSON.stringify(redactValue(details), null, 2);
-  } catch {
-    return "";
-  }
 }

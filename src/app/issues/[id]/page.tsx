@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { CoverControls } from "@/app/issues/cover-controls";
 import { IssueEditor } from "@/app/issues/edit-form";
 import { MatchPanel } from "@/app/issues/match-panel";
+import { CatalogIdLink } from "@/components/catalog-id-link";
 import { IssueCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
@@ -67,8 +68,12 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
     fact("Imprint", comic.imprint, sourced("imprint")),
     fact("Series year", comic.seriesYear ? String(comic.seriesYear) : null, sourced("seriesYear")),
     fact("Series volume", comic.seriesVolume ? String(comic.seriesVolume) : null, sourced("seriesVolume")),
-    fact("Metron issue", comic.metronIssueId, sourced("metronIssueId")),
-    fact("Metron series", comic.metronSeriesId, sourced("metronSeriesId")),
+    fact("Metron issue", comic.metronIssueId ? <CatalogIdLink kind="metron-issue" id={comic.metronIssueId} siteUrl={comic.metronIssueUrl} /> : null, sourced("metronIssueId")),
+    fact("Metron series", comic.metronSeriesId ? <CatalogIdLink kind="metron-series" id={comic.metronSeriesId} siteUrl={comic.metronSeriesUrl} /> : null, sourced("metronSeriesId")),
+    fact("Comic Vine issue", comic.comicvineIssueId ? <CatalogIdLink kind="comicvine-issue" id={comic.comicvineIssueId} /> : null, sourced("comicvineIssueId")),
+    fact("Comic Vine series", comic.comicvineSeriesId ? <CatalogIdLink kind="comicvine-series" id={comic.comicvineSeriesId} /> : null, sourced("comicvineSeriesId")),
+    fact("GCD issue", comic.gcdIssueId ? <CatalogIdLink kind="gcd-issue" id={comic.gcdIssueId} /> : null),
+    fact("GCD series", comic.gcdSeriesId ? <CatalogIdLink kind="gcd-series" id={comic.gcdSeriesId} /> : null),
   ].filter((item) => !isEmptyDisplay(item.value));
   const slabFacts = [
     fact("Grading company", comic.gradingCompany),
@@ -116,6 +121,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           metronReady={metronReady}
           comicVineReady={Boolean(settings.comicvine.apiKey)}
           metronIssueId={comic.metronIssueId}
+          metronIssueUrl={comic.metronIssueUrl}
           comicvineIssueId={comic.comicvineIssueId}
           gcdIssueId={comic.gcdIssueId}
           canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
@@ -123,6 +129,8 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
 
         <IssueEditor
           draft={toIssueDraft(comic)}
+          metronIssueUrl={comic.metronIssueUrl}
+          metronSeriesUrl={comic.metronSeriesUrl}
           boxes={boxes}
           categories={prefs.collection.keyCategories}
           companies={prefs.collection.gradingCompanies}
