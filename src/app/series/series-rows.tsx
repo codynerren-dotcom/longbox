@@ -1,162 +1,61 @@
 import Link from "next/link";
-import { addMissingAction } from "@/app/wishlist/actions";
 import { CoverTile } from "@/components/cover-tile";
 import { paletteFor } from "@/lib/visual";
 import type { SeriesRow } from "@/lib/series-view";
 
 export type DisplayRow = SeriesRow & { date?: string; image?: string | null };
 
-export function SeriesList({
-  series,
-  publisher,
-  seriesId,
-  rows,
-}: {
-  series: string;
-  publisher: string;
-  seriesId: string;
-  rows: DisplayRow[];
-}) {
+export function SeriesList({ series, rows }: { series: string; rows: DisplayRow[] }) {
   return (
     <ul className="flex flex-col gap-2">
-      {rows.map((row) =>
-        row.kind === "missing" ? (
-          <MissingRow key={`missing-${row.issueNo}`} series={series} publisher={publisher} seriesId={seriesId} issueNo={row.issueNo} wishlisted={row.wishlisted} />
-        ) : (
-          <li key={row.comic.id}>
-            <Link
-              href={`/issues/${row.comic.id}`}
-              className="flex items-center gap-3 rounded-2xl bg-panel/85 px-3 py-2 ring-1 ring-white/5 hover:ring-comic/40"
-            >
-              <Thumb title={series} image={row.image ?? null} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate font-semibold text-paper">{series}</span>
-                  {row.key ? <KeyBadge /> : null}
-                </span>
-                {row.description ? <span className="mt-0.5 block truncate text-sm text-mist">{row.description}</span> : null}
+      {rows.map((row) => (
+        <li key={row.comic.id}>
+          <Link
+            href={`/issues/${row.comic.id}`}
+            className="flex items-center gap-3 rounded-2xl bg-panel/85 px-3 py-2 ring-1 ring-white/5 hover:ring-comic/40"
+          >
+            <Thumb title={series} image={row.image ?? null} />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1.5">
+                <span className="truncate font-semibold text-paper">{series}</span>
+                {row.key ? <KeyBadge /> : null}
               </span>
-              <span className="flex shrink-0 items-center gap-2">
-                <span className="flex flex-col items-end">
-                  <IssueBadge badge={row.badge} />
-                  {row.date ? <span className="mt-1 text-[11px] text-mist">{row.date}</span> : null}
-                </span>
-                <OwnedMark read={row.comic.read} />
+              {row.description ? <span className="mt-0.5 block truncate text-sm text-mist">{row.description}</span> : null}
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="flex flex-col items-end">
+                <IssueBadge badge={row.badge} />
+                {row.date ? <span className="mt-1 text-[11px] text-mist">{row.date}</span> : null}
               </span>
-            </Link>
-          </li>
-        ),
-      )}
+              <OwnedMark read={row.comic.read} />
+            </span>
+          </Link>
+        </li>
+      ))}
     </ul>
   );
 }
 
-export function SeriesGrid({
-  series,
-  publisher,
-  seriesId,
-  rows,
-}: {
-  series: string;
-  publisher: string;
-  seriesId: string;
-  rows: DisplayRow[];
-}) {
+export function SeriesGrid({ series, rows }: { series: string; rows: DisplayRow[] }) {
   return (
     <ul className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
-      {rows.map((row) =>
-        row.kind === "missing" ? (
-          <li key={`missing-${row.issueNo}`} className="min-w-0 overflow-hidden">
-            <div className="missing-slot flex aspect-[2/3] flex-col items-center justify-center rounded-xl border border-dashed border-white/15 text-center">
-              <span className="text-sm font-semibold text-mist">#{row.issueNo}</span>
-              <span className="mt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-mist">Missing</span>
-            </div>
-            <WishlistButton
-              series={series}
-              publisher={publisher}
-              seriesId={seriesId}
-              issueNo={row.issueNo}
-              wishlisted={row.wishlisted}
-              className="mt-1 w-full truncate"
-            />
-          </li>
-        ) : (
-          <li key={row.comic.id} className="min-w-0 overflow-hidden">
-            <CoverTile
-              href={`/issues/${row.comic.id}`}
-              title={series}
-              issue={row.badge.replace(/^#/, "")}
-              coverUrl={row.comic.coverUrl}
-              keyLevel={row.comic.keyLevel}
-              slab={row.comic.rawOrSlabbed === "Slabbed"}
-            />
-            <p className="mt-1 truncate text-xs font-semibold text-paper">{row.badge}</p>
-            <p className="truncate text-[11px] text-mist" title={row.description ?? undefined}>
-              {row.description || (row.letter ? `Cover ${row.letter}` : "\u00a0")}
-            </p>
-          </li>
-        ),
-      )}
+      {rows.map((row) => (
+        <li key={row.comic.id} className="min-w-0 overflow-hidden">
+          <CoverTile
+            href={`/issues/${row.comic.id}`}
+            title={series}
+            issue={row.badge.replace(/^#/, "")}
+            coverUrl={row.comic.coverUrl}
+            keyLevel={row.comic.keyLevel}
+            slab={row.comic.rawOrSlabbed === "Slabbed"}
+          />
+          <p className="mt-1 truncate text-xs font-semibold text-paper">{row.badge}</p>
+          <p className="truncate text-[11px] text-mist" title={row.description ?? undefined}>
+            {row.description || (row.letter ? `Cover ${row.letter}` : "\u00a0")}
+          </p>
+        </li>
+      ))}
     </ul>
-  );
-}
-
-function MissingRow({
-  series,
-  publisher,
-  seriesId,
-  issueNo,
-  wishlisted,
-}: {
-  series: string;
-  publisher: string;
-  seriesId: string;
-  issueNo: string;
-  wishlisted: boolean;
-}) {
-  return (
-    <li className="flex items-center gap-3 rounded-2xl bg-panel/40 px-3 py-2 ring-1 ring-white/5">
-      <span className="flex h-[4.5rem] w-12 shrink-0 items-center justify-center rounded-md border border-dashed border-white/15 text-[10px] font-semibold uppercase tracking-wide text-mist">
-        #{issueNo}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-semibold text-paper/45">{series}</span>
-        <span className="text-sm text-mist">Missing</span>
-      </span>
-      <WishlistButton series={series} publisher={publisher} seriesId={seriesId} issueNo={issueNo} wishlisted={wishlisted} />
-    </li>
-  );
-}
-
-function WishlistButton({
-  series,
-  publisher,
-  seriesId,
-  issueNo,
-  wishlisted,
-  className,
-}: {
-  series: string;
-  publisher: string;
-  seriesId: string;
-  issueNo: string;
-  wishlisted: boolean;
-  className?: string;
-}) {
-  return (
-    <form action={addMissingAction}>
-      <input type="hidden" name="series" value={series} />
-      <input type="hidden" name="publisher" value={publisher} />
-      <input type="hidden" name="seriesId" value={seriesId} />
-      <input type="hidden" name="issues" value={issueNo} />
-      <button
-        type="submit"
-        disabled={wishlisted}
-        className={`rounded-full border border-white/15 px-3 py-1 text-xs font-semibold text-paper disabled:text-mist ${className ?? ""}`}
-      >
-        {wishlisted ? "On wishlist" : "Add to wishlist"}
-      </button>
-    </form>
   );
 }
 

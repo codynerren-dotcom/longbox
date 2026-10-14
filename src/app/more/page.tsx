@@ -5,7 +5,7 @@ import { getViewer } from "@/lib/auth";
 export const metadata = { title: "More" };
 
 const links = [
-  { href: "/series", label: "Series", detail: "Owned and missing issues" },
+  { href: "/series", label: "Series", detail: "Issues you own" },
   { href: "/boxes", label: "Storage boxes", detail: "Where each copy lives" },
   { href: "/wishlist", label: "Wishlist", detail: "Gaps you still want" },
   { href: "/import", label: "Import CLZ", detail: "Upload a 66-column export" },

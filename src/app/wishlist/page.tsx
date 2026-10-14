@@ -15,7 +15,7 @@ export default async function WishlistPage() {
       <PageHeader kicker="Still hunting" title="Wishlist" />
       {items.length === 0 ? (
         <p className="rounded-2xl bg-panel px-4 py-8 text-center text-mist">
-          No wishes yet. Open a series and add the missing issues.
+          No wishes yet.
         </p>
       ) : (
         <ul className="divide-y divide-white/5 overflow-hidden rounded-2xl bg-panel ring-1 ring-white/5">

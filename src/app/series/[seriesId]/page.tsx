@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { AddSeriesIssue } from "@/app/series/add-issue";
 import { SeriesGrid, SeriesList, type DisplayRow } from "@/app/series/series-rows";
 import { SeriesShelf } from "@/app/series/series-shelf";
-import { addMissingAction } from "@/app/wishlist/actions";
 import { SeriesCatalogLinks } from "@/components/catalog-links";
 import { prisma } from "@/lib/db";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -36,16 +35,8 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
   const comics = loaded.map(toCopy);
   const series = comics[0].series;
   const publisher = majorityPublisher(comics);
-  const wishlist = await prisma.wishlistItem.findMany({
-    where: { series, OR: [{ publisher }, { publisher: "" }] },
-  });
-  const run = buildSeriesRows(
-    comics,
-    wishlist.map((item) => item.issueNo),
-  );
   const when = dateOptions(prefs);
-  const rows: DisplayRow[] = run.rows.map((row) => {
-    if (row.kind === "missing") return row;
+  const rows: DisplayRow[] = buildSeriesRows(comics).map((row) => {
     const release = row.comic.releaseDate ? formatDate(row.comic.releaseDate, when) : "";
     return {
       ...row,
@@ -80,39 +71,13 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
           {have ? <span className="text-mist">{have}</span> : null}
         </div>
         <p className="mt-2 text-sm text-mist">
-          {[
-            years,
-            `${owned} owned`,
-            run.missing.length > 0 ? `${run.missing.length} missing` : null,
-            spend ? `Cost basis ${formatMoney(spend, prefs.pricing.currency)}` : null,
-          ]
+          {[years, `${owned} owned`, spend ? `Cost basis ${formatMoney(spend, prefs.pricing.currency)}` : null]
             .filter(Boolean)
             .join(" · ")}
         </p>
         <SeriesCatalogLinks comics={loaded} />
       </header>
-      {run.collapsed ? (
-        <div className="mb-4 flex flex-wrap items-center gap-3">
-          <p className="max-w-xl text-sm text-mist">
-            This span is too wide to list every gap. Owned issues are shown, and the missing count is in the header.
-          </p>
-          {run.missing.length > 0 ? (
-            <form action={addMissingAction}>
-              <input type="hidden" name="series" value={series} />
-              <input type="hidden" name="publisher" value={publisher} />
-              <input type="hidden" name="seriesId" value={decoded} />
-              <input type="hidden" name="issues" value={run.missing.join(",")} />
-              <button type="submit" className="rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink">
-                Add missing to wishlist
-              </button>
-            </form>
-          ) : null}
-        </div>
-      ) : null}
-      <SeriesShelf
-        list={<SeriesList series={series} publisher={publisher} seriesId={decoded} rows={rows} />}
-        grid={<SeriesGrid series={series} publisher={publisher} seriesId={decoded} rows={rows} />}
-      />
+      <SeriesShelf list={<SeriesList series={series} rows={rows} />} grid={<SeriesGrid series={series} rows={rows} />} />
     </div>
   );
 }

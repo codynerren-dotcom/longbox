@@ -29,13 +29,7 @@ export type OwnedSeriesRow = {
   key: boolean;
 };
 
-export type MissingSeriesRow = {
-  kind: "missing";
-  issueNo: string;
-  wishlisted: boolean;
-};
-
-export type SeriesRow = OwnedSeriesRow | MissingSeriesRow;
+export type SeriesRow = OwnedSeriesRow;
 
 const SINGLE_LETTER = /^[A-Za-z]$/;
 const LABELED_LETTER = /^(?:cover|variant|var\.?)\s+([A-Za-z])$/i;
@@ -194,52 +188,7 @@ function ownedRow(comic: SeriesCopy): OwnedSeriesRow {
   };
 }
 
-/**
- * One row per copy, sorted by issue number then variant letter.
- * Missing integers between the lowest and highest owned number are interleaved.
- * A span wider than `cap` keeps the missing count but does not emit a row per gap.
- */
-export function buildSeriesRows(comics: SeriesCopy[], wishlistIssueNos: string[], cap = 150) {
-  const wish = new Set(wishlistIssueNos);
-  const sorted = comics.slice().sort(compareCopies);
-  const numbers = sorted
-    .map((comic) => issueNumberValue(comic.issueNo))
-    .filter((value): value is number => value != null);
-
-  if (numbers.length === 0) {
-    return { rows: sorted.map(ownedRow), missing: [] as string[], collapsed: false };
-  }
-
-  const min = Math.min(...numbers);
-  const max = Math.max(...numbers);
-  const ownedNumbers = new Set(numbers);
-  const missing: string[] = [];
-  for (let issue = min; issue <= max; issue += 1) {
-    if (!ownedNumbers.has(issue)) missing.push(String(issue));
-  }
-
-  if (max - min + 1 > cap) {
-    return { rows: sorted.map(ownedRow), missing, collapsed: true };
-  }
-
-  const rows: SeriesRow[] = [];
-  let cursor = 0;
-  for (let issue = min; issue <= max; issue += 1) {
-    while (cursor < sorted.length) {
-      const comic = sorted[cursor];
-      const value = issueNumberValue(comic.issueNo);
-      if (value == null || value > issue) break;
-      rows.push(ownedRow(comic));
-      cursor += 1;
-    }
-    if (!ownedNumbers.has(issue)) {
-      const issueNo = String(issue);
-      rows.push({ kind: "missing", issueNo, wishlisted: wish.has(issueNo) });
-    }
-  }
-  while (cursor < sorted.length) {
-    rows.push(ownedRow(sorted[cursor]));
-    cursor += 1;
-  }
-  return { rows, missing, collapsed: false };
+/** One owned copy per row, sorted by issue number then variant letter. Gaps are not included. */
+export function buildSeriesRows(comics: SeriesCopy[]): SeriesRow[] {
+  return comics.slice().sort(compareCopies).map(ownedRow);
 }

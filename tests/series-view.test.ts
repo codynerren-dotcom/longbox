@@ -52,24 +52,18 @@ describe("series rows", () => {
     expect(issueBadge("10", "A")).toBe("#10A");
   });
 
-  it("lists one row per copy, sorted by issue number then variant letter", () => {
-    const { rows, missing, collapsed } = buildSeriesRows(
-      [
-        copy({ id: "r", issueNo: "1", variant: "R", variantDescription: "Retailer incentive" }),
-        copy({ id: "a2", issueNo: "1", variant: "A", variantDescription: "Second printing" }),
-        copy({ id: "g", issueNo: "1", variant: "G", variantDescription: "2-Per-Store Premiere Variant" }),
-        copy({ id: "a1", issueNo: "1", variant: "A", variantDescription: "Regular Inhyuk Lee Cover", keyLevel: "Major" }),
-        copy({ id: "two", issueNo: "2", variant: null, variantDescription: null }),
-        copy({ id: "ten", issueNo: "10", variant: "A" }),
-      ],
-      [],
-    );
+  it("lists only owned copies, sorted by issue number then variant letter", () => {
+    const rows = buildSeriesRows([
+      copy({ id: "r", issueNo: "1", variant: "R", variantDescription: "Retailer incentive" }),
+      copy({ id: "a2", issueNo: "1", variant: "A", variantDescription: "Second printing" }),
+      copy({ id: "g", issueNo: "1", variant: "G", variantDescription: "2-Per-Store Premiere Variant" }),
+      copy({ id: "a1", issueNo: "1", variant: "A", variantDescription: "Regular Inhyuk Lee Cover", keyLevel: "Major" }),
+      copy({ id: "two", issueNo: "2", variant: null, variantDescription: null }),
+      copy({ id: "ten", issueNo: "10", variant: "A" }),
+    ]);
 
-    expect(collapsed).toBe(false);
-    expect(missing).toEqual(["3", "4", "5", "6", "7", "8", "9"]);
-    const owned = rows.filter((row) => row.kind === "owned");
-    expect(owned.map((row) => row.badge)).toEqual(["#1A", "#1A", "#1G", "#1R", "#2", "#10A"]);
-    expect(owned.map((row) => (row.kind === "owned" ? row.description : null))).toEqual([
+    expect(rows.map((row) => row.badge)).toEqual(["#1A", "#1A", "#1G", "#1R", "#2", "#10A"]);
+    expect(rows.map((row) => row.description)).toEqual([
       "Regular Inhyuk Lee Cover",
       "Second printing",
       "2-Per-Store Premiere Variant",
@@ -77,48 +71,23 @@ describe("series rows", () => {
       null,
       null,
     ]);
-    expect(owned[0]?.key).toBe(true);
-    expect(rows.map((row) => (row.kind === "owned" ? row.badge : `missing ${row.issueNo}`))).toEqual([
-      "#1A",
-      "#1A",
-      "#1G",
-      "#1R",
-      "#2",
-      "missing 3",
-      "missing 4",
-      "missing 5",
-      "missing 6",
-      "missing 7",
-      "missing 8",
-      "missing 9",
-      "#10A",
-    ]);
-  });
-
-  it("marks wishlisted gaps and keeps a letter-less copy ahead of lettered ones", () => {
-    const { rows } = buildSeriesRows(
-      [
-        copy({ id: "letter", issueNo: "1", variant: "A" }),
-        copy({ id: "plain", issueNo: "1", variant: null, variantDescription: "Regular Inhyuk Lee Cover" }),
-        copy({ id: "three", issueNo: "3" }),
-      ],
-      ["2"],
-    );
-    expect(rows.map((row) => (row.kind === "owned" ? row.badge : row.issueNo))).toEqual(["#1", "#1A", "2", "#3"]);
-    expect(rows[0]).toMatchObject({ description: "Regular Inhyuk Lee Cover" });
-    expect(rows[2]).toMatchObject({ kind: "missing", wishlisted: true });
-  });
-
-  it("does not emit a row for every gap when the span is wider than the cap", () => {
-    const { rows, missing, collapsed } = buildSeriesRows(
-      [copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })],
-      [],
-      150,
-    );
-    expect(collapsed).toBe(true);
-    expect(rows).toHaveLength(2);
-    expect(missing).toHaveLength(398);
+    expect(rows[0]?.key).toBe(true);
     expect(rows.every((row) => row.kind === "owned")).toBe(true);
+  });
+
+  it("keeps a letter-less copy ahead of lettered ones and skips numbers you do not own", () => {
+    const rows = buildSeriesRows([
+      copy({ id: "letter", issueNo: "1", variant: "A" }),
+      copy({ id: "plain", issueNo: "1", variant: null, variantDescription: "Regular Inhyuk Lee Cover" }),
+      copy({ id: "three", issueNo: "3" }),
+    ]);
+    expect(rows.map((row) => row.badge)).toEqual(["#1", "#1A", "#3"]);
+    expect(rows[0]).toMatchObject({ description: "Regular Inhyuk Lee Cover" });
+  });
+
+  it("does not insert a row for every number in a wide span", () => {
+    const rows = buildSeriesRows([copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })]);
+    expect(rows.map((row) => row.badge)).toEqual(["#1", "#400"]);
   });
 
   it("summarizes the run for the header strip", () => {
@@ -146,7 +115,11 @@ describe("series rows", () => {
     const rows = readFileSync("src/app/series/series-rows.tsx", "utf8");
     expect(page).not.toMatch(/copies/);
     expect(page).not.toMatch(/owned\.map/);
+    expect(page).not.toMatch(/[Mm]issing/);
+    expect(page).not.toMatch(/dashed/);
     expect(rows).not.toMatch(/copies/);
+    expect(rows).not.toMatch(/[Mm]issing/);
+    expect(rows).not.toMatch(/dashed/);
     expect(rows).toMatch(/min-w-0/);
     expect(rows).toMatch(/truncate/);
   });
