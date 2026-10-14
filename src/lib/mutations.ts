@@ -62,6 +62,7 @@ export async function addComics(items: AddComicInput[], owner: string) {
         issueSort: /^\d+$/.test(issueNo) ? Number.parseInt(issueNo, 10) : null,
         publisher: item.publisher?.trim() || null,
         variant: item.variant?.trim() || null,
+        variantDescription: item.variantDescription?.trim() || null,
         barcode,
         coverUrl: safeImageUrl(item.coverUrl),
         coverDate: item.coverDate ?? null,

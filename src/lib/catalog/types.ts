@@ -25,6 +25,7 @@ export type AddComicInput = {
   barcode?: string | null;
   plot?: string | null;
   variant?: string | null;
+  variantDescription?: string | null;
   source: CatalogSource | "manual";
   externalId?: string | null;
   coreSeriesId?: string | null;
