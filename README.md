@@ -103,7 +103,7 @@ The same job is the **Backfill covers** button on the Cover backfill page.
 
 A value saved in the database overrides the environment variable. Clear removes the database value and the environment is the fallback again.
 
-Saved secrets are encrypted with AES-GCM. The key is `LONGBOX_SECRET_KEY`, or a key file written on the data volume the first time that variable is empty. The browser only sees a mask, plus Replace and Clear. Test connection checks Metron, Comic Vine, and eBay without returning the saved secret.
+Passwords, API keys, and client secrets are encrypted with AES-GCM. The key is `LONGBOX_SECRET_KEY`, or a key file written on the data volume the first time that variable is empty. Those fields show a mask, plus Replace and Clear. Usernames and client ids stay visible, including the saved value. Test connection checks Metron, Comic Vine, and eBay without returning a saved secret.
 
 ## ZimaOS
 

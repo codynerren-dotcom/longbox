@@ -2,17 +2,16 @@
 
 import { revalidatePath } from "next/cache";
 import { probeComicVine, probeEbay, probeMetron, type ProbeResult } from "@/lib/settings/probe";
-import { applyCredentialOverrides, isSecretKey, SECRET_KEYS, type SecretKey } from "@/lib/settings/resolve";
-import { clearSecret, getSettings, saveSecret, setSeedOnEmpty } from "@/lib/settings/service";
+import { applyCredentialOverrides, CREDENTIAL_KEYS, isCredentialKey, isPlainKey, type CredentialKey } from "@/lib/settings/resolve";
+import { clearSecret, getSettings, savePlain, saveSecret, setSeedOnEmpty } from "@/lib/settings/service";
 
 export type SettingsActionState = { status: "idle" | "ok" | "error"; message: string };
 
 export async function saveSettingsAction(_prev: SettingsActionState, formData: FormData): Promise<SettingsActionState> {
   try {
-    const keys: SecretKey[] = ["metron.username", "metron.password", "comicvine.apiKey", "ebay.clientId", "ebay.clientSecret"];
-    for (const key of keys) {
+    for (const key of CREDENTIAL_KEYS) {
       const value = String(formData.get(key) ?? "");
-      if (value.trim()) await saveSecret(key, value);
+      if (value.trim()) await saveCredential(key, value);
     }
     await setSeedOnEmpty(formData.get("seedOnEmpty") === "on");
     revalidatePath("/settings");
@@ -24,7 +23,7 @@ export async function saveSettingsAction(_prev: SettingsActionState, formData: F
 
 export async function clearSettingAction(formData: FormData): Promise<void> {
   const key = String(formData.get("key") ?? "");
-  if (!isSecretKey(key)) return;
+  if (!isCredentialKey(key)) return;
   await clearSecret(key);
   revalidatePath("/settings");
 }
@@ -34,10 +33,10 @@ export type ProbeActionState = ProbeResult & { service: string; status: "idle" |
 export async function saveServiceAction(_prev: SettingsActionState, formData: FormData): Promise<SettingsActionState> {
   try {
     let wrote = 0;
-    for (const key of SECRET_KEYS) {
+    for (const key of CREDENTIAL_KEYS) {
       const value = String(formData.get(key) ?? "");
       if (!value.trim()) continue;
-      await saveSecret(key, value);
+      await saveCredential(key, value);
       wrote += 1;
     }
     revalidatePath("/settings");
@@ -61,9 +60,14 @@ export async function testConnectionAction(_prev: ProbeActionState, formData: Fo
   return { ...result, service, status: "done" };
 }
 
-function typedSecrets(formData: FormData): Partial<Record<SecretKey, string>> {
-  const fields: Partial<Record<SecretKey, string>> = {};
-  for (const key of SECRET_KEYS) {
+async function saveCredential(key: CredentialKey, value: string): Promise<void> {
+  if (isPlainKey(key)) await savePlain(key, value);
+  else await saveSecret(key, value);
+}
+
+function typedSecrets(formData: FormData): Partial<Record<CredentialKey, string>> {
+  const fields: Partial<Record<CredentialKey, string>> = {};
+  for (const key of CREDENTIAL_KEYS) {
     const value = formData.get(key);
     if (typeof value === "string" && value.trim()) fields[key] = value.trim();
   }

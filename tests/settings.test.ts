@@ -112,14 +112,39 @@ describe("settings resolution", () => {
     expect(JSON.stringify(view)).not.toContain("db-pass");
     expect(JSON.stringify(view)).not.toContain("env-pass");
     expect(JSON.stringify(view)).not.toContain("env-secret");
-    expect(view.metron.password).toEqual({ source: "database", mask: SECRET_MASK });
-    expect(view.metron.username).toEqual({ source: "environment", mask: SECRET_MASK });
+    expect(view.metron.password).toEqual({ kind: "secret", source: "database", value: null, mask: SECRET_MASK });
+    expect(view.metron.username).toEqual({ kind: "plain", source: "environment", value: "env-user", mask: null });
+    expect(view.ebay.clientId).toEqual({ kind: "plain", source: "environment", value: "env-id", mask: null });
+    expect(JSON.stringify(view)).toContain("env-user");
+    expect(JSON.stringify(view)).toContain("env-id");
+    expect(JSON.stringify(view)).not.toContain("env-secret");
 
     await service.clearSecret("metron.password");
     const cleared = await service.get();
     expect(cleared.metron.password).toBe("env-pass");
     expect(cleared.metron.passwordSource).toBe("environment");
     expect(repo.rows.some((row) => row.secret?.includes("db-pass"))).toBe(false);
+  });
+
+  it("shows a saved username and client id in plain text and keeps secrets encrypted", async () => {
+    const repo = memoryRepo();
+    const service = createSettingsService({ repo, key, env: env() });
+    await service.savePlain("metron.username", "cody");
+    await service.savePlain("ebay.clientId", "ebay-app");
+    await service.saveSecret("metron.password", "hidden-pass");
+    const username = repo.rows.find((row) => row.key === "metron.username");
+    const clientId = repo.rows.find((row) => row.key === "ebay.clientId");
+    expect(username).toMatchObject({ secret: null, plain: "cody" });
+    expect(clientId).toMatchObject({ secret: null, plain: "ebay-app" });
+    const view = await service.view();
+    expect(view.metron.username).toEqual({ kind: "plain", source: "database", value: "cody", mask: null });
+    expect(view.ebay.clientId).toEqual({ kind: "plain", source: "database", value: "ebay-app", mask: null });
+    expect(view.metron.password.kind).toBe("secret");
+    expect(JSON.stringify(view)).not.toContain("hidden-pass");
+
+    const legacy = memoryRepo([{ key: "metron.username", secret: encryptSecret("legacy-user", key), plain: null }]);
+    const migrated = createSettingsService({ repo: legacy, key, env: env() });
+    expect((await migrated.view()).metron.username).toEqual({ kind: "plain", source: "database", value: "legacy-user", mask: null });
   });
 
   it("stores secrets as ciphertext", async () => {

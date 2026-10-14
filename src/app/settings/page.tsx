@@ -61,7 +61,7 @@ export default async function SettingsPage() {
       {status?.running ? <meta httpEquiv="refresh" content="5" /> : null}
       <PageHeader kicker="Library" title="Settings" />
       <p className="text-sm leading-relaxed text-mist">
-        Import, covers, pricing, and how the shelf looks. Credentials stay encrypted and are not sent back to the browser.
+        Import, covers, pricing, and how the shelf looks. Passwords and API keys stay encrypted. Usernames and client ids are shown in the form.
       </p>
 
       <Panel title="Import / Export" detail="Upload a CLZ CSV, download the shelf, or take a database backup. The backup keeps settings encrypted.">

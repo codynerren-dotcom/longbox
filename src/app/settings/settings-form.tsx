@@ -69,8 +69,13 @@ function CredentialCard({
   function markDirty() {
     const form = formRef.current;
     if (!form) return;
-    const typed = [...form.querySelectorAll("input")].some((input) => input instanceof HTMLInputElement && input.type === "password" && input.value.trim().length > 0);
-    setDirty(typed);
+    const changed = inputs.some((input) => {
+      const element = form.elements.namedItem(input.name);
+      if (!(element instanceof HTMLInputElement)) return false;
+      if (input.field.kind === "plain") return element.value.trim() !== input.field.value;
+      return element.type === "password" && element.value.trim().length > 0;
+    });
+    setDirty(changed);
   }
 
   function finishSave(result: SettingsActionState) {
@@ -85,9 +90,13 @@ function CredentialCard({
   return (
     <form ref={formRef} onSubmit={(event) => event.preventDefault()} onInput={markDirty}>
       <Panel title={title} detail={detail}>
-        {inputs.map((input) => (
-          <SecretField key={`${input.name}:${input.field.source}:${generation}`} name={input.name} label={input.label} field={input.field} />
-        ))}
+        {inputs.map((input) =>
+          input.field.kind === "plain" ? (
+            <PlainField key={`${input.name}:${input.field.source}:${input.field.value}:${generation}`} name={input.name} label={input.label} field={input.field} />
+          ) : (
+            <SecretField key={`${input.name}:${input.field.source}:${generation}`} name={input.name} label={input.label} field={input.field} />
+          ),
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -155,7 +164,22 @@ function ShelfCard({ enabled, source }: { enabled: boolean; source: "database" |
   );
 }
 
-function SecretField({ name, label, field }: { name: string; label: string; field: FieldView }) {
+function PlainField({ name, label, field }: { name: string; label: string; field: Extract<FieldView, { kind: "plain" }> }) {
+  return (
+    <div className="space-y-2">
+      <label className="block space-y-1 text-sm text-paper">
+        <span>{label}</span>
+        <input name={name} type="text" defaultValue={field.value} autoComplete="off" spellCheck={false} className="field" aria-label={label} />
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-mist">{field.source === "database" ? "Saved" : field.source === "environment" ? "Using the environment" : "Not saved"}</span>
+        {field.source === "database" ? <ClearButton name={name} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function SecretField({ name, label, field }: { name: string; label: string; field: Extract<FieldView, { kind: "secret" }> }) {
   const [replacing, setReplacing] = useState(field.source === "unset");
   return (
     <div className="space-y-2">

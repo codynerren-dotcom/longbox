@@ -3,6 +3,7 @@ import { decryptSecret, encryptSecret } from "@/lib/settings/crypto";
 import { ensureSecretKey } from "@/lib/settings/key";
 import { PREFERENCES_KEY, normalizePreferences, parsePreferences, type ShelfPreferences } from "@/lib/settings/preferences";
 import {
+  isPlainKey,
   isSecretKey,
   readEnv,
   SEED_ON_EMPTY_KEY,
@@ -10,6 +11,8 @@ import {
   toSettingsView,
   type EnvSnapshot,
   type IntegrationConfig,
+  type CredentialKey,
+  type PlainKey,
   type SecretKey,
   type SettingsView,
   type StoredSettings,
@@ -39,7 +42,13 @@ export function createSettingsService(deps: { repo: SettingsRepository; key: Buf
       if (trimmed.length > MAX_SECRET) throw new Error("That value is too long.");
       await deps.repo.upsert({ key, secret: encryptSecret(trimmed, deps.key), plain: null });
     },
-    async clearSecret(key: SecretKey): Promise<void> {
+    async savePlain(key: PlainKey, value: string): Promise<void> {
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      if (trimmed.length > MAX_SECRET) throw new Error("That value is too long.");
+      await deps.repo.upsert({ key, secret: null, plain: trimmed });
+    },
+    async clearSecret(key: CredentialKey): Promise<void> {
       await deps.repo.delete(key);
     },
     async setSeedOnEmpty(enabled: boolean): Promise<void> {
@@ -67,6 +76,12 @@ async function readStored(repo: SettingsRepository, key: Buffer): Promise<Stored
   for (const row of rows) {
     if (row.key === SEED_ON_EMPTY_KEY) {
       seedOnEmpty = row.plain;
+      continue;
+    }
+    if (isPlainKey(row.key)) {
+      const plain = row.plain?.trim() ?? "";
+      if (plain) secrets[row.key] = plain;
+      else if (row.secret) secrets[row.key] = decryptSecret(row.secret, key);
       continue;
     }
     if (!isSecretKey(row.key) || !row.secret) continue;
@@ -112,7 +127,11 @@ export async function saveSecret(key: SecretKey, value: string): Promise<void> {
   await liveService().saveSecret(key, value);
 }
 
-export async function clearSecret(key: SecretKey): Promise<void> {
+export async function savePlain(key: PlainKey, value: string): Promise<void> {
+  await liveService().savePlain(key, value);
+}
+
+export async function clearSecret(key: CredentialKey): Promise<void> {
   await liveService().clearSecret(key);
 }
 

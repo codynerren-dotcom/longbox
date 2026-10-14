@@ -1,6 +1,10 @@
-export const SECRET_KEYS = ["metron.username", "metron.password", "comicvine.apiKey", "ebay.clientId", "ebay.clientSecret"] as const;
+export const PLAIN_KEYS = ["metron.username", "ebay.clientId"] as const;
+export const SECRET_KEYS = ["metron.password", "comicvine.apiKey", "ebay.clientSecret"] as const;
+export const CREDENTIAL_KEYS = [...PLAIN_KEYS, ...SECRET_KEYS] as const;
 
+export type PlainKey = (typeof PLAIN_KEYS)[number];
 export type SecretKey = (typeof SECRET_KEYS)[number];
+export type CredentialKey = (typeof CREDENTIAL_KEYS)[number];
 
 export const SEED_ON_EMPTY_KEY = "seedOnEmpty";
 
@@ -20,16 +24,15 @@ export type EnvSnapshot = {
 };
 
 export type StoredSettings = {
-  secrets: Partial<Record<SecretKey, string | null>>;
+  secrets: Partial<Record<CredentialKey, string | null>>;
   seedOnEmpty: string | null;
 };
 
 export type ResolvedString = { value: string; source: Exclude<ValueSource, "unset"> } | { value: null; source: "unset" };
 
-export type FieldView = {
-  source: ValueSource;
-  mask: typeof SECRET_MASK | null;
-};
+export type FieldView =
+  | { kind: "plain"; source: ValueSource; value: string; mask: null }
+  | { kind: "secret"; source: ValueSource; value: null; mask: typeof SECRET_MASK | null };
 
 export type SettingsView = {
   metron: { username: FieldView; password: FieldView };
@@ -59,8 +62,16 @@ export type IntegrationConfig = {
   seedOnEmpty: { enabled: boolean; source: "database" | "environment" };
 };
 
+export function isPlainKey(value: string): value is PlainKey {
+  return (PLAIN_KEYS as readonly string[]).includes(value);
+}
+
 export function isSecretKey(value: string): value is SecretKey {
   return (SECRET_KEYS as readonly string[]).includes(value);
+}
+
+export function isCredentialKey(value: string): value is CredentialKey {
+  return (CREDENTIAL_KEYS as readonly string[]).includes(value);
 }
 
 export function readEnv(env: NodeJS.ProcessEnv = process.env): EnvSnapshot {
@@ -105,8 +116,12 @@ export function resolveBoolean(
   return { value: fallback, source: "environment" };
 }
 
-function fieldView(source: ValueSource): FieldView {
-  return { source, mask: source === "unset" ? null : SECRET_MASK };
+function plainView(source: ValueSource, value: string): FieldView {
+  return { kind: "plain", source, value, mask: null };
+}
+
+function secretView(source: ValueSource): FieldView {
+  return { kind: "secret", source, value: null, mask: source === "unset" ? null : SECRET_MASK };
 }
 
 export function buildConfig(stored: StoredSettings, env: EnvSnapshot): IntegrationConfig {
@@ -146,13 +161,13 @@ export function buildConfig(stored: StoredSettings, env: EnvSnapshot): Integrati
 export function toSettingsView(config: IntegrationConfig): SettingsView {
   return {
     metron: {
-      username: fieldView(config.metron.usernameSource),
-      password: fieldView(config.metron.passwordSource),
+      username: plainView(config.metron.usernameSource, config.metron.username),
+      password: secretView(config.metron.passwordSource),
     },
-    comicvine: { apiKey: fieldView(config.comicvine.source) },
+    comicvine: { apiKey: secretView(config.comicvine.source) },
     ebay: {
-      clientId: fieldView(config.ebay.clientIdSource),
-      clientSecret: fieldView(config.ebay.clientSecretSource),
+      clientId: plainView(config.ebay.clientIdSource, config.ebay.clientId),
+      clientSecret: secretView(config.ebay.clientSecretSource),
     },
     seedOnEmpty: config.seedOnEmpty,
   };
@@ -161,9 +176,9 @@ export function toSettingsView(config: IntegrationConfig): SettingsView {
 /** Typed form values win. Blank fields keep the saved or environment value. */
 export function applyCredentialOverrides(
   config: IntegrationConfig,
-  fields: Partial<Record<SecretKey, string | null | undefined>>,
+  fields: Partial<Record<CredentialKey, string | null | undefined>>,
 ): IntegrationConfig {
-  const typed = (key: SecretKey): string | null => {
+  const typed = (key: CredentialKey): string | null => {
     const value = fields[key];
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
