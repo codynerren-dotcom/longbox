@@ -8,7 +8,7 @@ export async function GET(_request: Request, context: { params: Promise<{ name: 
   return new Response(new Uint8Array(bytes), {
     headers: {
       "Content-Type": type,
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": name.startsWith("user-") ? "no-cache" : "public, max-age=86400",
     },
   });
 }

@@ -1,19 +1,25 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
 import { emptyBudget, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
 const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
-const COVER_NAME = /^(?:metron|cv)-\d+(?:-[a-f0-9]{8})?\.(?:jpg|jpeg|png|webp|gif)$/;
+const CATALOG_FILE = "(?:metron|cv)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
+const USER_FILE = "user-[a-z0-9]{20,32}\\.webp";
+const USER_ORIGINAL = "user-[a-z0-9]{20,32}-original\\.(?:jpg|png|webp|heic|heif)";
+const PUBLIC_COVER = new RegExp(`^(?:${CATALOG_FILE}|${USER_FILE})$`);
+const STORED_COVER = new RegExp(`^(?:${CATALOG_FILE}|${USER_FILE}|${USER_ORIGINAL})$`);
+const COMIC_ID = /^[a-z0-9]{20,32}$/;
+const ORIGINAL_EXT = /^(?:jpg|png|webp|heic|heif)$/;
 export type CoverPrefix = "metron" | "cv";
 const EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif"] as const;
 const LOCK_NAME = "backfill.lock";
 const BUDGET_NAME = "metron-budget.json";
 const STATUS_NAME = "backfill-status.json";
 const STALE_LOCK_MS = 2 * 60 * 60 * 1000;
-const MAX_BYTES = 15 * 1024 * 1024;
+export const COVER_MAX_BYTES = 15 * 1024 * 1024;
 
 export type BackfillStatus = {
   running: boolean;
@@ -46,8 +52,20 @@ export function coverFilename(issueKey: string, ext: string, prefix: CoverPrefix
   return `${prefix}-${issueKey}.${clean === "jpeg" ? "jpg" : clean}`;
 }
 
+export function userCoverFilename(comicId: string): string {
+  if (!COMIC_ID.test(comicId)) throw new Error("Could not store the cover.");
+  return `user-${comicId}.webp`;
+}
+
+export function userOriginalFilename(comicId: string, ext: string): string {
+  if (!COMIC_ID.test(comicId)) throw new Error("Could not store the cover.");
+  const clean = ext.toLowerCase().replace(/^\./, "");
+  if (!ORIGINAL_EXT.test(clean)) throw new Error("Unsupported cover type.");
+  return `user-${comicId}-original.${clean}`;
+}
+
 export function coverContentType(filename: string): string | null {
-  if (!COVER_NAME.test(filename)) return null;
+  if (!PUBLIC_COVER.test(filename)) return null;
   if (filename.endsWith(".png")) return "image/png";
   if (filename.endsWith(".webp")) return "image/webp";
   if (filename.endsWith(".gif")) return "image/gif";
@@ -55,7 +73,7 @@ export function coverContentType(filename: string): string | null {
 }
 
 export function coverFilePath(dir: string, filename: string): string | null {
-  if (!COVER_NAME.test(filename)) return null;
+  if (!STORED_COVER.test(filename)) return null;
   const root = path.resolve(dir);
   const resolved = path.resolve(root, filename);
   if (resolved !== path.join(root, filename)) return null;
@@ -204,7 +222,7 @@ export async function downloadCover(
   const ext = extensionFor(response.headers.get("content-type") ?? "", parsed.toString());
   if (!ext) throw new Error("Cover image is not a jpeg, png, webp, or gif.");
   const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length === 0 || bytes.length > MAX_BYTES) throw new Error("Cover image is empty or too large.");
+  if (bytes.length === 0 || bytes.length > COVER_MAX_BYTES) throw new Error("Cover image is empty or too large.");
 
   const filename = coverFilename(issueKey, ext, prefix);
   const destination = coverFilePath(dir, filename);
@@ -224,6 +242,37 @@ export async function readCoverBytes(dir: string, filename: string): Promise<Buf
   } catch {
     return null;
   }
+}
+
+export async function writeUserCoverFiles(args: {
+  comicId: string;
+  original: Buffer;
+  webp: Buffer;
+  ext: string;
+  dir?: string;
+}): Promise<{ coverFile: string; originalFile: string }> {
+  const dir = args.dir ?? coversDir();
+  const coverFile = userCoverFilename(args.comicId);
+  const originalFile = userOriginalFilename(args.comicId, args.ext);
+  const coverPath = coverFilePath(dir, coverFile);
+  const originalPath = coverFilePath(dir, originalFile);
+  if (!coverPath || !originalPath) throw new Error("Could not store the cover.");
+  await mkdir(dir, { recursive: true });
+  await writeAtomic(originalPath, args.original);
+  await writeAtomic(coverPath, args.webp);
+  for (const ext of ["jpg", "png", "webp", "heic", "heif"] as const) {
+    if (`user-${args.comicId}-original.${ext}` === originalFile) continue;
+    const stale = coverFilePath(dir, `user-${args.comicId}-original.${ext}`);
+    if (!stale) continue;
+    await unlink(stale).catch(() => undefined);
+  }
+  return { coverFile, originalFile };
+}
+
+async function writeAtomic(destination: string, bytes: Buffer): Promise<void> {
+  const temporary = `${destination}.partial`;
+  await writeFile(temporary, bytes);
+  await rename(temporary, destination);
 }
 
 export function coverExists(dir: string, filename: string): boolean {

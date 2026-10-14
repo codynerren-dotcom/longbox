@@ -96,10 +96,10 @@ model Comic {
   seriesVolume       Int?
   /// Per-field origin. "metron" was filled from Metron. "user" was edited on the issue and is not replaced.
   fieldSources       Json?
-  /// Hand-picked Metron and Comic Vine ids. Cover backfill must not replace them.
+  /// Hand-picked catalog ids, plus a user-uploaded cover that backfill must not replace.
   manualLink         Json?
   coverFile          String?
-  /// null = not checked, matched = local file, unmatched = needs a hand fix.
+  /// null = not checked, matched = local file, manual = uploaded photo, unmatched = needs a hand fix.
   coverStatus        String?
   coverNote          String?   @db.Text
   coverCheckedAt     DateTime?

@@ -16,6 +16,7 @@ export function coverPublicPath(filename: string): string {
 }
 
 export function needsCover(comic: CoverRecord, fileExists: (filename: string) => boolean): boolean {
+  if (comic.userCover || comic.coverStatus === "manual") return false;
   if (comic.coverStatus === "unmatched") return false;
   if (comic.coverFile && fileExists(comic.coverFile)) return false;
   return true;

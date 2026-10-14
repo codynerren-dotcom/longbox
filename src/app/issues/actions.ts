@@ -5,6 +5,8 @@ import { linkIssueToCatalog, loadIssueCovers, repullLinkedCover, searchIssueCata
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 import { refreshIssueFromMetron } from "@/lib/covers/run";
+import { readCrop } from "@/lib/covers/photo";
+import { previewUserPhoto, revertToMetronCover, saveUserCover } from "@/lib/covers/user-cover";
 import { prisma } from "@/lib/db";
 import { choiceList, issueLabel, RAW_CHOICES, KEY_LEVELS } from "@/lib/issue-fields";
 import { planIssueEdit } from "@/lib/issue-edit";
@@ -109,6 +111,49 @@ export async function unlinkMatchAction(comicId: string, source: CatalogSource):
 
 export async function repullCoverAction(comicId: string): Promise<{ ok: boolean; message: string }> {
   const result = await repullLinkedCover(comicId);
+  if (result.ok) await refreshIssue(comicId);
+  return result;
+}
+
+export async function uploadCoverAction(
+  comicId: string,
+  formData: FormData,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const file = formData.get("photo");
+  if (!(file instanceof File)) return { ok: false, message: "Choose a photo first." };
+  try {
+    const bytes = Buffer.from(await file.arrayBuffer());
+    await saveUserCover({
+      comicId,
+      bytes,
+      rotation: Number(formData.get("rotation") ?? 0),
+      crop: readCrop({
+        x: formData.get("x"),
+        y: formData.get("y"),
+        width: formData.get("width"),
+        height: formData.get("height"),
+      }),
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Could not save that cover." };
+  }
+  await refreshIssue(comicId);
+  return { ok: true };
+}
+
+export async function previewCoverAction(formData: FormData): Promise<{ ok: true; dataUrl: string } | { ok: false; message: string }> {
+  const file = formData.get("photo");
+  if (!(file instanceof File)) return { ok: false, message: "Choose a photo first." };
+  try {
+    const jpeg = await previewUserPhoto(Buffer.from(await file.arrayBuffer()));
+    return { ok: true, dataUrl: `data:image/jpeg;base64,${jpeg.toString("base64")}` };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Could not read that photo." };
+  }
+}
+
+export async function revertCoverAction(comicId: string): Promise<{ ok: boolean; message: string }> {
+  const result = await revertToMetronCover(comicId);
   if (result.ok) await refreshIssue(comicId);
   return result;
 }

@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-plan";
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
-import { readManualLink, type CatalogSource } from "@/lib/catalog/manual-link";
+import { manualLinkJson, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { mapMetronDetails, METRON_FIELDS, type MetronField } from "@/lib/covers/enrich";
@@ -69,9 +69,7 @@ function currentFields(comic: NonNullable<Awaited<ReturnType<typeof comicForLink
 }
 
 function storedLink(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
-  const link = readManualLink(value);
-  if (!link.metronIssueId && !link.comicvineIssueId && !link.coverImageUrl) return Prisma.DbNull;
-  return link;
+  return manualLinkJson(value) ?? Prisma.DbNull;
 }
 
 export async function searchIssueCatalog(args: {
@@ -243,9 +241,17 @@ export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; m
     const chosen = await chosenImage(link, comic.comicvineIssueId);
     if (!chosen) return { ok: false, message: "Link an issue before re-pulling its cover." };
     const saved = await downloadChosenCover(chosen.source, chosen.issueId, chosen.imageUrl, chosen.primaryUrl);
+    const next = withoutUserCover(link);
     await prisma.comic.update({
       where: { id: comic.id },
-      data: { coverFile: saved.file, coverUrl: saved.url, coverStatus: "matched", coverNote: null, coverCheckedAt: new Date() },
+      data: {
+        coverFile: saved.file,
+        coverUrl: saved.url,
+        coverStatus: "matched",
+        coverNote: null,
+        coverCheckedAt: new Date(),
+        manualLink: manualLinkJson(next) ?? Prisma.DbNull,
+      },
     });
     const message = `Re-pulled the cover for ${label}.`;
     await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, source: chosen.source } });

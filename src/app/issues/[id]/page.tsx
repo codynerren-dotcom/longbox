@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import { CoverControls } from "@/app/issues/cover-controls";
 import { IssueEditor } from "@/app/issues/edit-form";
 import { MatchPanel } from "@/app/issues/match-panel";
 import { IssueCatalogLinks } from "@/components/catalog-links";
@@ -17,6 +18,7 @@ import { formatDate, formatIssue, formatMoney } from "@/lib/format";
 import { dateOptions } from "@/lib/settings/preferences";
 import { getPreferences, getSettings } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
+import { safeImageUrl } from "@/lib/url";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -45,6 +47,10 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   const sourced = (field: string) => fromMetron(comic.fieldSources, field);
   const spent = costBasis(comic.purchasePrice, comic.quantity);
   const boxes = boxRows.map((row) => row.storageBox).filter((name): name is string => Boolean(name));
+  const link = readManualLink(comic.manualLink);
+  const hasCover = Boolean(safeImageUrl(comic.coverUrl));
+  const canRevert = Boolean(comic.metronIssueId || link.metronIssueId);
+  const coverTools = <CoverControls comicId={comic.id} hasCover={hasCover} canRevert={canRevert} placement="fields" />;
   const detailFacts = [
     fact("Story title", comic.title, sourced("title")),
     fact("Release date", comic.releaseDate ? formatDate(comic.releaseDate, when) : null, sourced("releaseDate")),
@@ -71,7 +77,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-      <div>
+      <div className="relative">
         <CoverTile
           title={comic.series}
           issue={comic.issueNo}
@@ -80,6 +86,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           slab={comic.rawOrSlabbed === "Slabbed"}
           variant={comic.variant}
         />
+        <CoverControls comicId={comic.id} hasCover={hasCover} canRevert={canRevert} placement={hasCover ? "menu" : "overlay"} />
         <p className="mt-3 text-sm text-mist">
           <Link href={`/series/${encodeURIComponent(seriesRouteId(comic))}`} className="text-comic">
             Back to {comic.series}
@@ -107,7 +114,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           comicVineReady={Boolean(settings.comicvine.apiKey)}
           metronIssueId={comic.metronIssueId}
           comicvineIssueId={comic.comicvineIssueId}
-          canRepull={Boolean(readManualLink(comic.manualLink).coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
+          canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
         />
 
         <IssueEditor
@@ -115,6 +122,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           boxes={boxes}
           categories={prefs.collection.keyCategories}
           companies={prefs.collection.gradingCompanies}
+          coverTools={coverTools}
         >
           <Facts
             items={[

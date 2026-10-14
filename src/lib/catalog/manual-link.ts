@@ -5,6 +5,10 @@ export type ManualLink = {
   comicvineIssueId: string | null;
   coverImageUrl: string | null;
   coverSource: CatalogSource | null;
+  /** True when the cover on the shelf is a photo the user uploaded. Backfill must leave it alone. */
+  userCover: boolean;
+  /** Original photo, kept beside the resized cover for a later recognition pass. Not served publicly. */
+  originalFile: string | null;
 };
 
 const EMPTY: ManualLink = {
@@ -12,7 +16,11 @@ const EMPTY: ManualLink = {
   comicvineIssueId: null,
   coverImageUrl: null,
   coverSource: null,
+  userCover: false,
+  originalFile: null,
 };
+
+const ORIGINAL_FILE = /^user-[a-z0-9]{20,32}-original\.(?:jpg|png|webp|heic|heif)$/;
 
 function digits(value: unknown): string | null {
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return String(value);
@@ -39,17 +47,20 @@ export function readManualLink(value: unknown): ManualLink {
   const row = value as Record<string, unknown>;
   const coverSource = row.coverSource === "metron" || row.coverSource === "comicvine" ? row.coverSource : null;
   const coverImageUrl = httpsUrl(row.coverImageUrl);
+  const originalFile = typeof row.originalFile === "string" && ORIGINAL_FILE.test(row.originalFile) ? row.originalFile : null;
   return {
     metronIssueId: digits(row.metronIssueId),
     comicvineIssueId: digits(row.comicvineIssueId),
     coverImageUrl: coverSource ? coverImageUrl : null,
     coverSource: coverSource && coverImageUrl ? coverSource : null,
+    userCover: row.userCover === true,
+    originalFile,
   };
 }
 
-export function manualLinkJson(link: ManualLink): ManualLink | null {
+export function manualLinkJson(link: unknown): ManualLink | null {
   const next = readManualLink(link);
-  if (!next.metronIssueId && !next.comicvineIssueId && !next.coverImageUrl) return null;
+  if (!next.metronIssueId && !next.comicvineIssueId && !next.coverImageUrl && !next.userCover && !next.originalFile) return null;
   return next;
 }
 
@@ -64,8 +75,37 @@ export function withLinkedId(current: unknown, source: CatalogSource, issueId: s
   if (image) {
     link.coverImageUrl = image;
     link.coverSource = source;
+    link.userCover = false;
   }
   return link;
+}
+
+/** Remember that the cover file was uploaded, and where the untouched photo lives. */
+export function withUserCover(current: unknown, originalFile: string): ManualLink {
+  const link = readManualLink(current);
+  link.userCover = true;
+  if (ORIGINAL_FILE.test(originalFile)) link.originalFile = originalFile;
+  return link;
+}
+
+/** A catalog cover was chosen on purpose. The original photo stays on disk. */
+export function withoutUserCover(current: unknown): ManualLink {
+  const link = readManualLink(current);
+  link.userCover = false;
+  return link;
+}
+
+/** Drop a cover write while a user photo is still the cover of record. */
+export function stripLockedCover(
+  data: { coverFile?: unknown; coverUrl?: unknown; coverStatus?: unknown; coverNote?: unknown; manualLink?: unknown },
+  currentLink: unknown,
+): void {
+  const next = data.manualLink !== undefined ? readManualLink(data.manualLink) : readManualLink(currentLink);
+  if (!next.userCover) return;
+  delete data.coverFile;
+  delete data.coverUrl;
+  delete data.coverStatus;
+  delete data.coverNote;
 }
 
 /** Drop one catalog id. A cover chosen from that catalog is dropped with it. */

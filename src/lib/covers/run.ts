@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { saveChosenCover } from "@/lib/catalog/link-issue";
-import { readManualLink, withLinkedId } from "@/lib/catalog/manual-link";
+import { readManualLink, stripLockedCover, withLinkedId } from "@/lib/catalog/manual-link";
 import { coverPublicPath, backfillCovers, type BackfillSummary } from "@/lib/covers/backfill";
 import { planEnrichment, type EnrichmentPlan, type MetronDetails, type MetronField } from "@/lib/covers/enrich";
 import { logCoverFinished, logCoverProgress, logCoverStarted, logEnrichFinished, logEnrichStarted, logMetronFill } from "@/lib/log/events";
@@ -87,6 +87,7 @@ async function loadComics(): Promise<CoverRecord[]> {
       metronIssueId: row.metronIssueId,
       manualMetronIssueId: link.metronIssueId,
       manualCoverImageUrl: link.coverImageUrl,
+      userCover: link.userCover,
     };
   });
 }
@@ -136,6 +137,7 @@ async function applyEnrichment(
   const link = readManualLink(current?.manualLink);
   if (!replacingLink && link.metronIssueId) data.metronIssueId = link.metronIssueId;
   if (!replacingLink && link.comicvineIssueId) data.comicvineIssueId = link.comicvineIssueId;
+  stripLockedCover(data, current?.manualLink);
   if (Object.keys(data).length > 0) {
     await prisma.comic.update({ where: { id }, data });
   }
@@ -348,6 +350,12 @@ export async function refetchOneCover(comicId: string): Promise<string> {
   });
   if (!comic) throw new Error("That issue is not on the shelf.");
   const locked = readManualLink(comic.manualLink);
+  const label = issueLabel(comic.series, comic.issueNo, comic.issue);
+  if (locked.userCover) {
+    const message = `The cover on ${label} was uploaded and was left as it is.`;
+    await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId } });
+    return message;
+  }
   if (locked.metronIssueId || locked.comicvineIssueId || locked.coverImageUrl) {
     if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
     try {
@@ -360,7 +368,6 @@ export async function refetchOneCover(comicId: string): Promise<string> {
   }
   if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
   if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
-  const label = issueLabel(comic.series, comic.issueNo, comic.issue);
   try {
     const transport = await metronTransport();
     const lookup = createMetronCoverLookup(transport);
@@ -559,6 +566,8 @@ export async function refreshIssueFromMetron(comicId: string): Promise<{ ok: boo
 }
 
 export async function queueCoverRetry(comicId: string): Promise<void> {
+  const comic = await prisma.comic.findUnique({ where: { id: comicId }, select: { manualLink: true } });
+  if (readManualLink(comic?.manualLink).userCover) return;
   await prisma.comic.update({
     where: { id: comicId },
     data: { coverStatus: null, coverNote: null, coverCheckedAt: null },

@@ -148,6 +148,24 @@ export async function logScanLookup(args: {
   });
 }
 
+export async function logCoverUploaded(label: string, comicId: string): Promise<void> {
+  await writeLog({
+    level: "info",
+    source: "covers/backfill",
+    message: `Uploaded a cover for ${label}.`,
+    details: { comicId },
+  });
+}
+
+export async function logCoverReverted(label: string, comicId: string): Promise<void> {
+  await writeLog({
+    level: "info",
+    source: "covers/backfill",
+    message: `Reverted ${label} to the Metron cover.`,
+    details: { comicId },
+  });
+}
+
 export async function logIssueEdited(label: string, comicId: string, fields: string[]): Promise<void> {
   await writeLog({
     level: "info",

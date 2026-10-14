@@ -45,6 +45,8 @@ export type CoverRecord = CoverQuery & {
   /** Set when a person linked this Metron issue. Backfill must not search for a different one. */
   manualMetronIssueId?: string | null;
   manualCoverImageUrl?: string | null;
+  /** A photo uploaded on the issue. Backfill must not replace it, even when the file is missing. */
+  userCover?: boolean;
 };
 
 export class MetronBudgetError extends Error {

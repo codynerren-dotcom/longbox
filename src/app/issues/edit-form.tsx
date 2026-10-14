@@ -20,12 +20,14 @@ export function IssueEditor({
   boxes,
   categories,
   companies,
+  coverTools,
   children,
 }: {
   draft: IssueDraft;
   boxes: string[];
   categories: string[];
   companies: string[];
+  coverTools?: ReactNode;
   children: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -36,6 +38,7 @@ export function IssueEditor({
         boxes={boxes}
         categories={categories}
         companies={companies}
+        coverTools={coverTools}
         onCancel={() => setEditing(false)}
         onSaved={() => setEditing(false)}
       />
@@ -63,6 +66,7 @@ function IssueForm({
   boxes,
   categories,
   companies,
+  coverTools,
   onCancel,
   onSaved,
 }: {
@@ -70,6 +74,7 @@ function IssueForm({
   boxes: string[];
   categories: string[];
   companies: string[];
+  coverTools?: ReactNode;
   onCancel: () => void;
   onSaved: () => void;
 }) {
@@ -116,6 +121,7 @@ function IssueForm({
           ))}
         </div>
       ) : null}
+      {coverTools}
       {groups.map((group) => (
         <fieldset key={group} className="rounded-2xl bg-panel p-4 ring-1 ring-white/5">
           <legend className="px-1 font-display text-3xl tracking-wide">{group}</legend>
