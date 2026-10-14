@@ -7,6 +7,7 @@ import { decryptSecret, encryptSecret, parseSecretKey, SettingsCryptoError } fro
 import { ensureSecretKey } from "@/lib/settings/key";
 import { probeComicVine, probeEbay, probeMetron } from "@/lib/settings/probe";
 import {
+  applyCredentialOverrides,
   buildConfig,
   metronAuthorization,
   readEnv,
@@ -191,5 +192,33 @@ describe("connection probes", () => {
     expect(result.message).not.toContain(secret);
     const throughStub = await testEbayConnection(config(), async () => new Response("", { status: 401 }));
     expect(throughStub.message).toBe("eBay rejected the client id or secret.");
+  });
+
+  it("tests typed credentials and keeps a saved value when that field is blank", async () => {
+    const saved = buildConfig(
+      { secrets: { "metron.password": "saved-pass", "comicvine.apiKey": "saved-key", "ebay.clientSecret": "saved-secret" }, seedOnEmpty: null },
+      env({ metronUsername: "saved-user", ebayClientId: "saved-id" }),
+    );
+    const typed = applyCredentialOverrides(saved, {
+      "metron.username": " typed-user ",
+      "metron.password": "typed-pass",
+      "comicvine.apiKey": "  ",
+      "ebay.clientId": "typed-id",
+    });
+    expect(typed.metron.username).toBe("typed-user");
+    expect(typed.metron.password).toBe("typed-pass");
+    expect(typed.comicvine.apiKey).toBe("saved-key");
+    expect(typed.ebay.clientId).toBe("typed-id");
+    expect(typed.ebay.clientSecret).toBe("saved-secret");
+
+    let authorization = "";
+    const result = await probeMetron(typed, async (_url, init) => {
+      authorization = String((init?.headers as { Authorization?: string }).Authorization);
+      return new Response("{}", { status: 200 });
+    });
+    expect(authorization).toBe(`Basic ${Buffer.from("typed-user:typed-pass").toString("base64")}`);
+    expect(result.message).toBe("Metron accepted the username and password.");
+    expect(result.message).not.toContain("typed-pass");
+    expect(applyCredentialOverrides(saved, {}).metron).toEqual(saved.metron);
   });
 });

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLZ_HEADERS } from "@/lib/clz/headers";
+import { isLegacyZeroCoreKey, legacyZeroCoreKeys, planZeroIdCleanup, type LegacyZeroRow } from "@/lib/clz/legacy-zero";
 import {
   ClzParseError,
   costBasis,
@@ -199,4 +200,60 @@ describe("Core ComicID 0", () => {
     expect(realId.dedupeKey).toBe("core:900100|var:|idx:1");
     expect(text.coreComicId).toBeNull();
   });
+
+  it("retires stale core:0 rows onto the fallback key, or removes them when that key already exists", () => {
+    const first = slammer({ "Core ComicID": "0" });
+    const decimal = slammer({ "Core ComicID": "0.0", Issue: "2", "Issue No.": "2.0", Index: "2.0" });
+    expect(legacyZeroCoreKeys(first)).toContain("core:0|var:|idx:1");
+    expect(legacyZeroCoreKeys(decimal)).toContain("core:0.0|var:|idx:2");
+    expect(isLegacyZeroCoreKey("core:0|var:|idx:1")).toBe(true);
+    expect(isLegacyZeroCoreKey("core:0.0|var:b|idx:3")).toBe(true);
+    expect(isLegacyZeroCoreKey(first.dedupeKey)).toBe(false);
+    expect(legacyZeroCoreKeys(slammer({ "Core ComicID": "900100" }))).toEqual([]);
+
+    const stale = zeroRow("stale-1", "core:0|var:|idx:1", "metron-9.jpg");
+    const moved = planZeroIdCleanup([first], [stale], new Set([stale.dedupeKey]));
+    expect(moved.retarget).toEqual([{ id: "stale-1", fromKey: "core:0|var:|idx:1", dedupeKey: first.dedupeKey }]);
+    expect(moved.remove).toEqual([]);
+
+    const duplicate = planZeroIdCleanup([first], [stale], new Set([stale.dedupeKey, first.dedupeKey]));
+    expect(duplicate.retarget).toEqual([]);
+    expect(duplicate.remove).toEqual([
+      {
+        id: "stale-1",
+        coverOntoKey: first.dedupeKey,
+        cover: {
+          coverFile: "metron-9.jpg",
+          coverUrl: "/covers/files/metron-9.jpg",
+          coverStatus: "matched",
+          metronIssueId: "9",
+          coverNote: null,
+        },
+      },
+    ]);
+
+    const collapsed = slammer({ Issue: "4", "Issue No.": "4.0" });
+    const shared = planZeroIdCleanup([first, collapsed], [{ ...stale, issueNo: "4" }], new Set([stale.dedupeKey]));
+    expect(shared.retarget).toEqual([]);
+    expect(shared.remove.map((action) => action.coverOntoKey)).toEqual([collapsed.dedupeKey]);
+
+    const unrelated = planZeroIdCleanup([slammer({ "Core ComicID": "900100" })], [stale], new Set([stale.dedupeKey]));
+    expect(unrelated.retarget).toEqual([]);
+    expect(unrelated.remove).toEqual([]);
+  });
 });
+
+function zeroRow(id: string, dedupeKey: string, coverFile: string | null): LegacyZeroRow {
+  return {
+    id,
+    dedupeKey,
+    series: "Planet Slammer",
+    issueNo: "1",
+    variant: null,
+    coverFile,
+    coverUrl: coverFile ? `/covers/files/${coverFile}` : null,
+    coverStatus: coverFile ? "matched" : null,
+    metronIssueId: coverFile ? "9" : null,
+    coverNote: null,
+  };
+}

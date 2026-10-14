@@ -18,7 +18,7 @@ Longbox is a single-user Next.js app for a physical comic shelf. Cody runs it on
 - TypeScript strict. Path alias `@/` points at `src/`.
 - Tailwind tokens live in `tailwind.config.ts`: background `#0d0e12`, panels `#16181e` and `#22262f`, accent `#FFCC1A`. Bebas Neue for display, Inter for body.
 - Identity is `viewerFromHeaders`. Trust `Cf-Access-Authenticated-User-Email` when it is present. Otherwise use `LONGBOX_USER_EMAIL`. v1 does not authorize requests.
-- CLZ imports dedupe on a positive integer `Core ComicID` plus variant and index. `0`, blank, and non-numeric ids fall back to series + issue + variant + barcode + index. The original 66-column row is stored on `rawRow`.
+- CLZ imports dedupe on a positive integer `Core ComicID` plus variant and index. `0`, blank, and non-numeric ids fall back to series + issue + variant + barcode + index. The original 66-column row is stored on `rawRow`. A re-import retires leftover rows whose key is still `core:0|...` or `core:0.0|...` from before that rule, moving the row onto the new key or deleting it when the new row already exists.
 - Cover backfill is `npm run covers:backfill`. It uses Metron basic auth, keeps about 20 requests per minute and 5000 per day, and skips issues that already have a local file. Unmatched rows are listed at `/covers`.
 - Integration credentials and shelf preferences go through `src/lib/settings`. Database values override env vars. Secrets are AES-GCM encrypted with `LONGBOX_SECRET_KEY` and are never returned to the browser. Preferences (sort, accent, pricing cadence, scan behavior, cover pause) are plain JSON on `AppSetting`.
 - CLZ imports record an `ImportRun`. CSV export prefers the stored 66-column `rawRow`. Database backups include ciphertext, not decrypted secrets.

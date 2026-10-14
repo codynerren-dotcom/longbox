@@ -27,7 +27,8 @@ export function ImportForm({ embedded = false }: { embedded?: boolean }) {
           <p>
             Read {state.summary.rows} rows, kept {state.summary.unique} unique comics. Created {state.summary.created}, updated{" "}
             {state.summary.updated}
-            {state.summary.collapsed > 0 ? `, collapsed ${state.summary.collapsed} duplicates` : ""}.
+            {state.summary.collapsed > 0 ? `, collapsed ${state.summary.collapsed} duplicates` : ""}
+            {state.summary.retired > 0 ? `. Retired ${state.summary.retired} stale Core ComicID 0 ${state.summary.retired === 1 ? "row" : "rows"}` : ""}.
           </p>
           {state.warnings.map((warning) => (
             <p key={warning} className="text-mist">

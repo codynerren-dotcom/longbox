@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { legacyZeroCoreKeys, planZeroIdCleanup, type LegacyZeroRow } from "@/lib/clz/legacy-zero";
 import { prisma } from "@/lib/db";
 import { mergeByDedupeKey, planImport, type NormalizedComic } from "@/lib/clz/parse";
 
@@ -83,15 +84,42 @@ export type ImportSummary = {
   collapsed: number;
   created: number;
   updated: number;
+  /** Stale rows whose dedupe key was `core:0|...` from before Core ComicID 0 counted as missing. */
+  retired: number;
 };
+
+const staleSelect = {
+  id: true,
+  dedupeKey: true,
+  series: true,
+  issueNo: true,
+  variant: true,
+  coverFile: true,
+  coverUrl: true,
+  coverStatus: true,
+  metronIssueId: true,
+  coverNote: true,
+} as const;
 
 export async function persistClzComics(comics: NormalizedComic[]): Promise<ImportSummary> {
   const merged = mergeByDedupeKey(comics);
-  const existing = await prisma.comic.findMany({
-    where: { dedupeKey: { in: merged.map((comic) => comic.dedupeKey) } },
+  const legacyKeys = [...new Set(merged.flatMap((comic) => legacyZeroCoreKeys(comic)))];
+  const stale: LegacyZeroRow[] =
+    legacyKeys.length === 0
+      ? []
+      : await prisma.comic.findMany({ where: { dedupeKey: { in: legacyKeys } }, select: staleSelect });
+  const occupied = await prisma.comic.findMany({
+    where: { dedupeKey: { in: [...merged.map((comic) => comic.dedupeKey), ...legacyKeys] } },
     select: { dedupeKey: true },
   });
-  const plan = planImport(new Set(existing.map((row) => row.dedupeKey)), merged);
+  const occupiedKeys = new Set(occupied.map((row) => row.dedupeKey));
+  const cleanup = planZeroIdCleanup(merged, stale, occupiedKeys);
+  for (const action of cleanup.retarget) {
+    await prisma.comic.update({ where: { id: action.id }, data: { dedupeKey: action.dedupeKey } });
+    occupiedKeys.delete(action.fromKey);
+    occupiedKeys.add(action.dedupeKey);
+  }
+  const plan = planImport(occupiedKeys, merged);
 
   const chunkSize = 40;
   for (let index = 0; index < merged.length; index += chunkSize) {
@@ -107,11 +135,25 @@ export async function persistClzComics(comics: NormalizedComic[]): Promise<Impor
     );
   }
 
+  for (const action of cleanup.remove) {
+    if (action.cover && action.coverOntoKey) {
+      const dest = await prisma.comic.findUnique({
+        where: { dedupeKey: action.coverOntoKey },
+        select: { id: true, coverFile: true },
+      });
+      if (dest && !dest.coverFile) {
+        await prisma.comic.update({ where: { id: dest.id }, data: action.cover });
+      }
+    }
+    await prisma.comic.delete({ where: { id: action.id } });
+  }
+
   return {
     rows: comics.length,
     unique: merged.length,
     collapsed: comics.length - merged.length,
     created: plan.create,
     updated: plan.update,
+    retired: cleanup.retarget.length + cleanup.remove.length,
   };
 }

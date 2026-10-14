@@ -158,6 +158,54 @@ export function toSettingsView(config: IntegrationConfig): SettingsView {
   };
 }
 
+/** Typed form values win. Blank fields keep the saved or environment value. */
+export function applyCredentialOverrides(
+  config: IntegrationConfig,
+  fields: Partial<Record<SecretKey, string | null | undefined>>,
+): IntegrationConfig {
+  const typed = (key: SecretKey): string | null => {
+    const value = fields[key];
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  };
+  const username = typed("metron.username");
+  const password = typed("metron.password");
+  const apiKey = typed("comicvine.apiKey");
+  const clientId = typed("ebay.clientId");
+  const clientSecret = typed("ebay.clientSecret");
+  const nextUsername = username ?? config.metron.username;
+  const nextPassword = password ?? config.metron.password;
+  const nextApiKey = apiKey ?? config.comicvine.apiKey;
+  const nextClientId = clientId ?? config.ebay.clientId;
+  const nextClientSecret = clientSecret ?? config.ebay.clientSecret;
+  return {
+    ...config,
+    metron: {
+      ...config.metron,
+      username: nextUsername,
+      password: nextPassword,
+      configured: Boolean((nextUsername && nextPassword) || config.metron.token),
+      usernameSource: username ? "database" : config.metron.usernameSource,
+      passwordSource: password ? "database" : config.metron.passwordSource,
+    },
+    comicvine: {
+      ...config.comicvine,
+      apiKey: nextApiKey,
+      configured: Boolean(nextApiKey),
+      source: apiKey ? "database" : config.comicvine.source,
+    },
+    ebay: {
+      ...config.ebay,
+      clientId: nextClientId,
+      clientSecret: nextClientSecret,
+      configured: Boolean(nextClientId && nextClientSecret),
+      clientIdSource: clientId ? "database" : config.ebay.clientIdSource,
+      clientSecretSource: clientSecret ? "database" : config.ebay.clientSecretSource,
+    },
+  };
+}
+
 export function metronAuthorization(config: IntegrationConfig): { header: string; baseUrl: string } | null {
   if (config.metron.username && config.metron.password) {
     const token = Buffer.from(`${config.metron.username}:${config.metron.password}`).toString("base64");

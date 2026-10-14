@@ -1,12 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { testComicVineConnection } from "@/lib/catalog/comicvine";
-import { testMetronConnection } from "@/lib/catalog/metron";
-import { testEbayFromSettings } from "@/lib/pricing/ebay";
-import { clearSecret, saveSecret, setSeedOnEmpty } from "@/lib/settings/service";
-import { isSecretKey, type SecretKey } from "@/lib/settings/resolve";
-import type { ProbeResult } from "@/lib/settings/probe";
+import { probeComicVine, probeEbay, probeMetron, type ProbeResult } from "@/lib/settings/probe";
+import { applyCredentialOverrides, isSecretKey, SECRET_KEYS, type SecretKey } from "@/lib/settings/resolve";
+import { clearSecret, getSettings, saveSecret, setSeedOnEmpty } from "@/lib/settings/service";
 
 export type SettingsActionState = { status: "idle" | "ok" | "error"; message: string };
 
@@ -34,15 +31,41 @@ export async function clearSettingAction(formData: FormData): Promise<void> {
 
 export type ProbeActionState = ProbeResult & { service: string; status: "idle" | "done" };
 
+export async function saveServiceAction(_prev: SettingsActionState, formData: FormData): Promise<SettingsActionState> {
+  try {
+    let wrote = 0;
+    for (const key of SECRET_KEYS) {
+      const value = String(formData.get(key) ?? "");
+      if (!value.trim()) continue;
+      await saveSecret(key, value);
+      wrote += 1;
+    }
+    revalidatePath("/settings");
+    return wrote > 0 ? { status: "ok", message: "Saved." } : { status: "ok", message: "Already saved." };
+  } catch (error) {
+    return { status: "error", message: error instanceof Error ? error.message : "Settings could not be saved." };
+  }
+}
+
 export async function testConnectionAction(_prev: ProbeActionState, formData: FormData): Promise<ProbeActionState> {
   const service = String(formData.get("service") ?? "");
+  const config = applyCredentialOverrides(await getSettings(), typedSecrets(formData));
   const result =
     service === "metron"
-      ? await testMetronConnection()
+      ? await probeMetron(config)
       : service === "comicvine"
-        ? await testComicVineConnection()
+        ? await probeComicVine(config)
         : service === "ebay"
-          ? await testEbayFromSettings()
+          ? await probeEbay(config)
           : { ok: false, message: "Unknown service." };
   return { ...result, service, status: "done" };
+}
+
+function typedSecrets(formData: FormData): Partial<Record<SecretKey, string>> {
+  const fields: Partial<Record<SecretKey, string>> = {};
+  for (const key of SECRET_KEYS) {
+    const value = formData.get(key);
+    if (typeof value === "string" && value.trim()) fields[key] = value.trim();
+  }
+  return fields;
 }
