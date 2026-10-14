@@ -249,6 +249,10 @@ describe("cover backfill", () => {
           imprint: null,
           seriesYear: null,
           seriesVolume: null,
+          metronIssueUrl: null,
+          metronSeriesUrl: null,
+          comicvineIssueId: null,
+          comicvineSeriesId: null,
         };
       },
       saveImage: async (hit) => {

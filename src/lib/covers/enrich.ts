@@ -1,3 +1,4 @@
+import { metronSiteUrl } from "@/lib/catalog-links";
 import { coverYearOf } from "@/lib/covers/match";
 
 export const METRON_FIELDS = [
@@ -20,6 +21,10 @@ export const METRON_FIELDS = [
   "seriesVolume",
   "metronIssueId",
   "metronSeriesId",
+  "metronIssueUrl",
+  "metronSeriesUrl",
+  "comicvineIssueId",
+  "comicvineSeriesId",
 ] as const;
 
 export type MetronField = (typeof METRON_FIELDS)[number];
@@ -66,6 +71,10 @@ export type MetronDetails = {
   imprint: string | null;
   seriesYear: number | null;
   seriesVolume: number | null;
+  metronIssueUrl: string | null;
+  metronSeriesUrl: string | null;
+  comicvineIssueId: string | null;
+  comicvineSeriesId: string | null;
 };
 
 export type FieldSources = Partial<Record<MetronField, "metron">>;
@@ -141,6 +150,10 @@ export function mapMetronDetails(value: unknown): MetronDetails | null {
     imprint: text(record(row.imprint)?.name) ?? text(row.imprint) ?? text(record(series?.imprint)?.name),
     seriesYear: positiveInt(series?.year_began),
     seriesVolume: positiveInt(series?.volume),
+    metronIssueUrl: metronPage(row, "issue"),
+    metronSeriesUrl: series ? metronPage(series, "series") : null,
+    comicvineIssueId: externalId(row.cv_id),
+    comicvineSeriesId: externalId(series?.cv_id ?? row.series_cv_id),
   };
 }
 
@@ -201,7 +214,25 @@ function valuesFromDetail(detail: MetronDetails): Partial<Record<MetronField, st
     seriesVolume: detail.seriesVolume ?? undefined,
     metronIssueId: detail.id,
     metronSeriesId: detail.seriesId ?? undefined,
+    metronIssueUrl: detail.metronIssueUrl ?? undefined,
+    metronSeriesUrl: detail.metronSeriesUrl ?? undefined,
+    comicvineIssueId: detail.comicvineIssueId ?? undefined,
+    comicvineSeriesId: detail.comicvineSeriesId ?? undefined,
   };
+}
+
+function metronPage(row: Record<string, unknown>, kind: "issue" | "series"): string | null {
+  const linked = metronSiteUrl(row.resource_url, kind) ?? metronSiteUrl(row.site_url, kind) ?? metronSiteUrl(row.url, kind);
+  if (linked) return linked;
+  const slug = text(row.slug);
+  if (!slug || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/.test(slug)) return null;
+  return `https://metron.cloud/${kind}/${slug}/`;
+}
+
+function externalId(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw || !/^\d{1,12}$/.test(raw) || raw === "0") return null;
+  return raw;
 }
 
 function storyTitle(row: Record<string, unknown>, seriesName: string): string | null {

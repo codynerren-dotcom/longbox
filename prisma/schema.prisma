@@ -83,6 +83,10 @@ model Comic {
   coverUrl           String?
   metronIssueId      String?
   metronSeriesId     String?
+  metronIssueUrl     String?
+  metronSeriesUrl    String?
+  comicvineIssueId   String?
+  comicvineSeriesId  String?
   writer             String?
   artist             String?
   coverArtist        String?

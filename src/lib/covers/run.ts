@@ -42,6 +42,10 @@ const enrichSelect = {
   seriesVolume: true,
   metronIssueId: true,
   metronSeriesId: true,
+  metronIssueUrl: true,
+  metronSeriesUrl: true,
+  comicvineIssueId: true,
+  comicvineSeriesId: true,
   fieldSources: true,
 } as const;
 
@@ -161,6 +165,10 @@ function assignField(data: Prisma.ComicUpdateInput, field: MetronField, value: s
     case "imprint":
     case "metronIssueId":
     case "metronSeriesId":
+    case "metronIssueUrl":
+    case "metronSeriesUrl":
+    case "comicvineIssueId":
+    case "comicvineSeriesId":
       data[field] = String(value);
       return;
     case "coverYear":

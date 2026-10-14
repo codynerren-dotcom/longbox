@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { RefreshFromMetron } from "@/app/issues/refresh-metron";
+import { IssueCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
 import { fromMetron } from "@/lib/covers/enrich";
@@ -53,6 +54,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           <p className="mt-1 text-mist">{comic.variantDescription || comic.variant}</p>
         ) : null}
         {comic.quantity > 1 ? <p className="mt-2 text-sm text-paper">{comic.quantity} copies</p> : null}
+        <IssueCatalogLinks comic={comic} />
 
         <section className="mt-6 grid gap-3 sm:grid-cols-2">
           <Fact label="Key category" value={comic.keyCategory} />

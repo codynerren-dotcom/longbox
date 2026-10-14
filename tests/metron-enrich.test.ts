@@ -49,6 +49,32 @@ describe("Metron issue details", () => {
     expect(detail?.seriesVolume).toBe(1);
     expect(detail?.id).toBe("50");
     expect(detail?.seriesId).toBe("15");
+    expect(detail?.comicvineIssueId).toBeNull();
+    expect(detail?.metronIssueUrl).toBeNull();
+  });
+
+  it("stores Comic Vine ids and a Metron site link, and ignores an API resource url", () => {
+    const detail = mapMetronDetails({
+      ...payload,
+      cv_id: 400123,
+      slug: "saga-2012-1",
+      resource_url: "https://metron.cloud/api/issue/50/",
+      series: {
+        id: 15,
+        name: "Saga",
+        volume: 1,
+        year_began: 2012,
+        cv_id: "4050",
+        resource_url: "https://metron.cloud/series/saga-2012/",
+      },
+    });
+    expect(detail?.comicvineIssueId).toBe("400123");
+    expect(detail?.comicvineSeriesId).toBe("4050");
+    expect(detail?.metronIssueUrl).toBe("https://metron.cloud/issue/saga-2012-1/");
+    expect(detail?.metronSeriesUrl).toBe("https://metron.cloud/series/saga-2012/");
+    const zero = mapMetronDetails({ ...payload, cv_id: 0, resource_url: "https://evil.example/issue/50/" });
+    expect(zero?.comicvineIssueId).toBeNull();
+    expect(zero?.metronIssueUrl).toBeNull();
   });
 
   it("treats zero pages and a zero cover price as empty", () => {

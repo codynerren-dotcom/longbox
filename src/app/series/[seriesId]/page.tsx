@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { SeriesCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
 import { PageHeader } from "@/components/page-header";
 import { addMissingAction } from "@/app/wishlist/actions";
@@ -37,6 +38,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
           {run.missing.length > 0 ? ` · ${run.missing.length} missing in this span` : ""}
         </p>
       </PageHeader>
+      <SeriesCatalogLinks comics={comics} />
       <p className="mb-4 max-w-2xl text-sm text-mist">
         Filled tiles are issues on the shelf. Dashed tiles are gaps between the lowest and highest issue number you own.
         {run.collapsed ? " This span is too wide to draw every gap, so only owned issues are shown." : ""}
