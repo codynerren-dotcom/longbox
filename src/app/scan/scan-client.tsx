@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { KeyBadge } from "@/components/key-badge";
 import type { AddComicInput, CatalogMatch } from "@/lib/catalog/types";
 import { mergeDetectedCodes, parseComicBarcode } from "@/lib/barcode";
 
@@ -338,7 +339,10 @@ export function ScanClient({
             {sheet.error ? <p className="text-sm text-red-300">{sheet.error}</p> : null}
             {sheet.owned ? (
               <div className="mb-3 rounded-2xl bg-comic px-4 py-3 text-ink">
-                <p className="font-display text-3xl tracking-wide">You own this</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-display text-3xl tracking-wide">You own this</p>
+                  <KeyBadge level={sheet.owned.keyLevel} />
+                </div>
                 <p className="text-sm">
                   {sheet.owned.series} #{sheet.owned.issueNo} · {sheet.owned.publisher} · {sheet.owned.grade || "ungraded"}
                 </p>

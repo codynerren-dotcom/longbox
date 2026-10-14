@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { KeyBadge } from "@/components/key-badge";
 import { paletteFor } from "@/lib/visual";
 import { safeImageUrl } from "@/lib/url";
 
@@ -17,35 +18,33 @@ export function CoverTile({ title, issue, coverUrl, keyLevel, slab, variant, hre
   const image = safeImageUrl(coverUrl);
   const [from, to] = paletteFor(title);
   const inner = (
-    <div className={`relative aspect-[2/3] overflow-hidden rounded-xl bg-panel2 ${className ?? ""}`}>
-      {image ? (
-        // Local files are served by the app. A catalog hit can still be an https URL until backfill downloads it.
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={image} alt={`${title}${issue ? ` #${issue}` : ""}`} className="h-full w-full object-cover" />
-      ) : (
-        <div className="absolute inset-0" style={{ background: `linear-gradient(165deg, ${from}, ${to} 70%)` }}>
-          <div className="halftone absolute inset-0" />
-          <div className="relative flex h-full flex-col justify-between p-3">
-            <span className="font-display text-4xl leading-none text-comic">{issue ? `#${issue}` : ""}</span>
-            <span className="font-display text-[1.7rem] uppercase leading-[0.88] text-paper">{title}</span>
+    <div className={`relative ${className ?? ""}`}>
+      <div className="relative aspect-[2/3] overflow-hidden rounded-xl bg-panel2">
+        {image ? (
+          // Local files are served by the app. A catalog hit can still be an https URL until backfill downloads it.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={image} alt={`${title}${issue ? ` #${issue}` : ""}`} className="h-full w-full object-cover" />
+        ) : (
+          <div className="absolute inset-0" style={{ background: `linear-gradient(165deg, ${from}, ${to} 70%)` }}>
+            <div className="halftone absolute inset-0" />
+            <div className="relative flex h-full flex-col justify-between p-3">
+              <span className="font-display text-4xl leading-none text-comic">{issue ? `#${issue}` : ""}</span>
+              <span className="font-display text-[1.7rem] uppercase leading-[0.88] text-paper">{title}</span>
+            </div>
           </div>
-        </div>
-      )}
-      {keyLevel === "Major" || keyLevel === "Minor" ? (
-        <span className="absolute left-2 top-2 rounded bg-comic px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-ink">
-          {keyLevel}
-        </span>
-      ) : null}
-      {slab ? (
-        <span className="absolute bottom-2 right-2 rounded bg-slab px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-ink">
-          Slab
-        </span>
-      ) : null}
-      {variant ? (
-        <span className="absolute bottom-2 left-2 max-w-[68%] truncate rounded bg-ink/80 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-paper">
-          {variant}
-        </span>
-      ) : null}
+        )}
+        {slab ? (
+          <span className="absolute bottom-2 right-2 rounded bg-slab px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-ink">
+            Slab
+          </span>
+        ) : null}
+        {variant ? (
+          <span className="absolute bottom-2 left-2 max-w-[68%] truncate rounded bg-ink/80 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-paper">
+            {variant}
+          </span>
+        ) : null}
+      </div>
+      <KeyBadge level={keyLevel} className="absolute left-2.5 top-2.5" />
     </div>
   );
 

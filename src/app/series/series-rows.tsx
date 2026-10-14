@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CoverTile } from "@/components/cover-tile";
+import { KeyBadge } from "@/components/key-badge";
 import { paletteFor } from "@/lib/visual";
 import type { RowFacts, SeriesRow } from "@/lib/series-view";
 
@@ -18,7 +19,7 @@ export function SeriesList({ series, rows }: { series: string; rows: DisplayRow[
             <span className="min-w-0 flex-1">
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate font-semibold text-paper">{series}</span>
-                {row.key ? <KeyBadge /> : null}
+                {row.key ? <KeyBadge level={row.comic.keyLevel} variant="icon" /> : null}
                 {row.facts.keyReason ? <span className="min-w-0 truncate text-xs text-mist">{row.facts.keyReason}</span> : null}
               </span>
               {row.description ? <span className="mt-0.5 block truncate text-sm text-mist">{row.description}</span> : null}
@@ -120,20 +121,6 @@ function Thumb({ title, image }: { title: string; image: string | null }) {
 function IssueBadge({ badge }: { badge: string }) {
   return (
     <span className="rounded-md border border-paper/40 px-1.5 py-0.5 text-xs font-semibold tracking-wide text-paper">{badge}</span>
-  );
-}
-
-function KeyBadge() {
-  return (
-    <span
-      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-comic/15 text-comic"
-      title="Key issue"
-      aria-label="Key issue"
-    >
-      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
-        <path d="M7.2 1.2a3.3 3.3 0 0 0-1.55 6.2l-.08.7-1.32 1.32-1.15-.9-1.05 1.05 1.15 1.15-1.2 1.2 1.05 1.05 1.2-1.2.95.75 1.35-1.35.72-.08A3.3 3.3 0 1 0 7.2 1.2Zm.15 1.7a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2Z" />
-      </svg>
-    </span>
   );
 }
 
