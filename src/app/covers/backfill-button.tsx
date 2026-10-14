@@ -1,12 +1,17 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect } from "react";
 import { startCoverBackfillAction, type BackfillActionState } from "@/app/covers/actions";
+import { useBackfillStatus } from "@/components/backfill-status";
 
 const initial: BackfillActionState = { status: "idle", message: "" };
 
 export function BackfillButton() {
   const [state, action, pending] = useActionState(startCoverBackfillAction, initial);
+  const { refresh } = useBackfillStatus();
+  useEffect(() => {
+    if (state.status !== "idle") refresh();
+  }, [state.status, state.message, refresh]);
   return (
     <form action={action} className="space-y-3">
       <button

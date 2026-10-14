@@ -2,8 +2,8 @@ import Link from "next/link";
 import { AttachForm } from "@/app/covers/attach-form";
 import { retryCoverAction } from "@/app/covers/actions";
 import { BackfillButton } from "@/app/covers/backfill-button";
+import { CoverLiveStatus } from "@/components/backfill-status";
 import { PageHeader } from "@/components/page-header";
-import { readBackfillStatus } from "@/lib/covers/files";
 import { metronBasicAuth } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { formatIssue } from "@/lib/format";
@@ -11,7 +11,7 @@ import { formatIssue } from "@/lib/format";
 export const metadata = { title: "Covers" };
 
 export default async function CoversPage() {
-  const [matched, pending, unmatched, status, configuredAuth] = await Promise.all([
+  const [matched, pending, unmatched, configuredAuth] = await Promise.all([
     prisma.comic.count({ where: { coverStatus: "matched" } }),
     prisma.comic.count({
       where: { coverFile: null, OR: [{ coverStatus: null }, { coverStatus: "matched" }] },
@@ -30,14 +30,12 @@ export default async function CoversPage() {
         variant: true,
       },
     }),
-    Promise.resolve(readBackfillStatus()),
     metronBasicAuth(),
   ]);
   const configured = Boolean(configuredAuth);
 
   return (
     <div className="max-w-3xl">
-      {status?.running ? <meta httpEquiv="refresh" content="5" /> : null}
       <PageHeader kicker="Metron" title="Covers" />
       <p className="mb-4 text-sm leading-relaxed text-mist">
         Backfill downloads a cover for every issue that does not have one yet. It tries the barcode first, then the series name, issue number, and cover year. Files land in the <code className="text-paper">longbox_covers</code> volume and the app serves them. Issues Metron cannot match stay on this page.
@@ -52,8 +50,9 @@ export default async function CoversPage() {
         {!configured ? (
           <p className="mt-3 text-sm text-mist">Metron username and password are not set. Add them in Settings, then run the backfill.</p>
         ) : null}
-        {status?.message ? <p className="mt-3 text-sm text-paper">{status.message}</p> : null}
-        {status?.running ? <p className="mt-2 text-sm text-mist">Running. This page refreshes every few seconds.</p> : null}
+        <div className="mt-3">
+          <CoverLiveStatus />
+        </div>
         <p className="mt-3 text-sm text-mist">
           From the shell: <code className="text-paper">npm run covers:backfill</code>
         </p>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ImportForm } from "@/app/import/import-form";
 import { CoverControls } from "@/app/settings/cover-controls";
+import { CoverLiveStatus } from "@/components/backfill-status";
 import { MaintenancePanel } from "@/app/settings/maintenance-panel";
 import { PreferencesForm } from "@/app/settings/preferences-form";
 import { SettingsForm } from "@/app/settings/settings-form";
@@ -58,7 +59,6 @@ export default async function SettingsPage() {
 
   return (
     <div className="max-w-3xl space-y-4">
-      {status?.running ? <meta httpEquiv="refresh" content="5" /> : null}
       <PageHeader kicker="Library" title="Settings" />
       <p className="text-sm leading-relaxed text-mist">
         Import, covers, pricing, and how the shelf looks. Passwords and API keys stay encrypted. Usernames and client ids are shown in the form.
@@ -96,14 +96,10 @@ export default async function SettingsPage() {
       </Panel>
 
       <Panel title="Covers" detail="Run or pause the Metron backfill. Unmatched issues stay on the cover report.">
-        <p className="text-sm text-paper">
-          {status?.running ? "Running" : paused ? "Paused" : "Idle"}
-          {status ? ` · matched ${status.matched} · unmatched ${status.unmatched} · skipped ${status.skipped}` : ""}
-        </p>
+        <CoverLiveStatus />
         <p className="text-sm text-mist">
           Shelf: {counts.matched} matched, {counts.pending} still need a cover, {counts.unmatched} unmatched.
         </p>
-        {status?.message ? <p className="text-sm text-mist">{status.message}</p> : null}
         <CoverControls paused={paused} running={Boolean(status?.running)} />
         <Link href="/covers" className="inline-block text-sm font-semibold text-comic">
           Open the unmatched report

@@ -2,6 +2,7 @@
 
 import { useActionState, useState, useTransition } from "react";
 import { pauseCoversAction, refetchCoverAction, runCoversAction, type LibraryState } from "@/app/settings/library-actions";
+import { useBackfillStatus } from "@/components/backfill-status";
 
 const initial: LibraryState = { status: "idle", message: "" };
 
@@ -10,19 +11,22 @@ export function CoverControls({ paused, running }: { paused: boolean; running: b
   const [runError, setRunError] = useState(false);
   const [pending, start] = useTransition();
   const [refetch, refetchAction, refetchPending] = useActionState(refetchCoverAction, initial);
+  const { status, refresh } = useBackfillStatus();
+  const liveRunning = status ? status.running : running;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          disabled={pending || running}
+          disabled={pending || liveRunning}
           className="rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50"
           onClick={() => {
             start(async () => {
               const result = await runCoversAction();
               setRunError(result.status === "error");
               setRunMessage(result.message);
+              refresh();
             });
           }}
         >
@@ -37,6 +41,7 @@ export function CoverControls({ paused, running }: { paused: boolean; running: b
               const result = await pauseCoversAction();
               setRunError(result.status === "error");
               setRunMessage(result.message);
+              refresh();
             });
           }}
         >

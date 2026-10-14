@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { BackfillMobileNote, BackfillSidebarNote, BackfillStatusProvider } from "@/components/backfill-status";
+import type { BackfillStatus } from "@/lib/covers/files";
 import type { Viewer } from "@/lib/auth";
 
 const desktopNav = [
@@ -22,10 +24,19 @@ function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function AppShell({ viewer, children }: { viewer: Viewer; children: ReactNode }) {
+export function AppShell({
+  viewer,
+  backfill,
+  children,
+}: {
+  viewer: Viewer;
+  backfill: BackfillStatus | null;
+  children: ReactNode;
+}) {
   const pathname = usePathname();
 
   return (
+    <BackfillStatusProvider initial={backfill}>
     <div className="min-h-screen">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-white/5 bg-panel md:flex">
         <div className="px-5 pb-4 pt-6">
@@ -56,6 +67,7 @@ export function AppShell({ viewer, children }: { viewer: Viewer; children: React
             );
           })}
         </nav>
+        <BackfillSidebarNote />
         <div className="space-y-2 px-4 py-5 text-xs text-mist">
           <Link href="/import" className="block font-medium text-paper hover:text-comic">
             Import CLZ CSV
@@ -73,6 +85,7 @@ export function AppShell({ viewer, children }: { viewer: Viewer; children: React
         <div className="mx-auto w-full max-w-6xl px-4 py-5 pb-28 md:px-8 md:py-8 md:pb-10">{children}</div>
       </div>
 
+      <BackfillMobileNote />
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-panel/95 backdrop-blur md:hidden">
         <ul className="grid grid-cols-5 items-end px-2 pb-[max(0.4rem,env(safe-area-inset-bottom))] pt-2">
           <Tab href="/collection" label="Library" active={isActive(pathname, "/collection")} />
@@ -93,6 +106,7 @@ export function AppShell({ viewer, children }: { viewer: Viewer; children: React
         </ul>
       </nav>
     </div>
+    </BackfillStatusProvider>
   );
 }
 

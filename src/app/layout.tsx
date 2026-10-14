@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Bebas_Neue, Inter } from "next/font/google";
 import { AppShell } from "@/components/shell";
 import { PwaRegister } from "@/components/pwa-register";
+import { readBackfillStatus } from "@/lib/covers/files";
 import { getViewer } from "@/lib/auth";
 import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
@@ -51,7 +52,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" className={`${display.variable} ${body.variable}`} style={{ "--accent-rgb": ACCENT_RGB[prefs.display.accent] } as React.CSSProperties}>
       <body className="font-sans antialiased">
-        <AppShell viewer={viewer}>{children}</AppShell>
+        <AppShell viewer={viewer} backfill={readBackfillStatus()}>
+          {children}
+        </AppShell>
         <PwaRegister />
       </body>
     </html>

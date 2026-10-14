@@ -17,7 +17,7 @@ export async function startCoverBackfillAction(): Promise<BackfillActionState> {
   if (result === "busy") {
     return { status: "busy", message: "A cover backfill is already running. Refresh in a moment." };
   }
-  return { status: "started", message: "Backfill started. Refresh to see new covers and anything Metron could not match." };
+  return { status: "started", message: "Backfill started. Progress stays on this page while you move around the shelf." };
 }
 
 export async function retryCoverAction(formData: FormData): Promise<void> {
