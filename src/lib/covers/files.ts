@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
 import { emptyBudget, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
-const COVER_NAME = /^metron-\d+\.(?:jpg|jpeg|png|webp|gif)$/;
+const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
+const COVER_NAME = /^(?:metron|cv)-\d+(?:-[a-f0-9]{8})?\.(?:jpg|jpeg|png|webp|gif)$/;
+export type CoverPrefix = "metron" | "cv";
 const EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif"] as const;
 const LOCK_NAME = "backfill.lock";
 const BUDGET_NAME = "metron-budget.json";
@@ -29,11 +32,18 @@ export function coversDir(): string {
   return process.env.COVERS_DIR || path.join(process.cwd(), "data", "covers");
 }
 
-export function coverFilename(metronIssueId: string, ext: string): string {
-  if (!/^\d+$/.test(metronIssueId)) throw new Error("Metron issue id must be digits.");
+/** Default cover keeps the issue id. A chosen variant image gets a stable suffix so it does not replace the default file. */
+export function coverFileKey(issueId: string, imageUrl: string, primaryUrl: string | null): string {
+  if (!/^\d+$/.test(issueId)) throw new Error("Issue id must be digits.");
+  if (!primaryUrl || imageUrl === primaryUrl) return issueId;
+  return `${issueId}-${createHash("sha1").update(imageUrl).digest("hex").slice(0, 8)}`;
+}
+
+export function coverFilename(issueKey: string, ext: string, prefix: CoverPrefix = "metron"): string {
+  if (!COVER_KEY.test(issueKey)) throw new Error("Cover id must be digits.");
   const clean = ext.toLowerCase().replace(/^\./, "");
   if (!EXTENSIONS.includes(clean as (typeof EXTENSIONS)[number])) throw new Error("Unsupported cover type.");
-  return `metron-${metronIssueId}.${clean === "jpeg" ? "jpg" : clean}`;
+  return `${prefix}-${issueKey}.${clean === "jpeg" ? "jpg" : clean}`;
 }
 
 export function coverContentType(filename: string): string | null {
@@ -124,10 +134,10 @@ export function releaseBackfillLock(dir = coversDir()): void {
   }
 }
 
-export function existingCoverFile(dir: string, metronIssueId: string): string | null {
-  if (!/^\d+$/.test(metronIssueId)) return null;
+export function existingCoverFile(dir: string, issueKey: string, prefix: CoverPrefix = "metron"): string | null {
+  if (!COVER_KEY.test(issueKey)) return null;
   for (const ext of ["jpg", "png", "webp", "gif"] as const) {
-    const filename = `metron-${metronIssueId}.${ext}`;
+    const filename = `${prefix}-${issueKey}.${ext}`;
     try {
       if (statSync(path.join(dir, filename)).size > 0) return filename;
     } catch {
@@ -155,9 +165,17 @@ function extensionFor(contentType: string, imageUrl: string): string | null {
   return null;
 }
 
-export async function downloadCover(imageUrl: string, metronIssueId: string, dir = coversDir()): Promise<string> {
-  const existing = existingCoverFile(dir, metronIssueId);
-  if (existing) return existing;
+export async function downloadCover(
+  imageUrl: string,
+  issueKey: string,
+  dir = coversDir(),
+  options?: { force?: boolean; prefix?: CoverPrefix },
+): Promise<string> {
+  const prefix = options?.prefix ?? "metron";
+  if (!options?.force) {
+    const existing = existingCoverFile(dir, issueKey, prefix);
+    if (existing) return existing;
+  }
   let parsed: URL;
   try {
     parsed = new URL(imageUrl);
@@ -188,7 +206,7 @@ export async function downloadCover(imageUrl: string, metronIssueId: string, dir
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length === 0 || bytes.length > MAX_BYTES) throw new Error("Cover image is empty or too large.");
 
-  const filename = coverFilename(metronIssueId, ext);
+  const filename = coverFilename(issueKey, ext, prefix);
   const destination = coverFilePath(dir, filename);
   if (!destination) throw new Error("Could not store the cover.");
   await mkdir(dir, { recursive: true });

@@ -1,4 +1,5 @@
 import type { MetronDetails } from "@/lib/covers/enrich";
+import { coverFileKey } from "@/lib/covers/files";
 import { resolveCover } from "@/lib/covers/match";
 import { MetronBudgetError, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
 
@@ -26,6 +27,8 @@ export async function backfillCovers(args: {
   fileExists: (filename: string) => boolean;
   saveImage: (issue: MetronIssueHit) => Promise<string>;
   loadDetail?: (issueId: string) => Promise<MetronDetails | null>;
+  /** Always reads the linked issue, including when detail fill is off, so a missing cover can be saved. */
+  loadIssue?: (issueId: string) => Promise<MetronDetails | null>;
   markMatched: (
     id: string,
     update: { metronIssueId: string; coverFile: string; coverUrl: string },
@@ -56,6 +59,60 @@ export async function backfillCovers(args: {
       continue;
     }
     const issueNo = comic.issueNo || comic.issue || "?";
+    const lockedMetronId = comic.manualMetronIssueId?.trim() || "";
+    if (lockedMetronId) {
+      try {
+        let imageUrl = comic.manualCoverImageUrl?.trim() || "";
+        let detail: MetronDetails | null = null;
+        if (!imageUrl && args.loadIssue) {
+          detail = await args.loadIssue(lockedMetronId);
+          imageUrl = detail?.imageUrl ?? "";
+        }
+        if (!imageUrl) {
+          summary.skipped += 1;
+          args.log?.(`${comic.series} #${issueNo} kept manual Metron ${lockedMetronId}; no cover image.`);
+          args.onProgress?.(summary);
+          continue;
+        }
+        const filename = await args.saveImage({
+          id: coverFileKey(lockedMetronId, imageUrl, detail?.imageUrl ?? null),
+          seriesId: detail?.seriesId ?? null,
+          seriesName: comic.series,
+          number: issueNo,
+          coverYear: comic.coverYear,
+          imageUrl,
+          label: null,
+        });
+        if (args.loadDetail) {
+          try {
+            detail = (await args.loadDetail(lockedMetronId)) ?? detail;
+          } catch (error) {
+            if (error instanceof MetronBudgetError) throw error;
+            detail = null;
+          }
+        }
+        await args.markMatched(
+          comic.id,
+          { metronIssueId: lockedMetronId, coverFile: filename, coverUrl: coverPublicPath(filename) },
+          detail,
+        );
+        summary.matched += 1;
+        args.log?.(`${comic.series} #${issueNo} kept manual Metron ${lockedMetronId}.`);
+        args.onProgress?.(summary);
+      } catch (error) {
+        if (error instanceof MetronBudgetError) {
+          summary.stoppedReason = error.message;
+          args.log?.(summary.stoppedReason);
+          args.onProgress?.(summary);
+          break;
+        }
+        const reason = error instanceof Error ? error.message : "Could not download the linked cover.";
+        summary.skipped += 1;
+        args.log?.(`${comic.series} #${issueNo} kept manual Metron ${lockedMetronId}; ${reason}`);
+        args.onProgress?.(summary);
+      }
+      continue;
+    }
     try {
       const decision = await resolveCover(comic, args.lookup);
       if (decision.status === "matched") {

@@ -1,0 +1,1 @@
+ALTER TABLE "Comic" ADD COLUMN "manualLink" JSONB;

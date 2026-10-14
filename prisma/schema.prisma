@@ -96,6 +96,8 @@ model Comic {
   seriesVolume       Int?
   /// Keys filled from Metron. Each value is "metron". Absent keys came from CLZ or an edit.
   fieldSources       Json?
+  /// Hand-picked Metron and Comic Vine ids. Cover backfill must not replace them.
+  manualLink         Json?
   coverFile          String?
   /// null = not checked, matched = local file, unmatched = needs a hand fix.
   coverStatus        String?

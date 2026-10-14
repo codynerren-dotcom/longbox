@@ -1,16 +1,20 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import { MatchPanel } from "@/app/issues/match-panel";
 import { RefreshFromMetron } from "@/app/issues/refresh-metron";
 import { IssueCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
+import { matchQuery, readManualLink } from "@/lib/catalog/manual-link";
+import { metronConfigured } from "@/lib/catalog/metron";
 import { fromMetron } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
+import { showSlabSection } from "@/lib/issue-view";
 import { costBasis } from "@/lib/clz/parse";
 import { formatDate, formatIssue, formatMoney } from "@/lib/format";
 import { dateOptions } from "@/lib/settings/preferences";
-import { getPreferences } from "@/lib/settings/service";
+import { getPreferences, getSettings } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
@@ -21,7 +25,12 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
 export default async function IssuePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [comic, prefs] = await Promise.all([prisma.comic.findUnique({ where: { id } }), getPreferences()]);
+  const [comic, prefs, metronReady, settings] = await Promise.all([
+    prisma.comic.findUnique({ where: { id } }),
+    getPreferences(),
+    metronConfigured(),
+    getSettings(),
+  ]);
   if (!comic) notFound();
   const when = dateOptions(prefs);
   const money = prefs.pricing.currency;
@@ -55,6 +64,16 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         ) : null}
         {comic.quantity > 1 ? <p className="mt-2 text-sm text-paper">{comic.quantity} copies</p> : null}
         <IssueCatalogLinks comic={comic} />
+        <MatchPanel
+          comicId={comic.id}
+          query={matchQuery({ series: comic.series, issueNo: comic.issueNo, year: comic.coverYear ?? comic.releaseYear ?? comic.seriesYear })}
+          barcode={comic.barcode ?? ""}
+          metronReady={metronReady}
+          comicVineReady={Boolean(settings.comicvine.apiKey)}
+          metronIssueId={comic.metronIssueId}
+          comicvineIssueId={comic.comicvineIssueId}
+          canRepull={Boolean(readManualLink(comic.manualLink).coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
+        />
 
         <section className="mt-6 grid gap-3 sm:grid-cols-2">
           <Fact label="Key category" value={comic.keyCategory} />
@@ -63,25 +82,23 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           <Fact label="Raw or slab" value={comic.rawOrSlabbed} />
         </section>
 
-        <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-display text-3xl tracking-wide">Slab</h2>
-            {comic.rawOrSlabbed === "Slabbed" ? (
+        {showSlabSection(comic.rawOrSlabbed) ? (
+          <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-display text-3xl tracking-wide">Slab</h2>
               <span className="rounded bg-slab px-2 py-1 font-display text-xl tracking-wide text-ink">
                 {[comic.gradingCompany, comic.grade, comic.labelType].filter(Boolean).join(" · ") || "Slabbed"}
               </span>
-            ) : (
-              <span className="text-sm text-mist">Raw copy</span>
-            )}
-          </div>
-          <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-            <Fact label="Grading company" value={comic.gradingCompany} />
-            <Fact label="Certification number" value={comic.slabCertNumber} />
-            <Fact label="Label type" value={comic.labelType} />
-            <Fact label="Page quality" value={comic.pageQuality} />
-            <Fact label="Grader notes" value={comic.graderNotes} />
-          </dl>
-        </section>
+            </div>
+            <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Fact label="Grading company" value={comic.gradingCompany} />
+              <Fact label="Certification number" value={comic.slabCertNumber} />
+              <Fact label="Label type" value={comic.labelType} />
+              <Fact label="Page quality" value={comic.pageQuality} />
+              <Fact label="Grader notes" value={comic.graderNotes} />
+            </dl>
+          </section>
+        ) : null}
 
         <section className="mt-4 grid gap-3 sm:grid-cols-2">
           <Fact label="Signed by" value={comic.signedBy} />

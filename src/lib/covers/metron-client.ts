@@ -1,6 +1,7 @@
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
+import { fileBudgetStore } from "@/lib/covers/files";
+import { budgetDay, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
-import { retryAfterMs, type MetronLimiter } from "@/lib/covers/limiter";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
@@ -28,6 +29,23 @@ export async function metronBasicAuth(): Promise<{ username: string; password: s
 
 export async function metronBaseUrl(): Promise<string> {
   return (await getSettings()).metron.baseUrl;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function metronTransport(): Promise<MetronTransport> {
+  const auth = await metronBasicAuth();
+  if (!auth) throw new Error("Set Metron username and password in Settings or the environment.");
+  return {
+    fetch,
+    limiter: new MetronLimiter(fileBudgetStore(), () => Date.now(), sleep, () => budgetDay(new Date())),
+    username: auth.username,
+    password: auth.password,
+    baseUrl: await metronBaseUrl(),
+    now: () => Date.now(),
+  };
 }
 
 export function basicAuthHeader(username: string, password: string): string {
@@ -181,11 +199,27 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
   };
 }
 
-export async function fetchMetronIssueRecord(transport: MetronTransport, metronIssueId: string): Promise<MetronDetails | null> {
+export async function listMetronIssueRows(transport: MetronTransport, path: string): Promise<unknown[]> {
+  const rows: unknown[] = [];
+  let next: string | null = path;
+  for (let page = 0; page < 3 && next; page += 1) {
+    const body = await getJson(transport, next);
+    rows.push(...(body.results ?? []));
+    next = typeof body.next === "string" && body.next ? body.next : null;
+    if (rows.length >= 12) break;
+  }
+  return rows.slice(0, 12);
+}
+
+export async function fetchMetronIssueBody(transport: MetronTransport, metronIssueId: string): Promise<unknown | null> {
   if (!/^\d+$/.test(metronIssueId)) return null;
   const body = await getJson(transport, `/issue/${metronIssueId}/`);
-  const row = (body as { results?: unknown }).results ?? body;
-  return mapMetronDetails(row);
+  return (body as { results?: unknown }).results ?? body;
+}
+
+export async function fetchMetronIssueRecord(transport: MetronTransport, metronIssueId: string): Promise<MetronDetails | null> {
+  const row = await fetchMetronIssueBody(transport, metronIssueId);
+  return row ? mapMetronDetails(row) : null;
 }
 
 export async function fetchMetronIssue(transport: MetronTransport, metronIssueId: string): Promise<MetronIssueHit | null> {

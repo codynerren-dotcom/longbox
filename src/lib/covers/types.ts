@@ -42,6 +42,9 @@ export type CoverRecord = CoverQuery & {
   coverFile: string | null;
   coverStatus: string | null;
   metronIssueId: string | null;
+  /** Set when a person linked this Metron issue. Backfill must not search for a different one. */
+  manualMetronIssueId?: string | null;
+  manualCoverImageUrl?: string | null;
 };
 
 export class MetronBudgetError extends Error {

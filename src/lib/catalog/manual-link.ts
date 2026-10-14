@@ -1,0 +1,108 @@
+export type CatalogSource = "metron" | "comicvine";
+
+export type ManualLink = {
+  metronIssueId: string | null;
+  comicvineIssueId: string | null;
+  coverImageUrl: string | null;
+  coverSource: CatalogSource | null;
+};
+
+const EMPTY: ManualLink = {
+  metronIssueId: null,
+  comicvineIssueId: null,
+  coverImageUrl: null,
+  coverSource: null,
+};
+
+function digits(value: unknown): string | null {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return String(value);
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!/^\d{1,12}$/.test(text) || text === "0") return null;
+  return text;
+}
+
+function httpsUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol === "http:") url.protocol = "https:";
+    if (url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function readManualLink(value: unknown): ManualLink {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...EMPTY };
+  const row = value as Record<string, unknown>;
+  const coverSource = row.coverSource === "metron" || row.coverSource === "comicvine" ? row.coverSource : null;
+  const coverImageUrl = httpsUrl(row.coverImageUrl);
+  return {
+    metronIssueId: digits(row.metronIssueId),
+    comicvineIssueId: digits(row.comicvineIssueId),
+    coverImageUrl: coverSource ? coverImageUrl : null,
+    coverSource: coverSource && coverImageUrl ? coverSource : null,
+  };
+}
+
+export function manualLinkJson(link: ManualLink): ManualLink | null {
+  const next = readManualLink(link);
+  if (!next.metronIssueId && !next.comicvineIssueId && !next.coverImageUrl) return null;
+  return next;
+}
+
+/** Remember this catalog id and, when a cover was chosen, which image to keep. */
+export function withLinkedId(current: unknown, source: CatalogSource, issueId: string, coverImageUrl: string | null): ManualLink {
+  const link = readManualLink(current);
+  const id = digits(issueId);
+  if (!id) return link;
+  if (source === "metron") link.metronIssueId = id;
+  else link.comicvineIssueId = id;
+  const image = httpsUrl(coverImageUrl);
+  if (image) {
+    link.coverImageUrl = image;
+    link.coverSource = source;
+  }
+  return link;
+}
+
+/** Drop one catalog id. A cover chosen from that catalog is dropped with it. */
+export function withoutLinkedId(current: unknown, source: CatalogSource): ManualLink {
+  const link = readManualLink(current);
+  if (source === "metron") link.metronIssueId = null;
+  else link.comicvineIssueId = null;
+  if (link.coverSource === source) {
+    link.coverImageUrl = null;
+    link.coverSource = null;
+  }
+  return link;
+}
+
+export function matchQuery(comic: { series: string; issueNo: string | null | undefined; year: number | null | undefined }): string {
+  const parts = [comic.series.trim()];
+  const issue = comic.issueNo?.trim().replace(/^#/, "");
+  if (issue) parts.push(`#${issue}`);
+  if (comic.year != null && Number.isInteger(comic.year)) parts.push(String(comic.year));
+  return parts.filter(Boolean).join(" ");
+}
+
+export function parseMatchQuery(query: string): { series: string; issueNo: string | null; year: number | null } {
+  let text = query.replace(/\s+/g, " ").trim();
+  let year: number | null = null;
+  const yearMatch = text.match(/\b((?:18|19|20)\d{2})\b/);
+  if (yearMatch?.[1]) {
+    year = Number.parseInt(yearMatch[1], 10);
+    text = text.replace(yearMatch[0], " ").replace(/\s+/g, " ").trim();
+  }
+  let issueNo: string | null = null;
+  const hashed = text.match(/#\s*([0-9]+[A-Za-z]?)/);
+  const bare = hashed ? null : text.match(/(?:^|\s)([0-9]+[A-Za-z]?)(?:\s|$)/);
+  const found = hashed?.[1] ?? bare?.[1] ?? null;
+  if (found) {
+    issueNo = found;
+    text = text.replace(hashed?.[0] ?? bare?.[0] ?? found, " ").replace(/\s+/g, " ").trim();
+  }
+  return { series: text, issueNo, year };
+}

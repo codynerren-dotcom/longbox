@@ -1,4 +1,6 @@
 import type { Prisma } from "@prisma/client";
+import { saveChosenCover } from "@/lib/catalog/link-issue";
+import { readManualLink, withLinkedId } from "@/lib/catalog/manual-link";
 import { coverPublicPath, backfillCovers, type BackfillSummary } from "@/lib/covers/backfill";
 import { planEnrichment, type EnrichmentPlan, type MetronDetails, type MetronField } from "@/lib/covers/enrich";
 import { logCoverFinished, logCoverProgress, logCoverStarted, logEnrichFinished, logEnrichStarted, logMetronFill } from "@/lib/log/events";
@@ -10,14 +12,12 @@ import {
   coverExists,
   coversDir,
   downloadCover,
-  fileBudgetStore,
   releaseBackfillLock,
   writeBackfillStatus,
   type BackfillStatus,
 } from "@/lib/covers/files";
-import { budgetDay, MetronLimiter } from "@/lib/covers/limiter";
 import { resolveCover } from "@/lib/covers/match";
-import { createMetronCoverLookup, fetchMetronIssueRecord, metronBaseUrl, metronBasicAuth, type MetronTransport } from "@/lib/covers/metron-client";
+import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
 import { getPreferences, setCoversPaused } from "@/lib/settings/service";
@@ -47,31 +47,10 @@ const enrichSelect = {
   comicvineIssueId: true,
   comicvineSeriesId: true,
   fieldSources: true,
+  manualLink: true,
 } as const;
 
 const globalBackfill = globalThis as unknown as { longboxCoverBackfill?: Promise<unknown> };
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export async function metronTransport(): Promise<MetronTransport> {
-  const auth = await metronBasicAuth();
-  if (!auth) throw new Error("Set Metron username and password in Settings or the environment.");
-  return {
-    fetch,
-    limiter: new MetronLimiter(
-      fileBudgetStore(),
-      () => Date.now(),
-      sleep,
-      () => budgetDay(new Date()),
-    ),
-    username: auth.username,
-    password: auth.password,
-    baseUrl: await metronBaseUrl(),
-    now: () => Date.now(),
-  };
-}
 
 async function loadComics(): Promise<CoverRecord[]> {
   const rows = await prisma.comic.findMany({
@@ -89,9 +68,27 @@ async function loadComics(): Promise<CoverRecord[]> {
       coverFile: true,
       coverStatus: true,
       metronIssueId: true,
+      manualLink: true,
     },
   });
-  return rows;
+  return rows.map((row) => {
+    const link = readManualLink(row.manualLink);
+    return {
+      id: row.id,
+      series: row.series,
+      issue: row.issue,
+      issueNo: row.issueNo,
+      coverYear: row.coverYear,
+      barcode: row.barcode,
+      variant: row.variant,
+      publisher: row.publisher,
+      coverFile: row.coverFile,
+      coverStatus: row.coverStatus,
+      metronIssueId: row.metronIssueId,
+      manualMetronIssueId: link.metronIssueId,
+      manualCoverImageUrl: link.coverImageUrl,
+    };
+  });
 }
 
 function statusFrom(
@@ -135,6 +132,10 @@ async function applyEnrichment(
   if (plan && plan.filled.length > 0) {
     Object.assign(data, enrichmentPatch(plan));
   }
+  const replacingLink = extra.manualLink !== undefined;
+  const link = readManualLink(current?.manualLink);
+  if (!replacingLink && link.metronIssueId) data.metronIssueId = link.metronIssueId;
+  if (!replacingLink && link.comicvineIssueId) data.comicvineIssueId = link.comicvineIssueId;
   if (Object.keys(data).length > 0) {
     await prisma.comic.update({ where: { id }, data });
   }
@@ -218,6 +219,7 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
     lookup,
     fileExists: (filename) => coverExists(dir, filename),
     loadDetail: (issueId) => loadMatchedIssue(transport, issueId),
+    loadIssue: (issueId) => fetchMetronIssueRecord(transport, issueId),
     saveImage: async (issue) => {
       if (!issue.imageUrl) throw new Error(`Metron issue ${issue.id} has no cover image.`);
       return downloadCover(issue.imageUrl, issue.id, dir);
@@ -309,9 +311,11 @@ export async function attachMetronCover(comicId: string, metronIssueId: string):
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) throw new Error("A cover backfill is already running.");
   const detail = await fetchMetronIssueRecord(await metronTransport(), metronIssueId);
   if (!detail?.imageUrl) throw new Error(`Metron issue ${metronIssueId} has no cover image.`);
-  const filename = await downloadCover(detail.imageUrl, detail.id);
+  const filename = await downloadCover(detail.imageUrl, detail.id, undefined, { force: true });
+  const existing = await prisma.comic.findUnique({ where: { id: comicId }, select: { manualLink: true } });
   const filled = await applyEnrichment(comicId, detail, {
     metronIssueId: detail.id,
+    manualLink: withLinkedId(existing?.manualLink, "metron", detail.id, detail.imageUrl),
     coverFile: filename,
     coverUrl: coverPublicPath(filename),
     coverStatus: "matched",
@@ -339,9 +343,21 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       coverFile: true,
       coverStatus: true,
       metronIssueId: true,
+      manualLink: true,
     },
   });
   if (!comic) throw new Error("That issue is not on the shelf.");
+  const locked = readManualLink(comic.manualLink);
+  if (locked.metronIssueId || locked.comicvineIssueId || locked.coverImageUrl) {
+    if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
+    try {
+      const saved = await saveChosenCover(comicId);
+      if (!saved.ok) throw new Error(saved.message);
+      return saved.message;
+    } finally {
+      releaseBackfillLock();
+    }
+  }
   if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
   if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
   const label = issueLabel(comic.series, comic.issueNo, comic.issue);
