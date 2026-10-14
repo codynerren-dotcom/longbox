@@ -7,6 +7,7 @@ export function IssueCatalogLinks({
     metronIssueId?: string | null;
     metronIssueUrl?: string | null;
     comicvineIssueId?: string | null;
+    gcdIssueId?: string | null;
   };
 }) {
   return <CatalogLinks links={issueCatalogLinks(comic)} />;
@@ -19,17 +20,20 @@ export function SeriesCatalogLinks({
     metronSeriesId?: string | null;
     metronSeriesUrl?: string | null;
     comicvineSeriesId?: string | null;
+    gcdSeriesId?: string | null;
   }>;
 }) {
   return <CatalogLinks links={seriesCatalogLinks(comics)} />;
 }
 
 function CatalogLinks({ links }: { links: CatalogTarget }) {
-  if (!links.metron && !links.comicVine) return null;
+  if (!links.metron && !links.comicVine && !links.gcd && !links.gcdCover) return null;
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {links.metron ? <Outbound href={links.metron} label="View on Metron" /> : null}
       {links.comicVine ? <Outbound href={links.comicVine} label="View on ComicVine" /> : null}
+      {links.gcd ? <Outbound href={links.gcd} label="View on GCD" /> : null}
+      {links.gcdCover ? <Outbound href={links.gcdCover} label="GCD cover" /> : null}
     </div>
   );
 }

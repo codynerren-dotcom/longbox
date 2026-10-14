@@ -3,6 +3,8 @@ const SLUG = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 export type CatalogTarget = {
   metron: string | null;
   comicVine: string | null;
+  gcd: string | null;
+  gcdCover: string | null;
 };
 
 export function metronSiteUrl(value: unknown, kind: "issue" | "series"): string | null {
@@ -41,14 +43,32 @@ export function comicVineVolumeHref(id: string | null | undefined): string | nul
   return cv ? `https://comicvine.gamespot.com/volume/4050-${cv}/` : null;
 }
 
+export function gcdIssueHref(id: string | null | undefined): string | null {
+  const gcd = digits(id);
+  return gcd ? `https://www.comics.org/issue/${gcd}/` : null;
+}
+
+export function gcdSeriesHref(id: string | null | undefined): string | null {
+  const gcd = digits(id);
+  return gcd ? `https://www.comics.org/series/${gcd}/` : null;
+}
+
+export function gcdCoverHref(id: string | null | undefined): string | null {
+  const gcd = digits(id);
+  return gcd ? `https://www.comics.org/issue/${gcd}/cover/4/` : null;
+}
+
 export function issueCatalogLinks(comic: {
   metronIssueId?: string | null;
   metronIssueUrl?: string | null;
   comicvineIssueId?: string | null;
+  gcdIssueId?: string | null;
 }): CatalogTarget {
   return {
     metron: metronIssueHref(comic.metronIssueId, comic.metronIssueUrl),
     comicVine: comicVineIssueHref(comic.comicvineIssueId),
+    gcd: gcdIssueHref(comic.gcdIssueId),
+    gcdCover: gcdCoverHref(comic.gcdIssueId),
   };
 }
 
@@ -57,6 +77,7 @@ export function seriesCatalogLinks(
     metronSeriesId?: string | null;
     metronSeriesUrl?: string | null;
     comicvineSeriesId?: string | null;
+    gcdSeriesId?: string | null;
   }>,
 ): CatalogTarget {
   const seriesId = mostCommon(comics.map((comic) => digits(comic.metronSeriesId)));
@@ -65,7 +86,7 @@ export function seriesCatalogLinks(
   );
   const metron = site ?? (seriesId ? `https://metron.cloud/series/${seriesId}/` : mostCommon(comics.map((comic) => metronSiteUrl(comic.metronSeriesUrl, "series"))));
   const volumeId = mostCommon(comics.map((comic) => digits(comic.comicvineSeriesId)));
-  return { metron, comicVine: comicVineVolumeHref(volumeId) };
+  return { metron, comicVine: comicVineVolumeHref(volumeId), gcd: gcdSeriesHref(mostCommon(comics.map((comic) => digits(comic.gcdSeriesId)))), gcdCover: null };
 }
 
 function metronHref(kind: "issue" | "series", id: string | null | undefined, siteUrl: string | null | undefined): string | null {

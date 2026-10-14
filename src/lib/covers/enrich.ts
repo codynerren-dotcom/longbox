@@ -77,7 +77,7 @@ export type MetronDetails = {
   comicvineSeriesId: string | null;
 };
 
-export type FieldMark = "metron" | "user";
+export type FieldMark = "metron" | "gcd" | "user";
 export type FieldSources = Partial<Record<string, FieldMark>>;
 
 export type EnrichmentPlan = {
@@ -114,13 +114,20 @@ export function readFieldSources(value: unknown): FieldSources {
   for (const [key, source] of Object.entries(value)) {
     if (!FIELD_KEY.test(key)) continue;
     if (source === "user") sources[key] = "user";
-    else if (source === "metron" && (METRON_FIELDS as readonly string[]).includes(key)) sources[key] = "metron";
+    else if ((source === "metron" || source === "gcd") && (METRON_FIELDS as readonly string[]).includes(key)) sources[key] = source;
   }
   return sources;
 }
 
 export function fromMetron(sources: unknown, field: string): boolean {
   return readFieldSources(sources)[field as MetronField] === "metron";
+}
+
+export function fieldCredit(sources: unknown, field: string): string | null {
+  const mark = readFieldSources(sources)[field as MetronField];
+  if (mark === "gcd") return "Data from GCD";
+  if (mark === "metron") return "from Metron";
+  return null;
 }
 
 export function mapMetronDetails(value: unknown): MetronDetails | null {
@@ -160,18 +167,33 @@ export function mapMetronDetails(value: unknown): MetronDetails | null {
   };
 }
 
-export function planEnrichment(current: Partial<Record<MetronField, unknown>>, detail: MetronDetails, fieldSources: unknown): EnrichmentPlan {
+const GCD_SKIP = new Set<MetronField>([
+  "metronIssueId",
+  "metronSeriesId",
+  "metronIssueUrl",
+  "metronSeriesUrl",
+  "comicvineIssueId",
+  "comicvineSeriesId",
+]);
+
+export function planEnrichment(
+  current: Partial<Record<MetronField, unknown>>,
+  detail: MetronDetails,
+  fieldSources: unknown,
+  origin: "metron" | "gcd" = "metron",
+): EnrichmentPlan {
   const incoming = valuesFromDetail(detail);
   const sources = readFieldSources(fieldSources);
   const patch: EnrichmentPlan["patch"] = {};
   const filled: MetronField[] = [];
   for (const field of METRON_FIELDS) {
+    if (origin === "gcd" && GCD_SKIP.has(field)) continue;
     if (sources[field] === "user") continue;
     if (!isBlank(field, current[field])) continue;
     const next = incoming[field];
     if (next == null || isBlank(field, next)) continue;
     patch[field] = next;
-    sources[field] = "metron";
+    sources[field] = origin;
     filled.push(field);
   }
   return { patch, sources, filled };
@@ -193,7 +215,7 @@ export function protectMetronFields<T extends Record<string, unknown>>(
       delete next[field];
       continue;
     }
-    if (sources[field] === "metron") {
+    if (sources[field] === "metron" || sources[field] === "gcd") {
       delete sources[field];
       changedSources = true;
     }

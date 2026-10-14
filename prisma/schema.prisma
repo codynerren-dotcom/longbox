@@ -87,6 +87,8 @@ model Comic {
   metronSeriesUrl    String?
   comicvineIssueId   String?
   comicvineSeriesId  String?
+  gcdIssueId         String?
+  gcdSeriesId        String?
   writer             String?
   artist             String?
   coverArtist        String?
@@ -99,7 +101,7 @@ model Comic {
   /// Hand-picked catalog ids, plus a user-uploaded cover that backfill must not replace.
   manualLink         Json?
   coverFile          String?
-  /// null = not checked, matched = local file, manual = uploaded photo, unmatched = needs a hand fix.
+  /// null = not checked, matched = local file, manual = uploaded photo, gcd = linked on GCD without a local cover, unmatched = needs a hand fix.
   coverStatus        String?
   coverNote          String?   @db.Text
   coverCheckedAt     DateTime?
@@ -120,6 +122,7 @@ model Comic {
   @@index([read])
   @@index([coverStatus])
   @@index([metronIssueId])
+  @@index([gcdIssueId])
 }
 
 model WishlistItem {

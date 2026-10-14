@@ -1,10 +1,11 @@
-export type CatalogSource = "metron" | "comicvine";
+export type CatalogSource = "metron" | "comicvine" | "gcd";
 
 export type ManualLink = {
   metronIssueId: string | null;
   comicvineIssueId: string | null;
+  gcdIssueId: string | null;
   coverImageUrl: string | null;
-  coverSource: CatalogSource | null;
+  coverSource: "metron" | "comicvine" | null;
   /** True when the cover on the shelf is a photo the user uploaded. Backfill must leave it alone. */
   userCover: boolean;
   /** Original photo, kept beside the resized cover for a later recognition pass. Not served publicly. */
@@ -14,6 +15,7 @@ export type ManualLink = {
 const EMPTY: ManualLink = {
   metronIssueId: null,
   comicvineIssueId: null,
+  gcdIssueId: null,
   coverImageUrl: null,
   coverSource: null,
   userCover: false,
@@ -51,6 +53,7 @@ export function readManualLink(value: unknown): ManualLink {
   return {
     metronIssueId: digits(row.metronIssueId),
     comicvineIssueId: digits(row.comicvineIssueId),
+    gcdIssueId: digits(row.gcdIssueId),
     coverImageUrl: coverSource ? coverImageUrl : null,
     coverSource: coverSource && coverImageUrl ? coverSource : null,
     userCover: row.userCover === true,
@@ -60,7 +63,7 @@ export function readManualLink(value: unknown): ManualLink {
 
 export function manualLinkJson(link: unknown): ManualLink | null {
   const next = readManualLink(link);
-  if (!next.metronIssueId && !next.comicvineIssueId && !next.coverImageUrl && !next.userCover && !next.originalFile) return null;
+  if (!next.metronIssueId && !next.comicvineIssueId && !next.gcdIssueId && !next.coverImageUrl && !next.userCover && !next.originalFile) return null;
   return next;
 }
 
@@ -70,9 +73,10 @@ export function withLinkedId(current: unknown, source: CatalogSource, issueId: s
   const id = digits(issueId);
   if (!id) return link;
   if (source === "metron") link.metronIssueId = id;
-  else link.comicvineIssueId = id;
+  else if (source === "comicvine") link.comicvineIssueId = id;
+  else link.gcdIssueId = id;
   const image = httpsUrl(coverImageUrl);
-  if (image) {
+  if (image && source !== "gcd") {
     link.coverImageUrl = image;
     link.coverSource = source;
     link.userCover = false;
@@ -112,7 +116,8 @@ export function stripLockedCover(
 export function withoutLinkedId(current: unknown, source: CatalogSource): ManualLink {
   const link = readManualLink(current);
   if (source === "metron") link.metronIssueId = null;
-  else link.comicvineIssueId = null;
+  else if (source === "comicvine") link.comicvineIssueId = null;
+  else link.gcdIssueId = null;
   if (link.coverSource === source) {
     link.coverImageUrl = null;
     link.coverSource = null;

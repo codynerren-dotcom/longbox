@@ -138,21 +138,22 @@ describe("Metron cover matching", () => {
     const comic = query({ barcode: null });
     expect(chooseIssue([issue({ coverYear: 2014 })], comic, "1", "series")).toMatchObject({
       status: "unmatched",
-      reason: "Metron has Saga #1, but not cover year 2012.",
     });
+    expect(chooseIssue([issue({ coverYear: 2014 })], comic, "1", "series").score).toBeLessThan(75);
     expect(
       chooseIssue([issue({ id: "50" }), issue({ id: "51", label: "Saga (2012) #1 B" })], comic, "1", "barcode"),
     ).toMatchObject({ status: "unmatched", reason: "Several Metron issues share this barcode (50, 51)." });
   });
 
-  it("keeps a single barcode hit even when the cover year disagrees", () => {
+  it("refuses a barcode hit whose year is decades off", () => {
     const decision = chooseIssue([issue({ coverYear: 1999 })], query(), "1", "barcode");
-    expect(decision).toMatchObject({ status: "matched", via: "barcode", issue: { id: "50" } });
+    expect(decision.status).toBe("unmatched");
+    expect(decision.score).toBeLessThan(75);
   });
 
   it("logs a miss when Metron has no series", async () => {
     const decision = await resolveCover(query({ barcode: null, series: "Planet Slammer" }), lookup());
-    expect(decision).toEqual({ status: "unmatched", reason: "No Metron series named Planet Slammer." });
+    expect(decision).toEqual({ status: "unmatched", reason: "No Metron series named Planet Slammer.", score: 0 });
   });
 });
 
@@ -374,7 +375,7 @@ describe("Metron rate limit", () => {
       },
     };
     const hits = await createMetronCoverLookup(transport).issuesByUpc("07596060000100001");
-    expect(hits).toEqual([issue()]);
+    expect(hits).toEqual([issue({ publisher: null, releaseYear: null, seriesYear: 2012, upc: null, variant: null })]);
     expect(urls[0]).toBe("https://metron.cloud/api/issue/?upc=07596060000100001");
     expect(waits).toContain(30_000);
     expect(calls).toBe(2);

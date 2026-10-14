@@ -85,6 +85,7 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
   if (!row || row.id == null) return null;
   const series = record(row.series);
   const seriesName = text(series?.name) ?? text(series?.series) ?? (typeof row.series === "string" ? text(row.series) : null);
+  const variant = text(row.variant) ?? text(record(row.variant)?.name);
   return {
     id: String(row.id),
     seriesId: series?.id != null ? String(series.id) : null,
@@ -92,7 +93,12 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     number: text(row.number) ?? "",
     coverYear: coverYearOf(text(row.cover_date)),
     imageUrl: httpsUrl(text(row.image)),
-    label: text(row.issue),
+    label: text(row.issue) ?? variant,
+    releaseYear: coverYearOf(text(row.store_date)),
+    seriesYear: whole(series?.year_began),
+    upc: text(row.upc),
+    publisher: text(record(series?.publisher)?.name) ?? (typeof series?.publisher === "string" ? text(series.publisher) : null),
+    variant,
   };
 }
 

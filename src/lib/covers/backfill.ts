@@ -1,7 +1,8 @@
+import { GcdBudgetError } from "@/lib/catalog/gcd";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { coverFileKey } from "@/lib/covers/files";
 import { resolveCover } from "@/lib/covers/match";
-import { MetronBudgetError, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
+import { MetronBudgetError, type CoverDecision, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
 
 export type BackfillSummary = {
   pending: number;
@@ -17,7 +18,8 @@ export function coverPublicPath(filename: string): string {
 
 export function needsCover(comic: CoverRecord, fileExists: (filename: string) => boolean): boolean {
   if (comic.userCover || comic.coverStatus === "manual") return false;
-  if (comic.coverStatus === "unmatched") return false;
+  if (comic.coverStatus === "unmatched" || comic.coverStatus === "gcd") return false;
+  if (comic.gcdIssueId || comic.manualGcdIssueId) return false;
   if (comic.coverFile && fileExists(comic.coverFile)) return false;
   return true;
 }
@@ -36,6 +38,8 @@ export async function backfillCovers(args: {
     detail: MetronDetails | null,
   ) => Promise<void>;
   markUnmatched: (id: string, reason: string) => Promise<void>;
+  gcd?: (comic: CoverRecord) => Promise<CoverDecision>;
+  markGcd?: (id: string, update: { gcdIssueId: string; gcdSeriesId: string | null; score: number }) => Promise<void>;
   log?: (line: string) => void;
   onProgress?: (summary: BackfillSummary) => void;
   shouldPause?: () => Promise<boolean> | boolean;
@@ -48,6 +52,7 @@ export async function backfillCovers(args: {
     stoppedReason: null,
   };
 
+  let gcdOpen = Boolean(args.gcd && args.markGcd);
   for (const comic of args.comics) {
     if (await args.shouldPause?.()) {
       summary.stoppedReason = "Paused.";
@@ -143,11 +148,28 @@ export async function backfillCovers(args: {
           detail,
         );
         summary.matched += 1;
-        args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}`);
+        args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}, score ${decision.score}.`);
       } else {
-        await args.markUnmatched(comic.id, decision.reason);
-        summary.unmatched += 1;
-        args.log?.(`${comic.series} #${issueNo} unmatched: ${decision.reason}`);
+        const gcdDecision = await tryGcd(gcdOpen, args.gcd, comic);
+        if (gcdDecision === "budget") {
+          gcdOpen = false;
+          args.log?.("GCD rate limit reached. Later copies will stay unmatched.");
+        }
+        if (gcdDecision && gcdDecision !== "budget" && gcdDecision.status === "matched" && args.markGcd) {
+          await args.markGcd(comic.id, {
+            gcdIssueId: gcdDecision.issue.id,
+            gcdSeriesId: gcdDecision.issue.seriesId,
+            score: gcdDecision.score,
+          });
+          summary.matched += 1;
+          args.log?.(`${comic.series} #${issueNo} matched GCD ${gcdDecision.issue.id}, score ${gcdDecision.score}. Cover stays on GCD.`);
+        } else {
+          const gcdReason = gcdDecision && gcdDecision !== "budget" && gcdDecision.status === "unmatched" ? ` ${gcdDecision.reason}` : "";
+          const reason = `${decision.reason}${gcdReason}`;
+          await args.markUnmatched(comic.id, reason);
+          summary.unmatched += 1;
+          args.log?.(`${comic.series} #${issueNo} unmatched: ${reason}`);
+        }
       }
       args.onProgress?.(summary);
     } catch (error) {
@@ -159,4 +181,18 @@ export async function backfillCovers(args: {
   }
 
   return summary;
+}
+
+async function tryGcd(
+  open: boolean,
+  gcd: ((comic: CoverRecord) => Promise<CoverDecision>) | undefined,
+  comic: CoverRecord,
+): Promise<CoverDecision | "budget" | null> {
+  if (!open || !gcd) return null;
+  try {
+    return await gcd(comic);
+  } catch (error) {
+    if (error instanceof GcdBudgetError) return "budget";
+    return { status: "unmatched", reason: error instanceof Error ? error.message : "GCD lookup failed.", score: 0 };
+  }
 }

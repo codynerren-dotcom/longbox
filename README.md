@@ -73,7 +73,13 @@ Copy the file into the container first, or mount it. Do not commit a real export
 
 ## Cover backfill
 
-Issues start without cover art. The backfill asks Metron for each one that does not already have a local file, using `METRON_USERNAME` and `METRON_PASSWORD` (basic auth). A barcode match wins. Otherwise it searches Metron series by name, then the issue number and cover year. The image is downloaded onto the `longbox_covers` volume and served by the app at `/covers/files/…`. The grid and the issue page use that file, and fall back to the gradient placeholder when it is missing.
+Issues start without cover art. The backfill asks Metron for each one that does not already have a local file, using `METRON_USERNAME` and `METRON_PASSWORD` (basic auth). A barcode match wins only when the scored candidate is the same edition and the release years are close. A facsimile, reprint, later printing, anniversary, True Believers, or omnibus copy is detected from the series name, title, variant, format, release year against the cover year, and cover price. Those copies search the edition series first (for example `Amazing Spider-Man Facsimile Edition`) and are not auto-linked to the original issue when the years are decades apart. Each candidate is scored on series, issue number, variant, release date, UPC, and publisher. Only a score of 75 or higher is linked. Anything lower stays unmatched for the Match panel.
+
+When Metron has no confident match, the Grand Comics Database (`GCD_API_BASE`, default `https://www.comics.org`) is the fallback. GCD calls stay at least two seconds apart and stop after 30 in an hour. Issue data is CC BY-SA: enriched fields show “Data from GCD”. Cover scans are not downloaded or hotlinked. The issue page links to “View on GCD” and the GCD cover page. The Match panel has a GCD tab.
+
+A linked copy whose release year and cover year differ by more than two years, or that looks like a facsimile or other reprint edition, shows up under **Review suspect matches** on Cover backfill (also linked from Settings). Unlink and Re-match are explicit. A hand-picked Metron, Comic Vine, or GCD link is left in place until you unlink it.
+
+A confident Metron image is downloaded onto the `longbox_covers` volume and served by the app at `/covers/files/…`. The grid and the issue page use that file, and fall back to the gradient placeholder when it is missing.
 
 Requests stay under Metron's burst (about 20 per minute) and daily cap (5000). A `429` waits for `Retry-After` and then resumes. The run is safe to start again: matched files are skipped, and unmatched issues stay on **Cover backfill** until you queue them again or paste a Metron issue id.
 

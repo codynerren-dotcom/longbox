@@ -2,7 +2,9 @@ import { Prisma } from "@prisma/client";
 import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-plan";
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
 import { manualLinkJson, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
+import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
+import { gcdDetails, gcdHit, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { mapMetronDetails, METRON_FIELDS, type MetronField } from "@/lib/covers/enrich";
 import { acquireBackfillLock, backfillLockHeld, coverFileKey, downloadCover, releaseBackfillLock } from "@/lib/covers/files";
@@ -18,11 +20,15 @@ function issueLabel(series: string, issueNo: string | null, issue: string | null
 }
 
 function catalogName(source: CatalogSource): string {
-  return source === "metron" ? "Metron" : "Comic Vine";
+  if (source === "metron") return "Metron";
+  if (source === "gcd") return "GCD";
+  return "Comic Vine";
 }
 
-function logSource(source: CatalogSource): "metron" | "comicvine" {
-  return source === "metron" ? "metron" : "comicvine";
+function logSource(source: CatalogSource): "metron" | "comicvine" | "gcd" {
+  if (source === "metron") return "metron";
+  if (source === "gcd") return "gcd";
+  return "comicvine";
 }
 
 async function comicForLink(id: string) {
@@ -81,7 +87,7 @@ export async function searchIssueCatalog(args: {
   const needle = args.mode === "barcode" ? args.barcode.trim() : args.query.trim();
   if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue." };
   try {
-    const hits = args.source === "metron" ? await searchMetron(args) : await searchComicVine(args);
+    const hits = args.source === "metron" ? await searchMetron(args) : args.source === "gcd" ? await searchGcdMatches(args.query, args.barcode, args.mode) : await searchComicVine(args);
     if ("ok" in hits) return hits;
     await writeLog({
       level: "info",
@@ -110,6 +116,7 @@ async function searchComicVine(args: { query: string; barcode: string; mode: "qu
 
 export async function loadIssueCovers(source: CatalogSource, issueId: string): Promise<MatchCover[]> {
   if (!/^\d+$/.test(issueId)) return [];
+  if (source === "gcd") return [];
   if (source === "metron") {
     if (!(await metronBasicAuth())) return [];
     return metronCovers(await metronTransport(), issueId);
@@ -120,7 +127,7 @@ export async function loadIssueCovers(source: CatalogSource, issueId: string): P
   return body ? variantCoversFrom(body) : [];
 }
 
-async function downloadChosenCover(source: CatalogSource, issueId: string, imageUrl: string, primaryUrl: string | null) {
+async function downloadChosenCover(source: Exclude<CatalogSource, "gcd">, issueId: string, imageUrl: string, primaryUrl: string | null) {
   const prefix = source === "metron" ? "metron" : "cv";
   const file = await downloadCover(imageUrl, coverFileKey(issueId, imageUrl, primaryUrl), undefined, { force: true, prefix });
   return { file, url: coverPublicPath(file), imageUrl };
@@ -147,7 +154,7 @@ export async function linkIssueToCatalog(args: {
       args.coverImageUrl && (covers.some((cover) => cover.imageUrl === args.coverImageUrl) || args.coverImageUrl === args.hit.coverUrl)
         ? args.coverImageUrl
         : covers[0]?.imageUrl ?? args.hit.coverUrl;
-    const cover = args.useCover && chosen ? await downloadChosenCover(args.source, args.hit.id, chosen, covers[0]?.imageUrl ?? chosen) : null;
+    const cover = args.source !== "gcd" && args.useCover && chosen ? await downloadChosenCover(args.source, args.hit.id, chosen, covers[0]?.imageUrl ?? chosen) : null;
     const update = linkUpdate({
       source: args.source,
       hit: loaded.hit,
@@ -180,6 +187,11 @@ async function loadLinkTarget(
   source: CatalogSource,
   hit: MatchHit,
 ): Promise<{ ok: true; hit: MatchHit; detail: ReturnType<typeof mapMetronDetails>; covers: MatchCover[]; issueUrl: string | null; seriesUrl: string | null } | { ok: false; message: string }> {
+  if (source === "gcd") {
+    const issue = await createGcdCatalog().issue(hit.id);
+    const detail = issue ? gcdDetails(issue) : null;
+    return { ok: true, hit: issue ? gcdHit(issue) : hit, detail, covers: [], issueUrl: null, seriesUrl: null };
+  }
   if (source === "metron") {
     if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
     const body = await fetchMetronIssueBody(await metronTransport(), hit.id);
@@ -266,7 +278,7 @@ export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; m
 async function chosenImage(
   link: ReturnType<typeof readManualLink>,
   comicvineIssueId: string | null,
-): Promise<{ source: CatalogSource; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
+): Promise<{ source: "metron" | "comicvine"; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
   if (link.coverImageUrl && link.coverSource) {
     const issueId = link.coverSource === "metron" ? link.metronIssueId : link.comicvineIssueId;
     if (issueId) return { source: link.coverSource, issueId, imageUrl: link.coverImageUrl, primaryUrl: link.coverImageUrl };

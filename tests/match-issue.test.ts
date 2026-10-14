@@ -215,6 +215,8 @@ describe("issue page", () => {
     expect(panel).toContain("Match / Link");
     expect(panel).toContain("Use this cover");
     expect(panel).toContain("Fill missing details");
+    expect(panel).toContain("Unlink GCD");
+    expect(panel).toContain("GCD data is CC BY-SA");
     expect(panel).toContain("Unlink Metron");
     expect(panel).toContain("Re-pull cover");
     expect(safeImageUrl("/covers/files/cv-400.jpg")).toBe("/covers/files/cv-400.jpg");

@@ -4,7 +4,7 @@ export type MatchCover = {
 };
 
 export type MatchHit = {
-  source: "metron" | "comicvine";
+  source: "metron" | "comicvine" | "gcd";
   id: string;
   seriesId: string | null;
   series: string;

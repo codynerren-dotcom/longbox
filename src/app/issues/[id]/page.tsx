@@ -9,7 +9,8 @@ import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
 import { matchQuery, readManualLink } from "@/lib/catalog/manual-link";
 import { metronConfigured } from "@/lib/catalog/metron";
-import { fromMetron } from "@/lib/covers/enrich";
+import { detectEdition } from "@/lib/covers/edition";
+import { fieldCredit } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
 import { isEmptyDisplay, showSlabSection } from "@/lib/issue-view";
 import { toIssueDraft } from "@/lib/issue-fields";
@@ -44,7 +45,9 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   const when = dateOptions(prefs);
   const money = prefs.pricing.currency;
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
-  const sourced = (field: string) => fromMetron(comic.fieldSources, field);
+  const sourced = (field: string) => fieldCredit(comic.fieldSources, field);
+  const edition = detectEdition(comic);
+  const matchYear = edition.reprint ? (comic.releaseYear ?? comic.coverYear ?? comic.seriesYear) : (comic.coverYear ?? comic.releaseYear ?? comic.seriesYear);
   const spent = costBasis(comic.purchasePrice, comic.quantity);
   const boxes = boxRows.map((row) => row.storageBox).filter((name): name is string => Boolean(name));
   const link = readManualLink(comic.manualLink);
@@ -108,12 +111,13 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         <IssueCatalogLinks comic={comic} />
         <MatchPanel
           comicId={comic.id}
-          query={matchQuery({ series: comic.series, issueNo: comic.issueNo, year: comic.coverYear ?? comic.releaseYear ?? comic.seriesYear })}
+          query={matchQuery({ series: edition.searchNames[0] || comic.series, issueNo: comic.issueNo, year: matchYear })}
           barcode={comic.barcode ?? ""}
           metronReady={metronReady}
           comicVineReady={Boolean(settings.comicvine.apiKey)}
           metronIssueId={comic.metronIssueId}
           comicvineIssueId={comic.comicvineIssueId}
+          gcdIssueId={comic.gcdIssueId}
           canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
         />
 
@@ -187,7 +191,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
             <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="font-display text-3xl tracking-wide">Plot</h2>
-                {sourced("plot") ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
+                {sourced("plot") ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">{sourced("plot")}</span> : null}
               </div>
               <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-paper/90">{comic.plot}</p>
             </section>
@@ -222,11 +226,11 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   );
 }
 
-function fact(label: string, value: ReactNode, fromMetron?: boolean) {
-  return { label, value, fromMetron };
+function fact(label: string, value: ReactNode, credit?: string | null) {
+  return { label, value, credit };
 }
 
-function Facts({ items }: { items: { label: string; value: ReactNode; fromMetron?: boolean }[] }) {
+function Facts({ items }: { items: { label: string; value: ReactNode; credit?: string | null }[] }) {
   const shown = items.filter((item) => !isEmptyDisplay(item.value));
   if (shown.length === 0) return null;
   return (
@@ -238,12 +242,12 @@ function Facts({ items }: { items: { label: string; value: ReactNode; fromMetron
   );
 }
 
-function Fact({ label, value, fromMetron: metron }: { label: string; value: ReactNode; fromMetron?: boolean }) {
+function Fact({ label, value, credit }: { label: string; value: ReactNode; credit?: string | null }) {
   return (
     <div className="rounded-xl bg-panel2 px-3 py-3 ring-1 ring-white/5">
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">{label}</div>
-        {metron ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
+        {credit ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">{credit}</span> : null}
       </div>
       <div className="mt-1 text-sm text-paper">{value}</div>
     </div>

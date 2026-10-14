@@ -61,9 +61,11 @@ export function linkUpdate(args: {
   issueUrl?: string | null;
   seriesUrl?: string | null;
 }): { data: Prisma.ComicUpdateInput; filled: string[] } {
-  const plan = args.fillMissing && args.detail ? planEnrichment(args.current, args.detail, args.fieldSources) : null;
-  if (plan && args.source === "comicvine") dropFields(plan, METRON_ID_FIELDS);
-  if (plan) dropFields(plan, args.source === "metron" ? METRON_ID_FIELDS : CV_ID_FIELDS);
+  const plan = args.fillMissing && args.detail ? planEnrichment(args.current, args.detail, args.fieldSources, args.source === "gcd" ? "gcd" : "metron") : null;
+  if (plan) {
+    dropFields(plan, METRON_ID_FIELDS);
+    dropFields(plan, CV_ID_FIELDS);
+  }
   const sources: FieldSources = { ...(plan?.sources ?? {}) };
   const data: Prisma.ComicUpdateInput = {};
   if (plan) {
@@ -78,9 +80,14 @@ export function linkUpdate(args: {
     if (args.hit.seriesId) data.metronSeriesId = args.hit.seriesId;
     if (args.issueUrl) data.metronIssueUrl = args.issueUrl;
     if (args.seriesUrl) data.metronSeriesUrl = args.seriesUrl;
-  } else {
+  } else if (args.source === "comicvine") {
     data.comicvineIssueId = args.hit.id;
     if (args.hit.seriesId) data.comicvineSeriesId = args.hit.seriesId;
+  } else {
+    data.gcdIssueId = args.hit.id;
+    if (args.hit.seriesId) data.gcdSeriesId = args.hit.seriesId;
+    data.coverNote = "Linked on GCD. Cover stays on GCD.";
+    if (!args.cover) data.coverStatus = "gcd";
   }
   if (args.cover) {
     data.coverFile = args.cover.file;
@@ -99,7 +106,8 @@ export function unlinkUpdate(args: {
 }): Prisma.ComicUpdateInput {
   const next = withoutLinkedId(args.manualLink, args.source);
   const sources = readFieldSources(args.fieldSources);
-  for (const field of args.source === "metron" ? METRON_ID_FIELDS : CV_ID_FIELDS) delete sources[field];
+  const idFields = args.source === "metron" ? METRON_ID_FIELDS : args.source === "comicvine" ? CV_ID_FIELDS : [];
+  for (const field of idFields) delete sources[field];
   const data: Prisma.ComicUpdateInput = {
     manualLink: manualLinkJson(next) ?? {},
     fieldSources: sources,
@@ -109,9 +117,13 @@ export function unlinkUpdate(args: {
     data.metronSeriesId = null;
     data.metronIssueUrl = null;
     data.metronSeriesUrl = null;
-  } else {
+  } else if (args.source === "comicvine") {
     data.comicvineIssueId = null;
     data.comicvineSeriesId = null;
+  } else {
+    data.gcdIssueId = null;
+    data.gcdSeriesId = null;
+    if (data.coverStatus === undefined) data.coverNote = null;
   }
   return data;
 }

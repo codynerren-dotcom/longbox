@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   comicVineIssueHref,
   comicVineVolumeHref,
+  gcdCoverHref,
+  gcdIssueHref,
   issueCatalogLinks,
   metronIssueHref,
   metronSeriesHref,
@@ -28,10 +30,15 @@ describe("catalog links", () => {
     expect(comicVineIssueHref("0")).toBeNull();
     expect(comicVineIssueHref("abc")).toBeNull();
     expect(comicVineVolumeHref(null)).toBeNull();
-    expect(issueCatalogLinks({})).toEqual({ metron: null, comicVine: null });
-    expect(issueCatalogLinks({ metronIssueId: "50", comicvineIssueId: "9" })).toEqual({
+    expect(gcdIssueHref("256114")).toBe("https://www.comics.org/issue/256114/");
+    expect(gcdCoverHref("256114")).toBe("https://www.comics.org/issue/256114/cover/4/");
+    expect(gcdIssueHref("0")).toBeNull();
+    expect(issueCatalogLinks({})).toEqual({ metron: null, comicVine: null, gcd: null, gcdCover: null });
+    expect(issueCatalogLinks({ metronIssueId: "50", comicvineIssueId: "9", gcdIssueId: "256114" })).toEqual({
       metron: "https://metron.cloud/issue/50/",
       comicVine: "https://comicvine.gamespot.com/issue/4000-9/",
+      gcd: "https://www.comics.org/issue/256114/",
+      gcdCover: "https://www.comics.org/issue/256114/cover/4/",
     });
   });
 
@@ -43,6 +50,6 @@ describe("catalog links", () => {
     ]);
     expect(links.metron).toBe("https://metron.cloud/series/saga-2012/");
     expect(links.comicVine).toBe("https://comicvine.gamespot.com/volume/4050-77/");
-    expect(seriesCatalogLinks([{}])).toEqual({ metron: null, comicVine: null });
+    expect(seriesCatalogLinks([{}])).toEqual({ metron: null, comicVine: null, gcd: null, gcdCover: null });
   });
 });

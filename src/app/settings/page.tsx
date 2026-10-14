@@ -104,6 +104,9 @@ export default async function SettingsPage() {
         <Link href="/covers" className="inline-block text-sm font-semibold text-comic">
           Open the unmatched report
         </Link>
+        <Link href="/covers#suspects" className="ml-4 inline-block text-sm font-semibold text-comic">
+          Review suspect matches
+        </Link>
       </Panel>
 
       <PreferencesForm prefs={prefs} sample={sample} />

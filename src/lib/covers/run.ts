@@ -16,6 +16,8 @@ import {
   writeBackfillStatus,
   type BackfillStatus,
 } from "@/lib/covers/files";
+import { createGcdCatalog } from "@/lib/catalog/gcd";
+import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
 import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
@@ -64,10 +66,18 @@ async function loadComics(): Promise<CoverRecord[]> {
       coverYear: true,
       barcode: true,
       variant: true,
+      variantDescription: true,
+      title: true,
+      fullTitle: true,
+      format: true,
+      subtitle: true,
       publisher: true,
+      releaseYear: true,
+      coverPrice: true,
       coverFile: true,
       coverStatus: true,
       metronIssueId: true,
+      gcdIssueId: true,
       manualLink: true,
     },
   });
@@ -81,11 +91,20 @@ async function loadComics(): Promise<CoverRecord[]> {
       coverYear: row.coverYear,
       barcode: row.barcode,
       variant: row.variant,
+      variantDescription: row.variantDescription,
+      title: row.title,
+      fullTitle: row.fullTitle,
+      format: row.format,
+      subtitle: row.subtitle,
       publisher: row.publisher,
+      releaseYear: row.releaseYear,
+      coverPrice: row.coverPrice,
       coverFile: row.coverFile,
       coverStatus: row.coverStatus,
       metronIssueId: row.metronIssueId,
+      gcdIssueId: row.gcdIssueId,
       manualMetronIssueId: link.metronIssueId,
+      manualGcdIssueId: link.gcdIssueId,
       manualCoverImageUrl: link.coverImageUrl,
       userCover: link.userCover,
     };
@@ -141,6 +160,29 @@ async function applyEnrichment(
   if (Object.keys(data).length > 0) {
     await prisma.comic.update({ where: { id }, data });
   }
+  return plan?.filled ?? [];
+}
+
+async function applyGcdLink(
+  id: string,
+  gcdIssueId: string,
+  gcdSeriesId: string | null,
+  score: number,
+  detail: MetronDetails | null,
+): Promise<string[]> {
+  const current = await readEnrichment(id);
+  const fill = detail != null && (await getPreferences()).covers.fillMissing;
+  const plan = fill && current ? planEnrichment(current, detail, current.fieldSources, "gcd") : null;
+  const data: Prisma.ComicUpdateInput = {
+    gcdIssueId,
+    gcdSeriesId,
+    coverStatus: "gcd",
+    coverNote: `Linked GCD ${gcdIssueId}, score ${score}. Cover stays on GCD.`,
+    coverCheckedAt: new Date(),
+  };
+  if (plan && plan.filled.length > 0) Object.assign(data, enrichmentPatch(plan));
+  stripLockedCover(data, current?.manualLink);
+  await prisma.comic.update({ where: { id }, data });
   return plan?.filled ?? [];
 }
 
@@ -245,6 +287,20 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
         data: { coverStatus: "unmatched", coverNote: reason, coverCheckedAt: new Date() },
       });
     },
+    gcd: (comic) => resolveGcdCover(comic, createGcdCatalog()),
+    markGcd: async (id, update) => {
+      const issue = await createGcdCatalog().issue(update.gcdIssueId);
+      const detail = issue ? gcdDetails(issue) : null;
+      const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail);
+      if (detail && filled.length > 0) {
+        await writeLog({
+          level: "info",
+          source: "gcd",
+          message: `Filled ${filled.join(", ")} on ${labels.get(id) ?? id} from GCD ${update.gcdIssueId}, score ${update.score}.`,
+          details: { comicId: id, gcdIssueId: update.gcdIssueId, score: update.score, fields: filled },
+        });
+      }
+    },
     log: emit,
     onProgress: (current) => {
       writeBackfillStatus(statusFrom(current, true, startedAt, null));
@@ -341,10 +397,18 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       coverYear: true,
       barcode: true,
       variant: true,
+      variantDescription: true,
+      title: true,
+      fullTitle: true,
+      format: true,
+      subtitle: true,
       publisher: true,
+      releaseYear: true,
+      coverPrice: true,
       coverFile: true,
       coverStatus: true,
       metronIssueId: true,
+      gcdIssueId: true,
       manualLink: true,
     },
   });
@@ -354,6 +418,11 @@ export async function refetchOneCover(comicId: string): Promise<string> {
   if (locked.userCover) {
     const message = `The cover on ${label} was uploaded and was left as it is.`;
     await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId } });
+    return message;
+  }
+  if (locked.gcdIssueId) {
+    const message = `The GCD link on ${label} was chosen by hand and was left as it is.`;
+    await writeLog({ level: "info", source: "gcd", message, details: { comicId } });
     return message;
   }
   if (locked.metronIssueId || locked.comicvineIssueId || locked.coverImageUrl) {
@@ -399,10 +468,29 @@ export async function refetchOneCover(comicId: string): Promise<string> {
           data: { coverStatus: "unmatched", coverNote: reason, coverCheckedAt: new Date() },
         });
       },
+      gcd: (row) => resolveGcdCover(row, createGcdCatalog()),
+      markGcd: async (id, update) => {
+        const issue = await createGcdCatalog().issue(update.gcdIssueId);
+        const detail = issue ? gcdDetails(issue) : null;
+        const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail);
+        if (detail && filled.length > 0) {
+          await writeLog({
+            level: "info",
+            source: "gcd",
+            message: `Filled ${filled.join(", ")} on ${label} from GCD ${update.gcdIssueId}, score ${update.score}.`,
+            details: { comicId: id, gcdIssueId: update.gcdIssueId, score: update.score, fields: filled },
+          });
+        }
+      },
     });
     if (summary.matched > 0) {
-      await writeLog({ level: "info", source: "covers/backfill", message: `Fetched a cover for ${label}.`, details: summary });
-      return `Fetched a cover for ${label}.`;
+      const linked = await prisma.comic.findUnique({ where: { id: comicId }, select: { coverStatus: true, gcdIssueId: true } });
+      const message =
+        linked?.coverStatus === "gcd"
+          ? `Linked ${label} on GCD ${linked.gcdIssueId ?? ""}. Cover stays on GCD.`
+          : `Fetched a cover for ${label}.`;
+      await writeLog({ level: "info", source: linked?.coverStatus === "gcd" ? "gcd" : "covers/backfill", message, details: summary });
+      return message;
     }
     const message = summary.stoppedReason ?? `No cover matched for ${label}.`;
     await writeLog({ level: "warn", source: "covers/backfill", message, details: summary });

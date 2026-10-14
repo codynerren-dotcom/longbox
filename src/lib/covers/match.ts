@@ -1,4 +1,5 @@
 import { parseComicBarcode } from "@/lib/barcode";
+import { detectEdition, scoreCandidate, type MatchCandidate } from "@/lib/covers/edition";
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
 
 export function coverYearOf(value: string | null | undefined): number | null {
@@ -62,18 +63,6 @@ export function narrowSeries(hits: MetronSeriesHit[], comic: CoverQuery): Metron
   return rows;
 }
 
-function withImage(hits: MetronIssueHit[]): MetronIssueHit[] {
-  const imaged = hits.filter((hit) => hit.imageUrl);
-  return imaged.length > 0 ? imaged : hits;
-}
-
-function filterVariant(hits: MetronIssueHit[], variant: string | null): MetronIssueHit[] {
-  const needle = variant ? normName(variant) : "";
-  if (!needle) return hits;
-  const matched = hits.filter((hit) => normName(hit.label ?? "").includes(needle));
-  return matched.length > 0 ? matched : hits;
-}
-
 function issueToken(comic: CoverQuery): string {
   return (comic.issueNo || comic.issue || "").trim();
 }
@@ -83,54 +72,60 @@ function labelFor(comic: CoverQuery, issueNo: string): string {
   return `${comic.series} #${issueNo || "?"}${year}`;
 }
 
+function candidateFrom(hit: MetronIssueHit): MatchCandidate {
+  return {
+    seriesName: hit.seriesName,
+    issueNo: hit.number,
+    variant: hit.variant ?? hit.label,
+    coverYear: hit.coverYear,
+    releaseYear: hit.releaseYear ?? null,
+    seriesYear: hit.seriesYear ?? null,
+    upc: hit.upc ?? null,
+    publisher: hit.publisher ?? null,
+  };
+}
+
 export function chooseIssue(
   hits: MetronIssueHit[],
   comic: CoverQuery,
   issueNo: string,
-  via: "barcode" | "series",
+  via: "barcode" | "series" | "gcd",
 ): CoverDecision {
   const name = labelFor(comic, issueNo);
   if (hits.length === 0) {
-    return { status: "unmatched", reason: `No Metron issue for ${name}.` };
+    return { status: "unmatched", reason: `No Metron issue for ${name}.`, score: 0 };
   }
 
-  const trustSingleBarcode = via === "barcode" && hits.length === 1;
   let rows = hits;
   if (issueNo) {
     const numbered = rows.filter((hit) => sameIssueNumber(hit.number, issueNo));
     if (numbered.length > 0) rows = numbered;
-    else if (via === "series") return { status: "unmatched", reason: `No Metron issue for ${name}.` };
+    else if (via === "series") return { status: "unmatched", reason: `No Metron issue for ${name}.`, score: 0 };
   }
 
-  if (comic.coverYear != null && !trustSingleBarcode) {
-    const dated = rows.filter((hit) => hit.coverYear === comic.coverYear);
-    if (dated.length === 0) {
-      return { status: "unmatched", reason: `Metron has ${comic.series} #${issueNo || "?"}, but not cover year ${comic.coverYear}.` };
+  const ranked = rows
+    .map((issue) => ({ issue, scored: scoreCandidate({ ...comic, issueNo: issueNo || comic.issueNo }, candidateFrom(issue)) }))
+    .sort((a, b) => b.scored.score - a.scored.score || Number(Boolean(b.issue.imageUrl)) - Number(Boolean(a.issue.imageUrl)));
+  const best = ranked[0];
+  const next = ranked[1];
+  if (!best) return { status: "unmatched", reason: `No Metron issue for ${name}.`, score: 0 };
+  if (best.scored.auto && (!next || !next.scored.auto || best.scored.score >= next.scored.score + 12)) {
+    if (!best.issue.imageUrl && via !== "gcd") {
+      return { status: "unmatched", reason: `Metron issue ${best.issue.id} has no cover image.`, score: best.scored.score };
     }
-    rows = dated;
+    return { status: "matched", via, issue: best.issue, score: best.scored.score };
   }
-
-  rows = filterVariant(rows, comic.variant);
-  rows = withImage(rows);
-
-  if (rows.length === 1) {
-    const issue = rows[0];
-    if (!issue.imageUrl) {
-      return { status: "unmatched", reason: `Metron issue ${issue.id} has no cover image.` };
-    }
-    return { status: "matched", via, issue };
+  if (via === "barcode" && rows.length > 1 && ranked.filter((row) => row.scored.auto).length !== 1) {
+    return { status: "unmatched", reason: `Several Metron issues share this barcode (${rows.map((hit) => hit.id).join(", ")}).`, score: best.scored.score };
   }
-
-  const ids = rows.map((hit) => hit.id).join(", ");
-  if (via === "barcode") {
-    return { status: "unmatched", reason: `Several Metron issues share this barcode (${ids}).` };
-  }
-  return { status: "unmatched", reason: `Several Metron covers for ${name} (${ids}).` };
+  const why = best.scored.blocked ?? `score ${best.scored.score} is below the match line`;
+  return { status: "unmatched", reason: `${name}: ${why}.`, score: best.scored.score };
 }
 
 export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Promise<CoverDecision> {
   const issueNo = issueToken(comic);
   const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
+  const edition = detectEdition(comic);
 
   if (barcode) {
     let hits = await lookup.issuesByUpc(barcode.combined);
@@ -139,36 +134,48 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
     }
     if (hits.length > 0) {
       const decision = chooseIssue(hits, comic, issueNo, "barcode");
-      if (decision.status === "matched" || hits.length > 1) return decision;
-      if (decision.status === "unmatched" && !decision.reason.startsWith("No Metron issue")) return decision;
+      if (decision.status === "matched") return decision;
+      if (hits.length > 1 && decision.reason.includes("Several Metron issues share this barcode")) return decision;
     }
   }
 
   if (!comic.series.trim() || !issueNo) {
-    return { status: "unmatched", reason: "No barcode and no series plus issue number to search." };
+    return { status: "unmatched", reason: "No barcode and no series plus issue number to search.", score: 0 };
   }
 
-  const found = await lookup.searchSeries(comic.series);
-  const candidates = narrowSeries(found, comic);
-  if (candidates.length === 0) {
-    return { status: "unmatched", reason: `No Metron series named ${comic.series}.` };
-  }
-  if (candidates.length > 4) {
-    return { status: "unmatched", reason: `Several Metron series named ${comic.series}.` };
-  }
-
-  if (candidates.length > 1) {
-    const matched: MetronIssueHit[] = [];
-    for (const candidate of candidates) {
-      const issues = await lookup.issuesForSeries(candidate.id, issueNo, comic.coverYear);
-      const decision = chooseIssue(issues, comic, issueNo, "series");
-      if (decision.status === "matched") matched.push(decision.issue);
+  const names = edition.searchNames.length > 0 ? edition.searchNames : [comic.series];
+  let best: CoverDecision = { status: "unmatched", reason: `No Metron series named ${comic.series}.`, score: 0 };
+  for (const name of names) {
+    const found = await lookup.searchSeries(name);
+    const year = edition.reprint ? (comic.releaseYear ?? comic.coverYear) : comic.coverYear;
+    let candidates = narrowSeries(found, { ...comic, series: name, coverYear: year });
+    if (candidates.length === 0 && edition.reprint) candidates = narrowSeries(found, { ...comic, series: name, coverYear: null });
+    if (candidates.length === 0) continue;
+    if (candidates.length > 4) {
+      best = { status: "unmatched", reason: `Several Metron series named ${name}.`, score: best.score };
+      continue;
     }
-    if (matched.length === 1) return { status: "matched", via: "series", issue: matched[0] };
-    if (matched.length === 0) return { status: "unmatched", reason: `No Metron issue for ${labelFor(comic, issueNo)}.` };
-    return { status: "unmatched", reason: `Several Metron series named ${comic.series} have #${issueNo}.` };
+    const matched: CoverDecision[] = [];
+    for (const candidate of candidates) {
+      let issues = await lookup.issuesForSeries(candidate.id, issueNo, year);
+      if (issues.length === 0 && year != null) issues = await lookup.issuesForSeries(candidate.id, issueNo, null);
+      const decision = chooseIssue(
+        issues.map((issue) => ({
+          ...issue,
+          seriesYear: issue.seriesYear ?? candidate.yearBegan,
+          publisher: issue.publisher ?? candidate.publisher,
+        })),
+        comic,
+        issueNo,
+        "series",
+      );
+      if (decision.status === "matched") matched.push(decision);
+      else if (decision.score > best.score) best = decision;
+    }
+    if (matched.length === 1) return matched[0];
+    if (matched.length > 1) {
+      return { status: "unmatched", reason: `Several Metron series named ${name} have #${issueNo}.`, score: matched[0].score };
+    }
   }
-
-  const issues = await lookup.issuesForSeries(candidates[0].id, issueNo, comic.coverYear);
-  return chooseIssue(issues, comic, issueNo, "series");
+  return best;
 }

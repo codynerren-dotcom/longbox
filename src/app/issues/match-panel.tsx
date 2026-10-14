@@ -15,6 +15,7 @@ type Props = {
   comicVineReady: boolean;
   metronIssueId: string | null;
   comicvineIssueId: string | null;
+  gcdIssueId: string | null;
   canRepull: boolean;
 };
 
@@ -51,6 +52,10 @@ export function MatchPanel(props: Props) {
           <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">Comic Vine</dt>
           <dd className="text-paper">{props.comicvineIssueId ? props.comicvineIssueId : "Not linked"}</dd>
         </div>
+        <div>
+          <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">GCD</dt>
+          <dd className="text-paper">{props.gcdIssueId ? props.gcdIssueId : "Not linked"}</dd>
+        </div>
       </dl>
       <div className="mt-3 flex flex-wrap gap-2">
         {props.metronIssueId ? (
@@ -61,6 +66,11 @@ export function MatchPanel(props: Props) {
         {props.comicvineIssueId ? (
           <button type="button" disabled={pending} className="rounded-full bg-panel2 px-3 py-1.5 text-sm text-paper disabled:opacity-50" onClick={() => run(() => unlinkMatchAction(props.comicId, "comicvine"))}>
             Unlink Comic Vine
+          </button>
+        ) : null}
+        {props.gcdIssueId ? (
+          <button type="button" disabled={pending} className="rounded-full bg-panel2 px-3 py-1.5 text-sm text-paper disabled:opacity-50" onClick={() => run(() => unlinkMatchAction(props.comicId, "gcd"))}>
+            Unlink GCD
           </button>
         ) : null}
         <button
@@ -102,7 +112,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
-  const ready = source === "metron" ? props.metronReady : props.comicVineReady;
+  const ready = source === "metron" ? props.metronReady : source === "comicvine" ? props.comicVineReady : true;
   const hint = source === "metron" ? "Add a Metron username and password in Settings to search." : "Add a Comic Vine API key in Settings to search.";
 
   function search(mode: "query" | "barcode") {
@@ -143,7 +153,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         comicId: props.comicId,
         source,
         hit: selected,
-        useCover,
+        useCover: source === "gcd" ? false : useCover,
         fillMissing,
         coverImageUrl: useCover ? coverUrl : null,
       });
@@ -167,7 +177,11 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         <div className="mt-3 flex gap-2" role="tablist">
           <Tab active={source === "metron"} onClick={() => setSource("metron")}>Metron</Tab>
           <Tab active={source === "comicvine"} onClick={() => setSource("comicvine")}>Comic Vine</Tab>
+          <Tab active={source === "gcd"} onClick={() => setSource("gcd")}>GCD</Tab>
         </div>
+        {source === "gcd" ? (
+          <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Cover scans stay on the GCD cover page, so this link does not download one.</p>
+        ) : null}
         {ready ? null : (
           <p className="mt-3 text-sm text-mist">
             {hint}{" "}
@@ -213,7 +227,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         {selected ? (
           <div className="mt-4 rounded-2xl bg-ink/30 p-3 ring-1 ring-white/5">
             <p className="text-sm text-paper">
-              Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {source === "metron" ? "Metron" : "Comic Vine"}. The other catalog stays as it is.
+              Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {source === "metron" ? "Metron" : source === "gcd" ? "GCD" : "Comic Vine"}. The other catalogs stay as they are.
             </p>
             {covers.length > 1 ? (
               <div className="mt-3 flex gap-2 overflow-x-auto">
@@ -231,10 +245,12 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
                 ))}
               </div>
             ) : null}
-            <label className="mt-3 flex items-center gap-2 text-sm text-paper">
-              <input type="checkbox" checked={useCover} onChange={(event) => setUseCover(event.target.checked)} />
-              Use this cover
-            </label>
+            {source === "gcd" ? null : (
+              <label className="mt-3 flex items-center gap-2 text-sm text-paper">
+                <input type="checkbox" checked={useCover} onChange={(event) => setUseCover(event.target.checked)} />
+                Use this cover
+              </label>
+            )}
             <label className="mt-2 flex items-center gap-2 text-sm text-paper">
               <input type="checkbox" checked={fillMissing} onChange={(event) => setFillMissing(event.target.checked)} />
               Fill missing details

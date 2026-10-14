@@ -6,6 +6,11 @@ export type MetronIssueHit = {
   coverYear: number | null;
   imageUrl: string | null;
   label: string | null;
+  releaseYear?: number | null;
+  seriesYear?: number | null;
+  upc?: string | null;
+  publisher?: string | null;
+  variant?: string | null;
 };
 
 export type MetronSeriesHit = {
@@ -31,11 +36,18 @@ export type CoverQuery = {
   barcode: string | null;
   variant: string | null;
   publisher: string | null;
+  title?: string | null;
+  fullTitle?: string | null;
+  variantDescription?: string | null;
+  format?: string | null;
+  subtitle?: string | null;
+  releaseYear?: number | null;
+  coverPrice?: unknown;
 };
 
 export type CoverDecision =
-  | { status: "matched"; via: "barcode" | "series"; issue: MetronIssueHit }
-  | { status: "unmatched"; reason: string };
+  | { status: "matched"; via: "barcode" | "series" | "gcd"; issue: MetronIssueHit; score: number }
+  | { status: "unmatched"; reason: string; score: number };
 
 export type CoverRecord = CoverQuery & {
   id: string;
@@ -47,6 +59,9 @@ export type CoverRecord = CoverQuery & {
   manualCoverImageUrl?: string | null;
   /** A photo uploaded on the issue. Backfill must not replace it, even when the file is missing. */
   userCover?: boolean;
+  /** Set when this copy is already linked on GCD. Backfill does not search again. */
+  gcdIssueId?: string | null;
+  manualGcdIssueId?: string | null;
 };
 
 export class MetronBudgetError extends Error {
