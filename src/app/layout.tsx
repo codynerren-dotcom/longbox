@@ -25,7 +25,6 @@ export const metadata: Metadata = {
   title: { default: "Longbox", template: "%s · Longbox" },
   description: "A self-hosted tracker for one physical comic collection.",
   applicationName: "Longbox",
-  manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Longbox" },
   icons: {
     icon: [
@@ -52,6 +51,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" className={`${display.variable} ${body.variable}`} style={{ "--accent-rgb": ACCENT_RGB[prefs.display.accent] } as React.CSSProperties}>
       <body className="font-sans antialiased">
+        <link rel="manifest" href="/manifest.webmanifest" crossOrigin="use-credentials" />
         <AppShell viewer={viewer} backfill={readBackfillStatus()}>
           {children}
         </AppShell>

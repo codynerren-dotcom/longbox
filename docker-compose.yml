@@ -40,6 +40,7 @@ services:
       EBAY_CLIENT_SECRET: ${EBAY_CLIENT_SECRET:-}
       COMICVINE_API_KEY: ${COMICVINE_API_KEY:-}
       LONGBOX_COMMIT: ${LONGBOX_COMMIT:-dev}
+      LONGBOX_LOG: ${LONGBOX_LOG:-}
     ports:
       - "${BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-3210}:3210"
     volumes:

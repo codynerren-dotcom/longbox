@@ -44,6 +44,8 @@ See `.env.example`. Nothing secret is committed.
 | `COVERS_DIR` | Where downloaded covers are stored. Compose uses `/data/covers` on the `longbox_covers` volume. Unset on the host, the app uses `./data/covers`. |
 | `GCD_API_BASE` | Default `https://www.comics.org`. |
 | `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | Reserved for the eBay price stub. Unused in v1. |
+| `LONGBOX_LOG` | Set to `off` to stop writing Logs. Unset, logging stays on. |
+| `LONGBOX_COMMIT` | Shown on Settings → About. Compose passes the git commit when it is set. |
 
 If the request has `Cf-Access-Authenticated-User-Email`, that address is the viewer. Otherwise Longbox stays single-user. v1 does not block anonymous LAN requests.
 
@@ -112,7 +114,17 @@ Passwords, API keys, and client secrets are encrypted with AES-GCM. The key is `
 3. `docker compose up -d --build`
 4. Browse to `http://192.168.220.5:3210`.
 
-The stack is the `app` service plus `postgres:16`, with the named volumes `longbox_postgres` and `longbox_covers`. Both services set `TZ=America/Chicago`. The app listens on 3210. A phone can install it as a PWA (manifest, icons, service worker). Chrome on Android expects HTTPS for a durable install, which is a Cloudflare tunnel follow-up. See `docs/PLAN.md`.
+The stack is the `app` service plus `postgres:16`, with the named volumes `longbox_postgres` and `longbox_covers`. Both services set `TZ=America/Chicago`. The app listens on 3210. A phone can install it as a PWA. On the public hostname that install goes through Cloudflare Access.
+
+## Cloudflare Access
+
+The public shelf is [https://longbox.codyscasa.com](https://longbox.codyscasa.com), with Cloudflare Access in front of the app. The LAN address `http://192.168.220.5:3210` still works on the home network and does not require Access. Do not port-forward 3210.
+
+Access sends `Cf-Access-Authenticated-User-Email` after login. Longbox uses that address as the viewer. Without the header, the shelf stays the single user in `LONGBOX_USER_EMAIL`.
+
+The manifest `<link>` sets `crossorigin="use-credentials"` so the browser sends the Access cookie when it fetches `/manifest.webmanifest`. Without that, install fails because Access answers the manifest request with a login redirect. The service worker stores a response only when it is a same-origin 200 for `/` (HTML) or the manifest (JSON). Redirects, `cloudflareaccess.com`, and `/cdn-cgi/access` login pages are left out of the cache.
+
+`LONGBOX_LOG=off` stops new log rows. Leave it unset to keep logging on.
 
 ## Checks
 

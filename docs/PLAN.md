@@ -22,13 +22,14 @@ Metron cover backfill already downloads issue images into `longbox_covers` and s
 
 No model calls ship in v1.
 
-## Cloudflare tunnel
+## Cloudflare Access
 
-The app is LAN-only on port 3210. When it should be reachable off the LAN:
+The public shelf is `https://longbox.codyscasa.com`, with Cloudflare Access in front of the app. The LAN port 3210 stays private. Do not publish it to the open internet.
 
-- Run `cloudflared` in front of the Compose service. Do not publish the app to the open internet without Access.
-- Cloudflare Access already has a hook: `viewerFromHeaders` trusts `Cf-Access-Authenticated-User-Email`.
-- v1 does not reject anonymous LAN requests. Turning that into a real gate is a follow-up, after Access is the only public path.
+- `viewerFromHeaders` trusts `Cf-Access-Authenticated-User-Email`.
+- The manifest link uses `crossorigin="use-credentials"` so install sends the Access cookie.
+- The service worker does not cache Access login redirects.
+- v1 does not reject anonymous LAN requests. Turning that into a real gate is a follow-up, if Access is the only path that should reach the app.
 
 ## Trading cards
 
