@@ -6,6 +6,8 @@ import { ReadToggle } from "@/components/read-toggle";
 import { prisma } from "@/lib/db";
 import { costBasis } from "@/lib/clz/parse";
 import { formatDate, formatIssue, formatMoney } from "@/lib/format";
+import { dateOptions } from "@/lib/settings/preferences";
+import { getPreferences } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
@@ -16,8 +18,10 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
 export default async function IssuePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const comic = await prisma.comic.findUnique({ where: { id } });
+  const [comic, prefs] = await Promise.all([prisma.comic.findUnique({ where: { id } }), getPreferences()]);
   if (!comic) notFound();
+  const when = dateOptions(prefs);
+  const money = prefs.pricing.currency;
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
 
   return (
@@ -79,10 +83,10 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           <Fact label="Storage box" value={comic.storageBox ? <Link href={`/boxes/${encodeURIComponent(comic.storageBox)}`} className="text-comic">{comic.storageBox}</Link> : null} />
           <Fact
             label="Purchase price"
-            value={comic.purchasePrice != null ? `${formatMoney(comic.purchasePrice)} each` : null}
+            value={comic.purchasePrice != null ? `${formatMoney(comic.purchasePrice, money)} each` : null}
           />
-          <Fact label="Cost basis" value={formatMoney(costBasis(comic.purchasePrice, comic.quantity))} />
-          <Fact label="Purchase date" value={formatDate(comic.purchaseDate)} />
+          <Fact label="Cost basis" value={formatMoney(costBasis(comic.purchasePrice, comic.quantity), money)} />
+          <Fact label="Purchase date" value={formatDate(comic.purchaseDate, when)} />
           <Fact label="Purchase store" value={comic.purchaseStore} />
           <Fact label="Cover date" value={comic.coverDate} />
           <Fact label="Barcode" value={comic.barcode} />
@@ -96,7 +100,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
 
         <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
           <h2 className="font-display text-3xl tracking-wide">Read</h2>
-          <p className="mt-1 text-sm text-mist">{comic.read ? `Read ${formatDate(comic.readDate)}` : "Unread"}</p>
+          <p className="mt-1 text-sm text-mist">{comic.read ? `Read ${formatDate(comic.readDate, when)}` : "Unread"}</p>
           <div className="mt-3">
             <ReadToggle id={comic.id} read={comic.read} readDate={readDateValue} />
           </div>
@@ -104,7 +108,11 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
 
         <section className="mt-4 rounded-2xl border border-dashed border-comic/50 bg-panel px-4 py-5">
           <h2 className="font-display text-3xl tracking-wide text-comic">Value</h2>
-          <p className="mt-1 text-sm text-paper">Pricing coming soon (eBay)</p>
+          <p className="mt-1 text-sm text-paper">
+            {prefs.pricing.enabled
+              ? `eBay pricing is on in ${prefs.pricing.currency}. Keys refresh ${prefs.pricing.keyCadence}, other issues ${prefs.pricing.otherCadence}. Quotes are still empty.`
+              : "eBay pricing is off."}
+          </p>
         </section>
 
         {comic.notes ? (

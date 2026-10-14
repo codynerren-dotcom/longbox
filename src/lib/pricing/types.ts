@@ -9,11 +9,11 @@ export type PriceQuery = {
 export type PriceQuote = {
   source: string;
   amount: number | null;
-  currency: "USD";
+  currency: string;
   url?: string;
   fetchedAt: string;
-  /** `unconfigured` when credentials are missing, `not_implemented` until the provider ships. */
-  status: "unconfigured" | "not_implemented" | "ok";
+  /** `disabled` when pricing is off, `unconfigured` when credentials are missing, `not_implemented` until the provider ships. */
+  status: "disabled" | "unconfigured" | "not_implemented" | "ok";
 };
 
 /**

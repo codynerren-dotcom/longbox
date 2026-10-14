@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/settings/crypto";
 import { ensureSecretKey } from "@/lib/settings/key";
+import { PREFERENCES_KEY, normalizePreferences, parsePreferences, type ShelfPreferences } from "@/lib/settings/preferences";
 import {
   isSecretKey,
   readEnv,
@@ -43,6 +44,18 @@ export function createSettingsService(deps: { repo: SettingsRepository; key: Buf
     },
     async setSeedOnEmpty(enabled: boolean): Promise<void> {
       await deps.repo.upsert({ key: SEED_ON_EMPTY_KEY, secret: null, plain: enabled ? "true" : "false" });
+    },
+    async getPreferences(): Promise<ShelfPreferences> {
+      const rows = await deps.repo.readAll();
+      const row = rows.find((item) => item.key === PREFERENCES_KEY);
+      return parsePreferences(row?.plain ?? null);
+    },
+    async savePreferences(input: unknown): Promise<ShelfPreferences> {
+      const next = normalizePreferences(input, await this.getPreferences());
+      const plain = JSON.stringify(next);
+      if (plain.length > 20000) throw new Error("Those preferences are too large.");
+      await deps.repo.upsert({ key: PREFERENCES_KEY, secret: null, plain });
+      return next;
     },
   };
 }
@@ -105,6 +118,20 @@ export async function clearSecret(key: SecretKey): Promise<void> {
 
 export async function setSeedOnEmpty(enabled: boolean): Promise<void> {
   await liveService().setSeedOnEmpty(enabled);
+}
+
+export async function getPreferences(): Promise<ShelfPreferences> {
+  return liveService().getPreferences();
+}
+
+export async function savePreferences(input: unknown): Promise<ShelfPreferences> {
+  return liveService().savePreferences(input);
+}
+
+export async function setCoversPaused(paused: boolean): Promise<void> {
+  const service = liveService();
+  const current = await service.getPreferences();
+  await service.savePreferences({ ...current, covers: { paused } });
 }
 
 export function shouldSeedShelf(enabled: boolean, comicCount: number): boolean {

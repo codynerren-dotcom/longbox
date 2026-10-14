@@ -1,5 +1,5 @@
 import type { PriceProvider, PriceQuery, PriceQuote } from "@/lib/pricing/types";
-import { getSettings } from "@/lib/settings/service";
+import { getPreferences, getSettings } from "@/lib/settings/service";
 import { probeEbay, type ProbeResult } from "@/lib/settings/probe";
 import type { IntegrationConfig } from "@/lib/settings/resolve";
 
@@ -11,17 +11,22 @@ export class EbayPriceProvider implements PriceProvider {
   readonly id = "ebay";
 
   async isConfigured(): Promise<boolean> {
-    return (await getSettings()).ebay.configured;
+    const [settings, prefs] = await Promise.all([getSettings(), getPreferences()]);
+    return settings.ebay.configured && prefs.pricing.enabled;
   }
 
   async quote(_comic: PriceQuery): Promise<PriceQuote> {
-    const configured = await this.isConfigured();
+    const [settings, prefs] = await Promise.all([getSettings(), getPreferences()]);
+    const currency = prefs.pricing.currency;
+    if (!prefs.pricing.enabled) {
+      return { source: this.id, amount: null, currency, fetchedAt: new Date().toISOString(), status: "disabled" };
+    }
     return {
       source: this.id,
       amount: null,
-      currency: "USD",
+      currency,
       fetchedAt: new Date().toISOString(),
-      status: configured ? "not_implemented" : "unconfigured",
+      status: settings.ebay.configured ? "not_implemented" : "unconfigured",
     };
   }
 }

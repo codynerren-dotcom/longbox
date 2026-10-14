@@ -3,6 +3,7 @@ import type { AddComicInput } from "@/lib/catalog/types";
 import { findByBarcode } from "@/lib/catalog/lookup";
 import { prisma } from "@/lib/db";
 import { seriesRouteId, slugify } from "@/lib/series";
+import { getPreferences } from "@/lib/settings/service";
 import { safeImageUrl } from "@/lib/url";
 
 function addDedupeKey(input: AddComicInput, barcode: string | null): string {
@@ -14,6 +15,7 @@ function addDedupeKey(input: AddComicInput, barcode: string | null): string {
 
 export async function addComics(items: AddComicInput[], owner: string) {
   const results: Array<{ id: string; created: boolean; series: string; issueNo: string }> = [];
+  const defaultBox = (await getPreferences()).collection.defaultStorageBox.trim();
 
   for (const item of items) {
     const series = item.series.trim();
@@ -66,6 +68,7 @@ export async function addComics(items: AddComicInput[], owner: string) {
         plot: item.plot ?? null,
         coreSeriesId,
         quantity: 1,
+        storageBox: defaultBox || null,
         keyLevel: "No",
         rawOrSlabbed: "Raw",
         collectionStatus: "Owned",

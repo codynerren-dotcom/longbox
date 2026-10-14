@@ -5,11 +5,11 @@ import { importClzAction, type ImportActionState } from "@/app/import/actions";
 
 const initial: ImportActionState = { status: "idle" };
 
-export function ImportForm() {
+export function ImportForm({ embedded = false }: { embedded?: boolean }) {
   const [state, action, pending] = useActionState(importClzAction, initial);
 
   return (
-    <form action={action} className="space-y-4 rounded-2xl bg-panel p-5 ring-1 ring-white/5">
+    <form action={action} className={embedded ? "space-y-4" : "space-y-4 rounded-2xl bg-panel p-5 ring-1 ring-white/5"}>
       <label className="block text-sm text-mist" htmlFor="clz-file">
         CLZ CSV export
       </label>

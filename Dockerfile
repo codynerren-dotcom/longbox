@@ -14,6 +14,8 @@ COPY . .
 ENV DATABASE_URL=postgresql://longbox:longbox@db:5432/longbox?schema=public
 RUN npx prisma generate && npm run build
 
+ARG LONGBOX_COMMIT=dev
+ENV LONGBOX_COMMIT=$LONGBOX_COMMIT
 ENV NODE_ENV=production
 ENV PORT=3210
 ENV HOSTNAME=0.0.0.0

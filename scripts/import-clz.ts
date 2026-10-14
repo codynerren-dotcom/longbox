@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseClzCsv } from "../src/lib/clz/parse";
 import { persistClzComics } from "../src/lib/clz/persist";
 import { prisma } from "../src/lib/db";
+import { recordImportRun } from "../src/lib/imports";
 
 async function main() {
   const file = process.argv[2];
@@ -14,6 +15,7 @@ async function main() {
   const text = readFileSync(path.resolve(file), "utf8");
   const parsed = parseClzCsv(text);
   const summary = await persistClzComics(parsed.comics);
+  await recordImportRun({ filename: path.basename(file), source: "cli", summary });
   console.log(JSON.stringify({ ...summary, warnings: parsed.warnings }, null, 2));
 }
 

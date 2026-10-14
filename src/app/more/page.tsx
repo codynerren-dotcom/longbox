@@ -10,7 +10,7 @@ const links = [
   { href: "/wishlist", label: "Wishlist", detail: "Gaps you still want" },
   { href: "/import", label: "Import CLZ", detail: "Upload a 66-column export" },
   { href: "/covers", label: "Cover backfill", detail: "Download Metron covers and review misses" },
-  { href: "/settings", label: "Settings", detail: "Metron, Comic Vine, eBay, and shelf toggles" },
+  { href: "/settings", label: "Settings", detail: "Import, covers, pricing, display, and credentials" },
   { href: "/scan", label: "Scan / Add", detail: "Barcode or manual search" },
 ];
 

@@ -3,9 +3,11 @@ import type { Prisma } from "@prisma/client";
 import { CoverTile } from "@/components/cover-tile";
 import { FilterBar } from "@/components/filter-bar";
 import { PageHeader } from "@/components/page-header";
-import { groupSeries } from "@/lib/collection";
+import { groupSeries, orderSeriesCards, seriesOrderHints } from "@/lib/collection";
 import { prisma } from "@/lib/db";
 import { one } from "@/lib/format";
+import { collectionGridClass } from "@/lib/settings/preferences";
+import { getPreferences } from "@/lib/settings/service";
 
 export const metadata = { title: "Collection" };
 
@@ -21,6 +23,7 @@ export default async function CollectionPage({
   const read = one(params.read);
   const publisher = one(params.publisher);
   const box = one(params.box);
+  const prefs = await getPreferences();
 
   const where: Prisma.ComicWhereInput = {};
   const and: Prisma.ComicWhereInput[] = [];
@@ -42,6 +45,7 @@ export default async function CollectionPage({
   if (read === "unread") and.push({ read: false });
   if (publisher) and.push({ publisher });
   if (box) and.push({ storageBox: box });
+  if (!prefs.collection.showSold) and.push({ soldDate: null });
   if (and.length > 0) where.AND = and;
 
   const [comics, publisherRows, boxRows] = await Promise.all([
@@ -63,6 +67,8 @@ export default async function CollectionPage({
         grade: true,
         storageBox: true,
         read: true,
+        addedDate: true,
+        coverYear: true,
       },
     }),
     prisma.comic.findMany({
@@ -79,7 +85,7 @@ export default async function CollectionPage({
     }),
   ]);
 
-  const series = groupSeries(comics);
+  const series = orderSeriesCards(groupSeries(comics), seriesOrderHints(comics), prefs.collection.sort);
 
   return (
     <div>
@@ -104,7 +110,7 @@ export default async function CollectionPage({
           <Link href="/scan" className="text-comic">scan a barcode</Link>.
         </p>
       ) : (
-        <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <ul className={collectionGridClass(prefs.collection.density)}>
           {series.map((card) => (
             <li key={card.id}>
               <CoverTile

@@ -1,3 +1,4 @@
+import type { CollectionSort } from "@/lib/settings/preferences";
 import { seriesRouteId, type SeriesIdentity } from "@/lib/series";
 
 export type ShelfComic = SeriesIdentity & {
@@ -67,7 +68,41 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
       card.sampleIssue = comic.issueNo;
     }
   }
-  return [...map.values()]
+  return sortedSeriesCards([...map.values()]);
+}
+
+export function seriesOrderHints(
+  comics: Array<SeriesIdentity & { addedDate: Date | null; coverYear: number | null }>,
+): Map<string, { addedAt: number; coverYear: number }> {
+  const hints = new Map<string, { addedAt: number; coverYear: number }>();
+  for (const comic of comics) {
+    const id = seriesRouteId(comic);
+    const current = hints.get(id) ?? { addedAt: 0, coverYear: 0 };
+    const added = comic.addedDate?.getTime() ?? 0;
+    if (added > current.addedAt) current.addedAt = added;
+    if ((comic.coverYear ?? 0) > current.coverYear) current.coverYear = comic.coverYear ?? current.coverYear;
+    hints.set(id, current);
+  }
+  return hints;
+}
+
+export function orderSeriesCards<T extends { id: string; series: string; publisher: string | null }>(
+  cards: T[],
+  hints: ReadonlyMap<string, { addedAt: number; coverYear: number }>,
+  sort: CollectionSort,
+): T[] {
+  const copy = [...cards];
+  copy.sort((a, b) => {
+    if (sort === "publisher") return (a.publisher ?? "").localeCompare(b.publisher ?? "") || a.series.localeCompare(b.series);
+    if (sort === "added") return (hints.get(b.id)?.addedAt ?? 0) - (hints.get(a.id)?.addedAt ?? 0) || a.series.localeCompare(b.series);
+    if (sort === "coverYear") return (hints.get(b.id)?.coverYear ?? 0) - (hints.get(a.id)?.coverYear ?? 0) || a.series.localeCompare(b.series);
+    return a.series.localeCompare(b.series);
+  });
+  return copy;
+}
+
+function sortedSeriesCards(cards: Array<SeriesCardModel & { issueSort: number; coverSort: number }>): SeriesCardModel[] {
+  return [...cards]
     .sort((a, b) => a.series.localeCompare(b.series))
     .map((card) => ({
       id: card.id,

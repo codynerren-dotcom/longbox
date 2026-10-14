@@ -14,6 +14,7 @@ import { budgetDay, MetronLimiter } from "@/lib/covers/limiter";
 import { createMetronCoverLookup, fetchMetronIssue, metronBaseUrl, metronBasicAuth, type MetronTransport } from "@/lib/covers/metron-client";
 import type { CoverRecord } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
+import { getPreferences, setCoversPaused } from "@/lib/settings/service";
 
 const globalBackfill = globalThis as unknown as { longboxCoverBackfill?: Promise<unknown> };
 
@@ -109,6 +110,7 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
     },
     log,
     onProgress: (current) => writeBackfillStatus(statusFrom(current, true, startedAt, null)),
+    shouldPause: async () => (await getPreferences()).covers.paused,
   });
   const message = summary.stoppedReason ?? `Matched ${summary.matched}. Unmatched ${summary.unmatched}.`;
   writeBackfillStatus(statusFrom(summary, false, startedAt, message));
@@ -118,6 +120,7 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
 export async function startCoverBackfillInBackground(): Promise<"started" | "busy" | "unconfigured"> {
   if (!(await metronBasicAuth())) return "unconfigured";
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) return "busy";
+  await setCoversPaused(false);
   if (!acquireBackfillLock()) return "busy";
   globalBackfill.longboxCoverBackfill = runCoverBackfill()
     .catch((error: unknown) => {
@@ -159,6 +162,67 @@ export async function attachMetronCover(comicId: string, metronIssueId: string):
       coverCheckedAt: new Date(),
     },
   });
+}
+
+export async function refetchOneCover(comicId: string): Promise<string> {
+  if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) {
+    throw new Error("A cover backfill is already running.");
+  }
+  const comic = await prisma.comic.findUnique({
+    where: { id: comicId },
+    select: {
+      id: true,
+      series: true,
+      issue: true,
+      issueNo: true,
+      coverYear: true,
+      barcode: true,
+      variant: true,
+      publisher: true,
+      coverFile: true,
+      coverStatus: true,
+      metronIssueId: true,
+    },
+  });
+  if (!comic) throw new Error("That issue is not on the shelf.");
+  if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
+  if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
+  try {
+    const lookup = createMetronCoverLookup(await metronTransport());
+    const summary = await backfillCovers({
+      comics: [{ ...comic, coverFile: null, coverStatus: null }],
+      lookup,
+      fileExists: () => false,
+      saveImage: async (issue) => {
+        if (!issue.imageUrl) throw new Error(`Metron issue ${issue.id} has no cover image.`);
+        return downloadCover(issue.imageUrl, issue.id);
+      },
+      markMatched: async (id, update) => {
+        await prisma.comic.update({
+          where: { id },
+          data: {
+            metronIssueId: update.metronIssueId,
+            coverFile: update.coverFile,
+            coverUrl: update.coverUrl,
+            coverStatus: "matched",
+            coverNote: null,
+            coverCheckedAt: new Date(),
+          },
+        });
+      },
+      markUnmatched: async (id, reason) => {
+        await prisma.comic.update({
+          where: { id },
+          data: { coverStatus: "unmatched", coverNote: reason, coverCheckedAt: new Date() },
+        });
+      },
+    });
+    const label = `${comic.series} #${comic.issueNo || comic.issue || "?"}`;
+    if (summary.matched > 0) return `Fetched a cover for ${label}.`;
+    return summary.stoppedReason ?? `No cover matched for ${label}.`;
+  } finally {
+    releaseBackfillLock();
+  }
 }
 
 export async function queueCoverRetry(comicId: string): Promise<void> {

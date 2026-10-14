@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { parseClzCsv, ClzParseError } from "@/lib/clz/parse";
 import { persistClzComics, type ImportSummary } from "@/lib/clz/persist";
+import { recordImportRun } from "@/lib/imports";
 
 export type ImportActionState =
   | { status: "idle" }
@@ -18,6 +19,7 @@ export async function importClzAction(_prev: ImportActionState, formData: FormDa
     const text = await file.text();
     const parsed = parseClzCsv(text);
     const summary = await persistClzComics(parsed.comics);
+    await recordImportRun({ filename: file.name || "export.csv", source: "upload", summary });
     revalidatePath("/", "layout");
     return { status: "ok", summary, warnings: parsed.warnings };
   } catch (error) {

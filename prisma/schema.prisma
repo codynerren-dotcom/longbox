@@ -126,6 +126,19 @@ model AppSetting {
   updatedAt DateTime @updatedAt
 }
 
+/// One CLZ import from the Settings page or the command line.
+model ImportRun {
+  id           String   @id @default(cuid())
+  filename     String
+  source       String   @default("upload")
+  rows         Int
+  uniqueCount  Int
+  createdCount Int
+  updatedCount Int
+  collapsed    Int
+  createdAt    DateTime @default(now())
+}
+
 /// History table for a future PriceProvider. v1 does not write rows.
 model PriceSnapshot {
   id        String   @id @default(cuid())

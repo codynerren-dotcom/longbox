@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useActionState, useState, useTransition, type ReactNode } from "react";
+import { useActionState, useState, useTransition } from "react";
 import { clearSettingAction, saveSettingsAction, testConnectionAction, type ProbeActionState, type SettingsActionState } from "@/app/settings/actions";
+import { Panel } from "@/components/panel";
 import { SECRET_MASK, type FieldView, type SettingsView } from "@/lib/settings/resolve";
 
 const initialSave: SettingsActionState = { status: "idle", message: "" };
@@ -12,44 +13,32 @@ export function SettingsForm({ view }: { view: SettingsView }) {
   const [saveState, saveAction, savePending] = useActionState(saveSettingsAction, initialSave);
   return (
     <form action={saveAction} className="space-y-4">
-      <Section title="Metron" detail="Username and password for catalog lookup and cover backfill.">
+      <Panel title="Metron" detail="Username and password for catalog lookup and cover backfill. A saved value overrides the environment.">
         <SecretField key={`metron.username:${view.metron.username.source}`} name="metron.username" label="Username" field={view.metron.username} />
         <SecretField key={`metron.password:${view.metron.password.source}`} name="metron.password" label="Password" field={view.metron.password} />
         <TestConnection service="metron" />
-      </Section>
-      <Section title="Comic Vine" detail="API key from the Comic Vine account page.">
+      </Panel>
+      <Panel title="Comic Vine" detail="API key from the Comic Vine account page.">
         <SecretField key={`comicvine.apiKey:${view.comicvine.apiKey.source}`} name="comicvine.apiKey" label="API key" field={view.comicvine.apiKey} />
         <TestConnection service="comicvine" />
-      </Section>
-      <Section title="eBay" detail="Client id and secret for the price stub. Pricing is not live yet.">
+      </Panel>
+      <Panel title="eBay" detail="Client id and secret. Pricing stays off until you enable it.">
         <SecretField key={`ebay.clientId:${view.ebay.clientId.source}`} name="ebay.clientId" label="Client ID" field={view.ebay.clientId} />
         <SecretField key={`ebay.clientSecret:${view.ebay.clientSecret.source}`} name="ebay.clientSecret" label="Client secret" field={view.ebay.clientSecret} />
         <TestConnection service="ebay" />
-      </Section>
-      <Section title="Shelf" detail="A saved choice overrides SEED_ON_EMPTY. It applies the next time the app starts.">
+      </Panel>
+      <Panel title="Shelf" detail="A saved choice overrides SEED_ON_EMPTY. It applies the next time the app starts.">
         <label className="flex items-center gap-2 text-sm text-paper">
           <input type="checkbox" name="seedOnEmpty" defaultChecked={view.seedOnEmpty.enabled} className="h-4 w-4 accent-comic" />
           Seed the synthetic shelf when the database is empty
         </label>
         <p className="text-sm text-mist">{view.seedOnEmpty.source === "database" ? "Saved in the database." : "Using the environment variable."}</p>
-      </Section>
+      </Panel>
       <button type="submit" disabled={savePending} className="rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50">
         {savePending ? "Saving…" : "Save settings"}
       </button>
       {saveState.message ? <p className={saveState.status === "error" ? "text-sm text-red-300" : "text-sm text-paper"}>{saveState.message}</p> : null}
     </form>
-  );
-}
-
-function Section({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
-  return (
-    <section className="space-y-3 rounded-2xl bg-panel p-5 ring-1 ring-white/5">
-      <div>
-        <h2 className="font-display text-3xl tracking-wide">{title}</h2>
-        <p className="text-sm text-mist">{detail}</p>
-      </div>
-      {children}
-    </section>
   );
 }
 

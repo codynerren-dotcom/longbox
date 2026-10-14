@@ -13,7 +13,7 @@ export default function ImportPage() {
       </p>
       <ImportForm />
       <p className="mt-4 text-sm text-mist">
-        From the shell: <code className="text-paper">npm run import:clz -- path/to/export.csv</code>
+        From the shell: <code className="text-paper">npm run import:clz -- path/to/export.csv</code>. Past imports are listed in Settings.
       </p>
     </div>
   );

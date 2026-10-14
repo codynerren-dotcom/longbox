@@ -28,6 +28,7 @@ export async function backfillCovers(args: {
   markUnmatched: (id: string, reason: string) => Promise<void>;
   log?: (line: string) => void;
   onProgress?: (summary: BackfillSummary) => void;
+  shouldPause?: () => Promise<boolean> | boolean;
 }): Promise<BackfillSummary> {
   const summary: BackfillSummary = {
     pending: args.comics.filter((comic) => needsCover(comic, args.fileExists)).length,
@@ -38,6 +39,12 @@ export async function backfillCovers(args: {
   };
 
   for (const comic of args.comics) {
+    if (await args.shouldPause?.()) {
+      summary.stoppedReason = "Paused.";
+      args.log?.("Paused.");
+      args.onProgress?.(summary);
+      break;
+    }
     if (!needsCover(comic, args.fileExists)) {
       summary.skipped += 1;
       continue;

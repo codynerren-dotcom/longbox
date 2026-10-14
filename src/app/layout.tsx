@@ -3,6 +3,8 @@ import { Bebas_Neue, Inter } from "next/font/google";
 import { AppShell } from "@/components/shell";
 import { PwaRegister } from "@/components/pwa-register";
 import { getViewer } from "@/lib/auth";
+import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
+import { getPreferences } from "@/lib/settings/service";
 import "./globals.css";
 
 const display = Bebas_Neue({
@@ -45,8 +47,9 @@ export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const viewer = await getViewer();
+  const prefs = await getPreferences().catch(() => defaultPreferences());
   return (
-    <html lang="en" className={`${display.variable} ${body.variable}`}>
+    <html lang="en" className={`${display.variable} ${body.variable}`} style={{ "--accent-rgb": ACCENT_RGB[prefs.display.accent] } as React.CSSProperties}>
       <body className="font-sans antialiased">
         <AppShell viewer={viewer}>{children}</AppShell>
         <PwaRegister />

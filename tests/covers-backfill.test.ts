@@ -233,6 +233,24 @@ describe("cover backfill", () => {
     expect(summary.unmatched).toBe(0);
     expect(unmatched).toEqual([]);
   });
+
+  it("pauses before the next issue and leaves it unmarked", async () => {
+    const unmatched: string[] = [];
+    const summary = await backfillCovers({
+      comics: [record({ id: "a" }), record({ id: "b" })],
+      lookup: lookup(),
+      fileExists: () => false,
+      saveImage: async () => "metron-50.jpg",
+      markMatched: async () => undefined,
+      markUnmatched: async (id) => {
+        unmatched.push(id);
+      },
+      shouldPause: () => true,
+    });
+    expect(summary.stoppedReason).toBe("Paused.");
+    expect(summary.matched).toBe(0);
+    expect(unmatched).toEqual([]);
+  });
 });
 
 describe("Metron rate limit", () => {

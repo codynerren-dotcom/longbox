@@ -2,11 +2,13 @@ import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
 import { prisma } from "@/lib/db";
 import { formatMoney } from "@/lib/format";
+import { getPreferences } from "@/lib/settings/service";
 import { computeStats } from "@/lib/stats";
 
 export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
+  const prefs = await getPreferences();
   const comics = await prisma.comic.findMany({
     select: {
       quantity: true,
@@ -33,7 +35,7 @@ export default async function DashboardPage() {
         <Stat label="Major keys" value={String(stats.majorKeys)} />
         <Stat label="Minor keys" value={String(stats.minorKeys)} />
         <Stat label="Slabs" value={String(stats.slabs)} />
-        <Stat label="Recorded spend" value={formatMoney(stats.spend)} hint="Purchase price × quantity" />
+        <Stat label="Recorded spend" value={formatMoney(stats.spend, prefs.pricing.currency)} hint="Purchase price × quantity" />
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-2">

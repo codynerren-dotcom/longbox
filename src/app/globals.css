@@ -4,12 +4,13 @@
 
 :root {
   color-scheme: dark;
+  --accent-rgb: 255 204 26;
 }
 
 body {
   min-height: 100vh;
   background:
-    radial-gradient(1200px 500px at 10% -10%, rgba(255, 204, 26, 0.08), transparent 55%),
+    radial-gradient(1200px 500px at 10% -10%, rgb(var(--accent-rgb) / 0.08), transparent 55%),
     #0d0e12;
   color: #f4f1ea;
 }
@@ -24,13 +25,13 @@ body {
     -45deg,
     transparent,
     transparent 7px,
-    rgba(255, 204, 26, 0.14) 7px,
-    rgba(255, 204, 26, 0.14) 8px
+    rgb(var(--accent-rgb) / 0.14) 7px,
+    rgb(var(--accent-rgb) / 0.14) 8px
   );
 }
 
 ::selection {
-  background: #ffcc1a;
+  background: rgb(var(--accent-rgb));
   color: #0d0e12;
 }
 
@@ -46,7 +47,7 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 2px solid #ffcc1a;
+  outline: 2px solid rgb(var(--accent-rgb));
   outline-offset: 1px;
 }
 

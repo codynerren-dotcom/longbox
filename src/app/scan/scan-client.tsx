@@ -41,7 +41,15 @@ function loadQueue(): QueueItem[] {
   }
 }
 
-export function ScanClient() {
+export function ScanClient({
+  scanning,
+  storageBox,
+}: {
+  scanning: { camera: "environment" | "user"; mode: "confirm" | "auto"; beep: boolean; vibrate: boolean };
+  storageBox: string;
+}) {
+  const scanningRef = useRef(scanning);
+  scanningRef.current = scanning;
   const videoRef = useRef<HTMLVideoElement>(null);
   const onCodeRef = useRef<(code: string) => void>(() => {});
   const [camera, setCamera] = useState<"starting" | "scanning" | "denied" | "unsupported">("starting");
@@ -59,7 +67,14 @@ export function ScanClient() {
     sessionStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
   }, [queue]);
 
+  function signalScan() {
+    const prefs = scanningRef.current;
+    if (prefs.beep) beep();
+    if (prefs.vibrate && typeof navigator.vibrate === "function") navigator.vibrate(40);
+  }
+
   async function openLookup(barcode: string) {
+    signalScan();
     setSheet({ title: barcode, loading: true, owned: null, matches: [], warnings: [], error: null });
     try {
       const response = await fetch(`/api/lookup?barcode=${encodeURIComponent(barcode)}`);
@@ -68,11 +83,25 @@ export function ScanClient() {
         matches: CatalogMatch[];
         warnings: string[];
       };
+      const matches = body.matches ?? [];
+      if (scanningRef.current.mode === "auto") {
+        if (body.owned) {
+          setSheet(null);
+          setNotice(`Already on the shelf: ${body.owned.series} #${body.owned.issueNo ?? "?"}`);
+          return;
+        }
+        const match = matches.find((item) => !item.ownedId);
+        if (match) {
+          setSheet(null);
+          await addItems([matchItem(match)]);
+          return;
+        }
+      }
       setSheet({
         title: barcode,
         loading: false,
         owned: body.owned,
-        matches: body.matches ?? [],
+        matches,
         warnings: body.warnings ?? [],
         error: null,
       });
@@ -106,7 +135,7 @@ export function ScanClient() {
       }
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" } },
+          video: { facingMode: { ideal: scanning.camera } },
           audio: false,
         });
       } catch {
@@ -165,23 +194,10 @@ export function ScanClient() {
       controls?.stop();
       stream?.getTracks().forEach((track) => track.stop());
     };
-  }, []);
+  }, [scanning.camera]);
 
   function queueMatch(match: CatalogMatch) {
-    const item: QueueItem = {
-      label: `${match.series} #${match.issueNo}`,
-      series: match.series,
-      issueNo: match.issueNo,
-      publisher: match.publisher,
-      coverUrl: match.coverUrl,
-      coverDate: match.coverDate,
-      barcode: match.barcode,
-      plot: match.plot,
-      variant: match.variant,
-      source: match.source === "local" ? "manual" : match.source,
-      externalId: match.externalId,
-      coreSeriesId: match.coreSeriesId,
-    };
+    const item = matchItem(match);
     setQueue((current) => {
       const key = `${item.series}|${item.issueNo}|${item.barcode ?? ""}|${item.externalId ?? ""}`;
       if (current.some((entry) => `${entry.series}|${entry.issueNo}|${entry.barcode ?? ""}|${entry.externalId ?? ""}` === key)) {
@@ -286,6 +302,7 @@ export function ScanClient() {
         <div className="rounded-2xl bg-panel p-4 ring-1 ring-white/5">
           <div className="flex items-center justify-between">
             <h2 className="font-display text-3xl tracking-wide">Queue</h2>
+          {storageBox ? <p className="text-xs text-mist">New copies go in {storageBox}.</p> : null}
             <span className="font-display text-3xl text-comic">{queue.length}</span>
           </div>
           <ul className="mt-2 space-y-1 text-sm text-mist">
@@ -401,6 +418,40 @@ export function ScanClient() {
       ) : null}
     </div>
   );
+}
+
+function matchItem(match: CatalogMatch): QueueItem {
+  return {
+    label: `${match.series} #${match.issueNo}`,
+    series: match.series,
+    issueNo: match.issueNo,
+    publisher: match.publisher,
+    coverUrl: match.coverUrl,
+    coverDate: match.coverDate,
+    barcode: match.barcode,
+    plot: match.plot,
+    variant: match.variant,
+    source: match.source === "local" ? "manual" : match.source,
+    externalId: match.externalId,
+    coreSeriesId: match.coreSeriesId,
+  };
+}
+
+function beep() {
+  try {
+    const context = new AudioContext();
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.frequency.value = 880;
+    gain.gain.value = 0.05;
+    osc.connect(gain);
+    gain.connect(context.destination);
+    osc.start();
+    osc.stop(context.currentTime + 0.08);
+    osc.onended = () => void context.close();
+  } catch {
+    // A blocked tone still leaves the scan result on screen.
+  }
 }
 
 function ManualAdd({ barcode, onAdd }: { barcode: string; onAdd: (item: QueueItem) => void }) {

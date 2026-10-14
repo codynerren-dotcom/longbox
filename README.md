@@ -89,7 +89,19 @@ The same job is the **Backfill covers** button on the Cover backfill page.
 
 ## Settings
 
-**Settings** is in the desktop sidebar and on the mobile More tab. Metron username and password, a Comic Vine API key, and the eBay client id and secret can be saved there. `SEED_ON_EMPTY` is a toggle on the same page. A value saved in the database overrides the environment variable. Clear removes the database value and the environment is the fallback again.
+**Settings** is in the desktop sidebar and on the mobile More tab. The page is grouped into cards:
+
+- Import / Export uploads a CLZ CSV, lists past imports, and downloads CSV, JSON, or a database backup. The backup stores settings still encrypted.
+- Covers runs or pauses backfill, shows progress, links to the unmatched report, and can re-fetch one cover.
+- Pricing sets the eBay cadence (keys weekly, everything else monthly), currency, and an on/off switch. Quotes stay empty until the provider ships.
+- Collection sets the default sort, grid density, sold items, default storage box, grading companies, and key categories.
+- Display sets the accent, 12-hour or 24-hour clock, date format, and timezone. The default timezone is `America/Chicago`.
+- Scanning sets the camera, confirm versus auto-add, and beep or vibrate.
+- Data maintenance lists possible duplicates, rebuilds the search sort fields, and can clear the synthetic demo shelf (core ids 900001–900030).
+- About shows the version, commit, and database counts.
+- Metron, Comic Vine, and eBay credentials, plus the `SEED_ON_EMPTY` toggle, stay on the same page.
+
+A value saved in the database overrides the environment variable. Clear removes the database value and the environment is the fallback again.
 
 Saved secrets are encrypted with AES-GCM. The key is `LONGBOX_SECRET_KEY`, or a key file written on the data volume the first time that variable is empty. The browser only sees a mask, plus Replace and Clear. Test connection checks Metron, Comic Vine, and eBay without returning the saved secret.
 

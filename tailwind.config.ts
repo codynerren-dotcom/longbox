@@ -9,7 +9,7 @@ const config: Config = {
         panel: "#16181e",
         panel2: "#22262f",
         line: "#343a46",
-        comic: "#FFCC1A",
+        comic: "rgb(var(--accent-rgb, 255 204 26) / <alpha-value>)",
         slab: "#e7e7e7",
         mist: "#a8adba",
         paper: "#f4f1ea",
@@ -19,7 +19,7 @@ const config: Config = {
         sans: ["var(--font-body)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
       boxShadow: {
-        comic: "0 10px 30px rgba(255, 204, 26, 0.28)",
+        comic: "0 10px 30px rgb(var(--accent-rgb, 255 204 26) / 0.28)",
       },
     },
   },
