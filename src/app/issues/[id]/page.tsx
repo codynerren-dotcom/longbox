@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import { IssueEditor } from "@/app/issues/edit-form";
 import { MatchPanel } from "@/app/issues/match-panel";
-import { RefreshFromMetron } from "@/app/issues/refresh-metron";
 import { IssueCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
 import { ReadToggle } from "@/components/read-toggle";
@@ -10,7 +10,8 @@ import { matchQuery, readManualLink } from "@/lib/catalog/manual-link";
 import { metronConfigured } from "@/lib/catalog/metron";
 import { fromMetron } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
-import { showSlabSection } from "@/lib/issue-view";
+import { isEmptyDisplay, showSlabSection } from "@/lib/issue-view";
+import { toIssueDraft } from "@/lib/issue-fields";
 import { costBasis } from "@/lib/clz/parse";
 import { formatDate, formatIssue, formatMoney } from "@/lib/format";
 import { dateOptions } from "@/lib/settings/preferences";
@@ -20,22 +21,53 @@ import { seriesRouteId } from "@/lib/series";
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const comic = await prisma.comic.findUnique({ where: { id }, select: { series: true, issueNo: true } });
-  return { title: comic ? `${comic.series} ${formatIssue(comic.issueNo)}` : "Issue" };
+  return { title: comic ? `${comic.series}${comic.issueNo ? ` ${formatIssue(comic.issueNo)}` : ""}` : "Issue" };
 }
 
 export default async function IssuePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [comic, prefs, metronReady, settings] = await Promise.all([
+  const [comic, prefs, metronReady, settings, boxRows] = await Promise.all([
     prisma.comic.findUnique({ where: { id } }),
     getPreferences(),
     metronConfigured(),
     getSettings(),
+    prisma.comic.findMany({
+      where: { storageBox: { not: null } },
+      distinct: ["storageBox"],
+      select: { storageBox: true },
+      orderBy: { storageBox: "asc" },
+    }),
   ]);
   if (!comic) notFound();
   const when = dateOptions(prefs);
   const money = prefs.pricing.currency;
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
   const sourced = (field: string) => fromMetron(comic.fieldSources, field);
+  const spent = costBasis(comic.purchasePrice, comic.quantity);
+  const boxes = boxRows.map((row) => row.storageBox).filter((name): name is string => Boolean(name));
+  const detailFacts = [
+    fact("Story title", comic.title, sourced("title")),
+    fact("Release date", comic.releaseDate ? formatDate(comic.releaseDate, when) : null, sourced("releaseDate")),
+    fact("Page count", comic.pageCount ? String(comic.pageCount) : null, sourced("pageCount")),
+    fact("Cover price", comic.coverPrice != null ? formatMoney(comic.coverPrice, money) : null, sourced("coverPrice")),
+    fact("Writer", comic.writer, sourced("writer")),
+    fact("Artist", comic.artist, sourced("artist")),
+    fact("Cover artist", comic.coverArtist, sourced("coverArtist")),
+    fact("Characters", comic.characters, sourced("characters")),
+    fact("Teams", comic.teams, sourced("teams")),
+    fact("Imprint", comic.imprint, sourced("imprint")),
+    fact("Series year", comic.seriesYear ? String(comic.seriesYear) : null, sourced("seriesYear")),
+    fact("Series volume", comic.seriesVolume ? String(comic.seriesVolume) : null, sourced("seriesVolume")),
+    fact("Metron issue", comic.metronIssueId, sourced("metronIssueId")),
+    fact("Metron series", comic.metronSeriesId, sourced("metronSeriesId")),
+  ].filter((item) => !isEmptyDisplay(item.value));
+  const slabFacts = [
+    fact("Grading company", comic.gradingCompany),
+    fact("Certification number", comic.slabCertNumber),
+    fact("Label type", comic.labelType),
+    fact("Page quality", comic.pageQuality),
+    fact("Grader notes", comic.graderNotes),
+  ].filter((item) => !isEmptyDisplay(item.value));
 
   return (
     <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -55,9 +87,12 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         </p>
       </div>
       <div>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-comic">{comic.publisher ?? "Publisher unknown"}</p>
+        {comic.publisher ? (
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-comic">{comic.publisher}</p>
+        ) : null}
         <h1 className="font-display text-5xl tracking-wide sm:text-6xl">
-          {comic.series} {formatIssue(comic.issueNo)}
+          {comic.series}
+          {comic.issueNo ? ` ${formatIssue(comic.issueNo)}` : ""}
         </h1>
         {comic.variantDescription || comic.variant ? (
           <p className="mt-1 text-mist">{comic.variantDescription || comic.variant}</p>
@@ -75,102 +110,123 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           canRepull={Boolean(readManualLink(comic.manualLink).coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
         />
 
-        <section className="mt-6 grid gap-3 sm:grid-cols-2">
-          <Fact label="Key category" value={comic.keyCategory} />
-          <Fact label="Key reason" value={comic.keyReason} />
-          <Fact label="Grade" value={comic.grade} />
-          <Fact label="Raw or slab" value={comic.rawOrSlabbed} />
-        </section>
-
-        {showSlabSection(comic.rawOrSlabbed) ? (
-          <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-display text-3xl tracking-wide">Slab</h2>
-              <span className="rounded bg-slab px-2 py-1 font-display text-xl tracking-wide text-ink">
-                {[comic.gradingCompany, comic.grade, comic.labelType].filter(Boolean).join(" · ") || "Slabbed"}
-              </span>
-            </div>
-            <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-              <Fact label="Grading company" value={comic.gradingCompany} />
-              <Fact label="Certification number" value={comic.slabCertNumber} />
-              <Fact label="Label type" value={comic.labelType} />
-              <Fact label="Page quality" value={comic.pageQuality} />
-              <Fact label="Grader notes" value={comic.graderNotes} />
-            </dl>
-          </section>
-        ) : null}
-
-        <section className="mt-4 grid gap-3 sm:grid-cols-2">
-          <Fact label="Signed by" value={comic.signedBy} />
-          <Fact label="Storage box" value={comic.storageBox ? <Link href={`/boxes/${encodeURIComponent(comic.storageBox)}`} className="text-comic">{comic.storageBox}</Link> : null} />
-          <Fact
-            label="Purchase price"
-            value={comic.purchasePrice != null ? `${formatMoney(comic.purchasePrice, money)} each` : null}
+        <IssueEditor
+          draft={toIssueDraft(comic)}
+          boxes={boxes}
+          categories={prefs.collection.keyCategories}
+          companies={prefs.collection.gradingCompanies}
+        >
+          <Facts
+            items={[
+              fact("Key category", comic.keyCategory),
+              fact("Key reason", comic.keyReason),
+              fact("Grade", comic.grade),
+              fact("Raw or slab", comic.rawOrSlabbed),
+            ]}
           />
-          <Fact label="Cost basis" value={formatMoney(costBasis(comic.purchasePrice, comic.quantity), money)} />
-          <Fact label="Purchase date" value={formatDate(comic.purchaseDate, when)} />
-          <Fact label="Purchase store" value={comic.purchaseStore} />
-          <Fact label="Cover date" value={comic.coverDate} fromMetron={sourced("coverDate")} />
-          <Fact label="Barcode" value={comic.barcode} fromMetron={sourced("barcode")} />
-          <Fact label="Story arc" value={comic.storyArc} fromMetron={sourced("storyArc")} />
-        </section>
 
-        <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-display text-3xl tracking-wide">Details</h2>
-            <RefreshFromMetron comicId={comic.id} />
-          </div>
-          <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-            <Fact label="Story title" value={comic.title} fromMetron={sourced("title")} />
-            <Fact label="Release date" value={comic.releaseDate ? formatDate(comic.releaseDate, when) : null} fromMetron={sourced("releaseDate")} />
-            <Fact label="Page count" value={comic.pageCount ? String(comic.pageCount) : null} fromMetron={sourced("pageCount")} />
-            <Fact label="Cover price" value={comic.coverPrice != null ? formatMoney(comic.coverPrice, money) : null} fromMetron={sourced("coverPrice")} />
-            <Fact label="Writer" value={comic.writer} fromMetron={sourced("writer")} />
-            <Fact label="Artist" value={comic.artist} fromMetron={sourced("artist")} />
-            <Fact label="Cover artist" value={comic.coverArtist} fromMetron={sourced("coverArtist")} />
-            <Fact label="Characters" value={comic.characters} fromMetron={sourced("characters")} />
-            <Fact label="Teams" value={comic.teams} fromMetron={sourced("teams")} />
-            <Fact label="Imprint" value={comic.imprint} fromMetron={sourced("imprint")} />
-            <Fact label="Series year" value={comic.seriesYear ? String(comic.seriesYear) : null} fromMetron={sourced("seriesYear")} />
-            <Fact label="Series volume" value={comic.seriesVolume ? String(comic.seriesVolume) : null} fromMetron={sourced("seriesVolume")} />
-            <Fact label="Metron issue" value={comic.metronIssueId} fromMetron={sourced("metronIssueId")} />
-            <Fact label="Metron series" value={comic.metronSeriesId} fromMetron={sourced("metronSeriesId")} />
-          </dl>
-        </section>
+          {showSlabSection(comic.rawOrSlabbed) ? (
+            <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-display text-3xl tracking-wide">Slab</h2>
+                <span className="rounded bg-slab px-2 py-1 font-display text-xl tracking-wide text-ink">
+                  {[comic.gradingCompany, comic.grade, comic.labelType].filter(Boolean).join(" · ") || "Slabbed"}
+                </span>
+              </div>
+              {slabFacts.length > 0 ? (
+                <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {slabFacts.map((item) => (
+                    <Fact key={item.label} {...item} />
+                  ))}
+                </dl>
+              ) : null}
+            </section>
+          ) : null}
 
-        <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-display text-3xl tracking-wide">Plot</h2>
-            {sourced("plot") ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
-          </div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-paper/90">{comic.plot || "No plot on this copy."}</p>
-        </section>
+          <Facts
+            items={[
+              fact("Signed by", comic.signedBy),
+              fact(
+                "Storage box",
+                comic.storageBox ? (
+                  <Link href={`/boxes/${encodeURIComponent(comic.storageBox)}`} className="text-comic">
+                    {comic.storageBox}
+                  </Link>
+                ) : null,
+              ),
+              fact("Purchase price", comic.purchasePrice != null ? `${formatMoney(comic.purchasePrice, money)} each` : null),
+              fact("Cost basis", spent ? formatMoney(spent, money) : null),
+              fact("Purchase date", comic.purchaseDate ? formatDate(comic.purchaseDate, when) : null),
+              fact("Purchase store", comic.purchaseStore),
+              fact("Cover date", comic.coverDate, sourced("coverDate")),
+              fact("Barcode", comic.barcode, sourced("barcode")),
+              fact("Story arc", comic.storyArc, sourced("storyArc")),
+            ]}
+          />
 
-        <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
-          <h2 className="font-display text-3xl tracking-wide">Read</h2>
-          <p className="mt-1 text-sm text-mist">{comic.read ? `Read ${formatDate(comic.readDate, when)}` : "Unread"}</p>
-          <div className="mt-3">
-            <ReadToggle id={comic.id} read={comic.read} readDate={readDateValue} />
-          </div>
-        </section>
+          {detailFacts.length > 0 ? (
+            <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+              <h2 className="font-display text-3xl tracking-wide">Details</h2>
+              <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+                {detailFacts.map((item) => (
+                  <Fact key={item.label} {...item} />
+                ))}
+              </dl>
+            </section>
+          ) : null}
 
-        <section className="mt-4 rounded-2xl border border-dashed border-comic/50 bg-panel px-4 py-5">
-          <h2 className="font-display text-3xl tracking-wide text-comic">Value</h2>
-          <p className="mt-1 text-sm text-paper">
-            {prefs.pricing.enabled
-              ? `eBay pricing is on in ${prefs.pricing.currency}. Keys refresh ${prefs.pricing.keyCadence}, other issues ${prefs.pricing.otherCadence}. Quotes are still empty.`
-              : "eBay pricing is off."}
-          </p>
-        </section>
+          {comic.plot?.trim() ? (
+            <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-display text-3xl tracking-wide">Plot</h2>
+                {sourced("plot") ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
+              </div>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-paper/90">{comic.plot}</p>
+            </section>
+          ) : null}
 
-        {comic.notes ? (
-          <section className="mt-4 rounded-2xl bg-panel2 p-4">
-            <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-mist">Notes</h2>
-            <p className="mt-2 whitespace-pre-wrap text-sm">{comic.notes}</p>
+          <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+            <h2 className="font-display text-3xl tracking-wide">Read</h2>
+            <p className="mt-1 text-sm text-mist">{comic.read ? (comic.readDate ? `Read ${formatDate(comic.readDate, when)}` : "Read") : "Unread"}</p>
+            <div className="mt-3">
+              <ReadToggle id={comic.id} read={comic.read} readDate={readDateValue} />
+            </div>
           </section>
-        ) : null}
+
+          <section className="mt-4 rounded-2xl border border-dashed border-comic/50 bg-panel px-4 py-5">
+            <h2 className="font-display text-3xl tracking-wide text-comic">Value</h2>
+            <p className="mt-1 text-sm text-paper">
+              {prefs.pricing.enabled
+                ? `eBay pricing is on in ${prefs.pricing.currency}. Keys refresh ${prefs.pricing.keyCadence}, other issues ${prefs.pricing.otherCadence}. Quotes are still empty.`
+                : "eBay pricing is off."}
+            </p>
+          </section>
+
+          {comic.notes?.trim() ? (
+            <section className="mt-4 rounded-2xl bg-panel2 p-4">
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-mist">Notes</h2>
+              <p className="mt-2 whitespace-pre-wrap text-sm">{comic.notes}</p>
+            </section>
+          ) : null}
+        </IssueEditor>
       </div>
     </div>
+  );
+}
+
+function fact(label: string, value: ReactNode, fromMetron?: boolean) {
+  return { label, value, fromMetron };
+}
+
+function Facts({ items }: { items: { label: string; value: ReactNode; fromMetron?: boolean }[] }) {
+  const shown = items.filter((item) => !isEmptyDisplay(item.value));
+  if (shown.length === 0) return null;
+  return (
+    <section className="mt-4 grid gap-3 sm:grid-cols-2">
+      {shown.map((item) => (
+        <Fact key={item.label} {...item} />
+      ))}
+    </section>
   );
 }
 
@@ -181,7 +237,7 @@ function Fact({ label, value, fromMetron: metron }: { label: string; value: Reac
         <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-mist">{label}</div>
         {metron ? <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-comic">from Metron</span> : null}
       </div>
-      <div className="mt-1 text-sm text-paper">{value || "—"}</div>
+      <div className="mt-1 text-sm text-paper">{value}</div>
     </div>
   );
 }

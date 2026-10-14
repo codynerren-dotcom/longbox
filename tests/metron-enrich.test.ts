@@ -158,4 +158,33 @@ describe("CLZ updates", () => {
     expect(guarded.changedSources).toBe(true);
     expect(guarded.sources).toEqual({ plot: "metron", writer: "metron" });
   });
+
+  it("leaves a user-edited enrich field out of the CLZ write", () => {
+    const guarded = protectMetronFields(
+      { title: "CLZ title", plot: "CLZ plot", grade: "9.8" },
+      { title: "user", plot: "metron" },
+    );
+    expect(guarded.update).not.toHaveProperty("title");
+    expect(guarded.update.plot).toBe("CLZ plot");
+    expect(guarded.update.grade).toBe("9.8");
+    expect(guarded.sources.title).toBe("user");
+    expect(guarded.sources.plot).toBeUndefined();
+    expect(guarded.changedSources).toBe(true);
+  });
+});
+
+describe("user locks", () => {
+  const detail = mapMetronDetails(payload);
+  if (!detail) throw new Error("fixture did not map");
+
+  it("does not refill a field the user cleared", () => {
+    const plan = planEnrichment({ title: "", plot: null }, detail, { title: "user", grade: "user" });
+    expect(plan.patch.title).toBeUndefined();
+    expect(plan.filled).not.toContain("title");
+    expect(plan.sources.title).toBe("user");
+    expect(plan.sources.grade).toBe("user");
+    expect(plan.sources.plot).toBe("metron");
+    expect(fromMetron(plan.sources, "title")).toBe(false);
+    expect(fromMetron(plan.sources, "plot")).toBe(true);
+  });
 });

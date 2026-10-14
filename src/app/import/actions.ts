@@ -25,7 +25,7 @@ export async function importClzAction(_prev: ImportActionState, formData: FormDa
     await recordImportRun({ filename, source: "upload", summary });
     await logImportFinished(filename, summary, parsed.warnings);
     revalidatePath("/", "layout");
-    return { status: "ok", summary, warnings: parsed.warnings };
+    return { status: "ok", summary, warnings: [...parsed.warnings, ...summary.conflicts] };
   } catch (error) {
     const message = error instanceof ClzParseError || error instanceof Error ? error.message : "Import failed.";
     await logImportFailed(filename, message);

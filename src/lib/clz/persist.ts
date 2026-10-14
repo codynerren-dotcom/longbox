@@ -2,7 +2,9 @@ import { Prisma } from "@prisma/client";
 import { legacyZeroCoreKeys, planZeroIdCleanup, type LegacyZeroRow } from "@/lib/clz/legacy-zero";
 import { protectMetronFields } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
+import { conflictMessage, holdUserEdits } from "@/lib/issue-edit";
 import { mergeByDedupeKey, planImport, type NormalizedComic } from "@/lib/clz/parse";
+import { writeLog } from "@/lib/log/write";
 
 function data(comic: NormalizedComic): Prisma.ComicUpdateInput {
   return {
@@ -79,13 +81,18 @@ function data(comic: NormalizedComic): Prisma.ComicUpdateInput {
   };
 }
 
-function clzWrite(comic: NormalizedComic, fieldSources: unknown): Prisma.ComicUpdateInput {
-  const guarded = protectMetronFields(data(comic) as Record<string, unknown>, fieldSources);
+function clzWrite(
+  comic: NormalizedComic,
+  current: object | null,
+  fieldSources: unknown,
+): { update: Prisma.ComicUpdateInput; conflicts: ReturnType<typeof holdUserEdits>["conflicts"] } {
+  const held = holdUserEdits(data(comic) as Record<string, unknown>, current, fieldSources);
+  const guarded = protectMetronFields(held.update, fieldSources);
   const update = guarded.update as Prisma.ComicUpdateInput;
   if (guarded.changedSources) {
     update.fieldSources = Object.keys(guarded.sources).length > 0 ? guarded.sources : Prisma.DbNull;
   }
-  return update;
+  return { update, conflicts: held.conflicts };
 }
 
 export type ImportSummary = {
@@ -96,6 +103,8 @@ export type ImportSummary = {
   updated: number;
   /** Stale rows whose dedupe key was `core:0|...` from before Core ComicID 0 counted as missing. */
   retired: number;
+  /** User-edited fields a re-import left alone. */
+  conflicts: string[];
 };
 
 const staleSelect = {
@@ -131,24 +140,31 @@ export async function persistClzComics(comics: NormalizedComic[]): Promise<Impor
   }
   const plan = planImport(occupiedKeys, merged);
 
+  const conflicts: string[] = [];
   const chunkSize = 40;
   for (let index = 0; index < merged.length; index += chunkSize) {
     const chunk = merged.slice(index, index + chunkSize);
     const stored = await prisma.comic.findMany({
       where: { dedupeKey: { in: chunk.map((comic) => comic.dedupeKey) } },
-      select: { dedupeKey: true, fieldSources: true },
     });
-    const sources = new Map(stored.map((row) => [row.dedupeKey, row.fieldSources]));
+    const byKey = new Map(stored.map((row) => [row.dedupeKey, row]));
+    const writes = chunk.map((comic) => {
+      const current = byKey.get(comic.dedupeKey) ?? null;
+      const write = clzWrite(comic, current, current?.fieldSources ?? null);
+      if (write.conflicts.length > 0) conflicts.push(conflictMessage(comic.series, comic.issueNo, write.conflicts));
+      return write.update;
+    });
     await prisma.$transaction(
-      chunk.map((comic) =>
+      chunk.map((comic, chunkIndex) =>
         prisma.comic.upsert({
           where: { dedupeKey: comic.dedupeKey },
           create: { dedupeKey: comic.dedupeKey, ...data(comic) } as Prisma.ComicCreateInput,
-          update: clzWrite(comic, sources.get(comic.dedupeKey) ?? null),
+          update: writes[chunkIndex],
         }),
       ),
     );
   }
+  await logImportConflicts(conflicts);
 
   for (const action of cleanup.remove) {
     if (action.cover && action.coverOntoKey) {
@@ -170,5 +186,21 @@ export async function persistClzComics(comics: NormalizedComic[]): Promise<Impor
     created: plan.create,
     updated: plan.update,
     retired: cleanup.retarget.length + cleanup.remove.length,
+    conflicts,
   };
+}
+
+async function logImportConflicts(conflicts: string[]): Promise<void> {
+  const shown = conflicts.slice(0, 40);
+  for (const message of shown) {
+    await writeLog({ level: "warn", source: "import", message, details: { skipped: "user-edit" } });
+  }
+  if (conflicts.length > shown.length) {
+    await writeLog({
+      level: "warn",
+      source: "import",
+      message: `${conflicts.length - shown.length} more CLZ re-import skips were omitted.`,
+      details: { conflictCount: conflicts.length },
+    });
+  }
 }

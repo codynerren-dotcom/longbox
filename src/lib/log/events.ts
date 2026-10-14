@@ -148,6 +148,15 @@ export async function logScanLookup(args: {
   });
 }
 
+export async function logIssueEdited(label: string, comicId: string, fields: string[]): Promise<void> {
+  await writeLog({
+    level: "info",
+    source: "system",
+    message: `Edited ${label}: ${fields.join(", ")}.`,
+    details: { comicId, fields },
+  });
+}
+
 export async function logScanAdd(args: { requested: number; created: number; existing: number }): Promise<void> {
   await writeLog({
     level: "info",

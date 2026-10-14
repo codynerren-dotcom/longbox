@@ -21,7 +21,7 @@ async function main() {
     const summary = await persistClzComics(parsed.comics);
     await recordImportRun({ filename, source: "cli", summary });
     await logImportFinished(filename, summary, parsed.warnings);
-    console.log(JSON.stringify({ ...summary, warnings: parsed.warnings }, null, 2));
+    console.log(JSON.stringify({ ...summary, warnings: [...parsed.warnings, ...summary.conflicts] }, null, 2));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Import failed.";
     await logImportFailed(filename, message);

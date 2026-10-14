@@ -77,7 +77,8 @@ export type MetronDetails = {
   comicvineSeriesId: string | null;
 };
 
-export type FieldSources = Partial<Record<MetronField, "metron">>;
+export type FieldMark = "metron" | "user";
+export type FieldSources = Partial<Record<string, FieldMark>>;
 
 export type EnrichmentPlan = {
   patch: Partial<Record<MetronField, string | number | Date>>;
@@ -105,13 +106,15 @@ export function isBlank(field: MetronField, value: unknown): boolean {
   return true;
 }
 
+const FIELD_KEY = /^[A-Za-z][A-Za-z0-9]{0,40}$/;
+
 export function readFieldSources(value: unknown): FieldSources {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const sources: FieldSources = {};
   for (const [key, source] of Object.entries(value)) {
-    if (source === "metron" && (METRON_FIELDS as readonly string[]).includes(key)) {
-      sources[key as MetronField] = "metron";
-    }
+    if (!FIELD_KEY.test(key)) continue;
+    if (source === "user") sources[key] = "user";
+    else if (source === "metron" && (METRON_FIELDS as readonly string[]).includes(key)) sources[key] = "metron";
   }
   return sources;
 }
@@ -163,6 +166,7 @@ export function planEnrichment(current: Partial<Record<MetronField, unknown>>, d
   const patch: EnrichmentPlan["patch"] = {};
   const filled: MetronField[] = [];
   for (const field of METRON_FIELDS) {
+    if (sources[field] === "user") continue;
     if (!isBlank(field, current[field])) continue;
     const next = incoming[field];
     if (next == null || isBlank(field, next)) continue;
@@ -181,11 +185,15 @@ export function protectMetronFields<T extends Record<string, unknown>>(
   const next = { ...update };
   let changedSources = false;
   for (const field of CLZ_ENRICH_FIELDS) {
+    if (sources[field] === "user") {
+      delete next[field];
+      continue;
+    }
     if (isBlank(field, next[field])) {
       delete next[field];
       continue;
     }
-    if (sources[field]) {
+    if (sources[field] === "metron") {
       delete sources[field];
       changedSources = true;
     }

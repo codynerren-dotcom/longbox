@@ -1,7 +1,10 @@
 import { parseComicBarcode } from "@/lib/barcode";
 import type { AddComicInput } from "@/lib/catalog/types";
 import { findByBarcode } from "@/lib/catalog/lookup";
+import { readFieldSources } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
+import { issueLabel } from "@/lib/issue-fields";
+import { logIssueEdited } from "@/lib/log/events";
 import { seriesRouteId, slugify } from "@/lib/series";
 import { getPreferences } from "@/lib/settings/service";
 import { safeImageUrl } from "@/lib/url";
@@ -91,15 +94,27 @@ export async function addComics(items: AddComicInput[], owner: string) {
 }
 
 export async function setReadState(id: string, read: boolean, readDate?: string | null) {
+  const comic = await prisma.comic.findUnique({
+    where: { id },
+    select: { series: true, issueNo: true, fieldSources: true },
+  });
+  if (!comic) throw new Error("This issue is no longer on the shelf.");
   const when = read ? (readDate ? new Date(`${readDate}T12:00:00Z`) : new Date()) : null;
-  return prisma.comic.update({
+  const sources = readFieldSources(comic.fieldSources);
+  sources.read = "user";
+  sources.readDate = "user";
+  sources.readYear = "user";
+  const updated = await prisma.comic.update({
     where: { id },
     data: {
       read,
       readDate: when,
       readYear: when ? when.getUTCFullYear() : null,
+      fieldSources: sources,
     },
   });
+  await logIssueEdited(issueLabel(comic.series, comic.issueNo), id, ["Read", "Read date", "Read year"]);
+  return updated;
 }
 
 export async function addWishlistItems(

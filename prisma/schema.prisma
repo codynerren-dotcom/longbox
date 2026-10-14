@@ -94,7 +94,7 @@ model Comic {
   teams              String?   @db.Text
   seriesYear         Int?
   seriesVolume       Int?
-  /// Keys filled from Metron. Each value is "metron". Absent keys came from CLZ or an edit.
+  /// Per-field origin. "metron" was filled from Metron. "user" was edited on the issue and is not replaced.
   fieldSources       Json?
   /// Hand-picked Metron and Comic Vine ids. Cover backfill must not replace them.
   manualLink         Json?
