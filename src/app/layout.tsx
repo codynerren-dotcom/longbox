@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Bebas_Neue, Inter } from "next/font/google";
 import { AppShell } from "@/components/shell";
 import { PwaRegister } from "@/components/pwa-register";
+import { scheduleFacsimileRematch } from "@/lib/covers/facsimile-rematch";
 import { readBackfillStatus } from "@/lib/covers/files";
 import { getViewer } from "@/lib/auth";
 import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
@@ -46,6 +47,7 @@ export const viewport: Viewport = {
 export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  scheduleFacsimileRematch();
   const viewer = await getViewer();
   const prefs = await getPreferences().catch(() => defaultPreferences());
   return (

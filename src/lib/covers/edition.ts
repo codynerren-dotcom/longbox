@@ -141,10 +141,12 @@ export function buildFacsimileSearches(series: string, issueNo: string): Facsimi
     { series: `${base} Facsimile Edition`, issueNo },
     { series: `${base} Facsimile`, issueNo },
     { series: `${base} #${issueNo} Facsimile Edition`, issueNo: "1" },
+    { series: `${base} ${issueNo} (Facsimile Edition)`, issueNo: "1" },
+    { series: `${base} #${issueNo} (Facsimile Edition)`, issueNo: "1" },
   ];
   const seen = new Set<string>();
   return rows.filter((row) => {
-    const key = `${normName(row.series)}|${row.issueNo}`;
+    const key = `${row.series.toLowerCase()}|${row.issueNo}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

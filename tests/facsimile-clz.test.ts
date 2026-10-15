@@ -118,6 +118,8 @@ describe("CLZ facsimile variants", () => {
         `${base} Facsimile Edition #${example.number}`,
         `${base} Facsimile #${example.number}`,
         `${base} #${example.number} Facsimile Edition #1`,
+        `${base} ${example.number} (Facsimile Edition) #1`,
+        `${base} #${example.number} (Facsimile Edition) #1`,
       ]);
     }
     const byFormat = detectEdition(copyOf(examples[0], { variantDescription: null, format: "Facsimile" }));
@@ -325,6 +327,81 @@ describe("CLZ facsimile variants", () => {
     const decision = await resolveGcdCover(copyOf(example), catalog);
     expect(asked).toEqual([example.barcode, base]);
     expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "880" } });
+  });
+
+  it("matches GCD series named Title N (Facsimile Edition) and skips the original series", async () => {
+    const bane = examples[6];
+    const batman = examples[5];
+    const cases = [
+      { example: bane, seriesName: "Batman: Vengeance of Bane 1 (Facsimile Edition)", id: "bane-fac" },
+      { example: batman, seriesName: "Batman 1 (Facsimile Edition)", id: "batman-fac" },
+    ];
+    for (const { example, seriesName, id } of cases) {
+      const asked: string[] = [];
+      const catalog: GcdCatalog = {
+        async issuesByBarcode() {
+          return [];
+        },
+        async seriesByName(name) {
+          asked.push(name);
+          if (name === seriesName) {
+            return [
+              {
+                id: `${id}-series`,
+                name: seriesName,
+                yearBegan: 2023,
+                yearEnded: null,
+                format: "series",
+                issues: [{ id, descriptor: "1" }],
+              },
+            ];
+          }
+          if (!/facsimile/i.test(name)) {
+            return [
+              {
+                id: "original-series",
+                name: example.series.replace(/,?\s+\bvol(?:ume)?\.?\s*\d+\s*$/i, ""),
+                yearBegan: 1939,
+                yearEnded: null,
+                format: "series",
+                issues: [{ id: "original-issue", descriptor: example.number }],
+              },
+            ];
+          }
+          return [];
+        },
+        async issue(issueId) {
+          if (issueId !== id) return null;
+          return {
+            id,
+            seriesId: `${id}-series`,
+            seriesName,
+            number: "1",
+            variant: "Facsimile Edition",
+            title: null,
+            coverDate: "April 2023",
+            coverYear: 2023,
+            onSaleYear: 2023,
+            onSaleDate: example.releaseDate,
+            price: "4.99 USD",
+            pageCount: 32,
+            barcode: null,
+            publisher: "DC",
+            writer: null,
+            artist: null,
+            coverArtist: null,
+            characters: null,
+            seriesYear: 2023,
+            comicvineIssueId: null,
+            metronIssueId: null,
+          } satisfies GcdIssueRow;
+        },
+      };
+      const decision = await resolveGcdCover(copyOf(example, { barcode: null }), catalog);
+      expect(decision, seriesName).toMatchObject({ status: "matched", via: "gcd", issue: { id } });
+      expect(asked).toContain(seriesName);
+      expect(asked.some((name) => !/facsimile/i.test(name))).toBe(false);
+    }
   });
 });
 

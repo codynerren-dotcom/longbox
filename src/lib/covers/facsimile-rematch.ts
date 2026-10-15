@@ -8,21 +8,25 @@ import { resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
 import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport } from "@/lib/covers/metron-client";
 import { runFacsimilePass, type RematchOutcome } from "@/lib/covers/facsimile-once";
+import { FACSIMILE_REMATCH_KEY, readCatalogYears, writeCatalogYear } from "@/lib/covers/facsimile-years";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
 import { writeLog } from "@/lib/log/write";
 import type { Prisma } from "@prisma/client";
 
-const ONCE_KEY = "facsimile-rematch-v1";
-const YEAR_KEY = "facsimile-catalog-years";
-
 let inflight: Promise<void> | null = null;
+let finishedForProcess = false;
+let nextAttemptAt = 0;
 
 export function scheduleFacsimileRematch(): void {
   if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
-  if (inflight) return;
+  if (finishedForProcess || inflight || Date.now() < nextAttemptAt) return;
+  nextAttemptAt = Date.now() + 60_000;
   inflight = runStoredFacsimileRematch()
+    .then((finished) => {
+      if (finished) finishedForProcess = true;
+    })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : "Facsimile re-match failed.";
       return writeLog({ level: "error", source: "covers/backfill", message });
@@ -30,32 +34,6 @@ export function scheduleFacsimileRematch(): void {
     .finally(() => {
       inflight = null;
     });
-}
-
-export async function readCatalogYears(): Promise<Record<string, number>> {
-  const row = await prisma.appSetting.findUnique({ where: { key: YEAR_KEY } });
-  if (!row?.plain) return {};
-  try {
-    const parsed = JSON.parse(row.plain) as Record<string, unknown>;
-    const years: Record<string, number> = {};
-    for (const [id, value] of Object.entries(parsed)) {
-      if (typeof value === "number" && Number.isInteger(value) && value > 1800 && value < 2200) years[id] = value;
-    }
-    return years;
-  } catch {
-    return {};
-  }
-}
-
-async function writeCatalogYear(comicId: string, year: number | null): Promise<void> {
-  const years = await readCatalogYears();
-  if (year == null) delete years[comicId];
-  else years[comicId] = year;
-  await prisma.appSetting.upsert({
-    where: { key: YEAR_KEY },
-    create: { key: YEAR_KEY, plain: JSON.stringify(years), secret: null },
-    update: { plain: JSON.stringify(years), secret: null },
-  });
 }
 
 function catalogYear(issue: MetronIssueHit): number | null {
@@ -261,17 +239,17 @@ export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message:
   return { ok: true, message };
 }
 
-async function runStoredFacsimileRematch(): Promise<void> {
+async function runStoredFacsimileRematch(): Promise<boolean> {
+  if (!(await metronBasicAuth())) return false;
   const summary = await runFacsimilePass({
     already: async () => {
-      if (!(await metronBasicAuth())) return true;
-      const row = await prisma.appSetting.findUnique({ where: { key: ONCE_KEY } });
+      const row = await prisma.appSetting.findUnique({ where: { key: FACSIMILE_REMATCH_KEY } });
       return row?.plain === "done";
     },
     markDone: async () => {
       await prisma.appSetting.upsert({
-        where: { key: ONCE_KEY },
-        create: { key: ONCE_KEY, plain: "done", secret: null },
+        where: { key: FACSIMILE_REMATCH_KEY },
+        create: { key: FACSIMILE_REMATCH_KEY, plain: "done", secret: null },
         update: { plain: "done", secret: null },
       });
     },
@@ -315,4 +293,5 @@ async function runStoredFacsimileRematch(): Promise<void> {
       details: summary,
     });
   }
+  return summary.done;
 }

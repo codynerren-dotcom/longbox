@@ -8,7 +8,7 @@ import { CatalogIdLink } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { suspectMatchReason } from "@/lib/covers/edition";
-import { readCatalogYears } from "@/lib/covers/facsimile-rematch";
+import { readCatalogYears } from "@/lib/covers/facsimile-years";
 import { metronBasicAuth } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { formatIssue } from "@/lib/format";
