@@ -31,6 +31,10 @@ export type CoverLookup = {
   issuesByUpcPrefix: (upc: string) => Promise<MetronIssueHit[]>;
   searchSeries: (name: string) => Promise<MetronSeriesHit[]>;
   issuesForSeries: (seriesId: string, number: string, coverYear: number | null) => Promise<MetronIssueHit[]>;
+  /** ISBN-13 lookup. Optional so older test lookups still typecheck. */
+  issuesByIsbn?: (isbn: string) => Promise<MetronIssueHit[]>;
+  /** Series search limited to a Metron series type such as Trade Paperback. */
+  searchSeriesByType?: (name: string, seriesType: string) => Promise<MetronSeriesHit[]>;
 };
 
 export type CoverQuery = {
@@ -45,6 +49,7 @@ export type CoverQuery = {
   fullTitle?: string | null;
   variantDescription?: string | null;
   format?: string | null;
+  shelfFormat?: string | null;
   subtitle?: string | null;
   releaseYear?: number | null;
   releaseDate?: Date | string | null;

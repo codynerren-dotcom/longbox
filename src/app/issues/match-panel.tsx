@@ -12,6 +12,7 @@ type Props = {
   comicId: string;
   query: string;
   barcode: string;
+  shelfFormat?: string | null;
   metronReady: boolean;
   comicVineReady: boolean;
   metronIssueId: string | null;
@@ -126,7 +127,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
     setNote("");
     setSelected(null);
     start(async () => {
-      const result = await searchMatchesAction({ source, query, barcode, mode });
+      const result = await searchMatchesAction({ source, query, barcode, mode, shelfFormat: props.shelfFormat ?? null });
       if (!result.ok) {
         setHits([]);
         setError(result.message);

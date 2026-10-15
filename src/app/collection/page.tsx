@@ -7,6 +7,7 @@ import { groupSeries, orderSeriesCards, seriesCardCountLabel, seriesOrderHints }
 import { prisma } from "@/lib/db";
 import { one } from "@/lib/format";
 import { copyCountLabel } from "@/lib/series-view";
+import { isShelfFormat, volumeLabel } from "@/lib/shelf-format";
 import { collectionGridClass } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
 
@@ -24,6 +25,8 @@ export default async function CollectionPage({
   const read = one(params.read);
   const publisher = one(params.publisher);
   const box = one(params.box);
+  const format = one(params.format);
+  const shelfFormat = isShelfFormat(format) ? format : "";
   const prefs = await getPreferences();
 
   const where: Prisma.ComicWhereInput = {};
@@ -46,6 +49,7 @@ export default async function CollectionPage({
   if (read === "unread") and.push({ read: false });
   if (publisher) and.push({ publisher });
   if (box) and.push({ storageBox: box });
+  if (shelfFormat) and.push({ shelfFormat });
   if (!prefs.collection.showSold) and.push({ soldDate: null });
   if (and.length > 0) where.AND = and;
 
@@ -62,6 +66,7 @@ export default async function CollectionPage({
         issueSort: true,
         quantity: true,
         keyLevel: true,
+        shelfFormat: true,
         rawOrSlabbed: true,
         coverUrl: true,
         variant: true,
@@ -101,6 +106,7 @@ export default async function CollectionPage({
         keys={keys}
         slabs={slabs}
         read={read}
+        format={shelfFormat}
         publisher={publisher}
         box={box}
         publishers={publisherRows.map((row) => row.publisher).filter((name): name is string => Boolean(name))}
@@ -118,10 +124,11 @@ export default async function CollectionPage({
               <CoverTile
                 href={`/series/${encodeURIComponent(card.id)}`}
                 title={card.series}
-                issue={card.sampleIssue}
+                issue={card.shelfFormat ? volumeLabel(card.sampleIssue) : card.sampleIssue}
                 coverUrl={card.coverUrl}
                 keyLevel={card.keyLevel}
                 slab={card.slabs > 0}
+                shelfFormat={card.shelfFormat}
               />
               <div className="mt-2">
                 <Link href={`/series/${encodeURIComponent(card.id)}`} className="line-clamp-2 font-medium leading-tight hover:text-comic">

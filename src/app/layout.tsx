@@ -3,6 +3,7 @@ import { Bebas_Neue, Inter } from "next/font/google";
 import { AppShell } from "@/components/shell";
 import { PwaRegister } from "@/components/pwa-register";
 import { scheduleFacsimileRematch } from "@/lib/covers/facsimile-rematch";
+import { scheduleShelfFormatBackfill } from "@/lib/shelf-format-backfill";
 import { readBackfillStatus } from "@/lib/covers/files";
 import { getViewer } from "@/lib/auth";
 import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
@@ -48,6 +49,7 @@ export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   scheduleFacsimileRematch();
+  scheduleShelfFormatBackfill();
   const viewer = await getViewer();
   const prefs = await getPreferences().catch(() => defaultPreferences());
   return (

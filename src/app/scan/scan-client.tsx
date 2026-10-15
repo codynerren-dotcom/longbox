@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { KeyBadge } from "@/components/key-badge";
 import type { AddComicInput, CatalogMatch } from "@/lib/catalog/types";
+import { SHELF_FORMAT_OPTIONS, detectShelfFormat, isCollected, isShelfFormat, volumeLabel } from "@/lib/shelf-format";
 import { mergeDetectedCodes, parseComicBarcode } from "@/lib/barcode";
 
 type Owned = {
@@ -425,8 +426,15 @@ export function ScanClient({
 }
 
 function matchItem(match: CatalogMatch): QueueItem {
+  const shelfFormat = detectShelfFormat({
+    series: match.series,
+    issue: match.issueNo,
+    issueNo: match.issueNo,
+    barcode: match.barcode,
+  });
+  const mark = isCollected(shelfFormat) ? volumeLabel(match.issueNo) : `#${match.issueNo}`;
   return {
-    label: `${match.series} #${match.issueNo}`,
+    label: `${match.series} ${mark}`,
     series: match.series,
     issueNo: match.issueNo,
     publisher: match.publisher,
@@ -438,6 +446,7 @@ function matchItem(match: CatalogMatch): QueueItem {
     source: match.source === "local" ? "manual" : match.source,
     externalId: match.externalId,
     coreSeriesId: match.coreSeriesId,
+    shelfFormat,
   };
 }
 
@@ -467,19 +476,32 @@ function ManualAdd({ barcode, onAdd }: { barcode: string; onAdd: (item: QueueIte
         const data = new FormData(event.currentTarget);
         const series = String(data.get("series") ?? "");
         const issueNo = String(data.get("issueNo") ?? "");
+        const chosen = String(data.get("shelfFormat") ?? "");
+        const shelfFormat = isShelfFormat(chosen)
+          ? chosen
+          : detectShelfFormat({ series, issue: issueNo, issueNo, barcode });
+        const mark = isCollected(shelfFormat) ? volumeLabel(issueNo) : `#${issueNo}`;
         onAdd({
-          label: `${series} #${issueNo}`,
+          label: `${series} ${mark}`,
           series,
           issueNo,
           publisher: String(data.get("publisher") ?? ""),
           barcode: barcode || null,
           source: "manual",
+          shelfFormat,
         });
       }}
     >
       <p className="text-sm text-mist">No catalog match. Add it by hand.</p>
       <input name="series" required placeholder="Series" className="field" />
-      <input name="issueNo" required placeholder="Issue number" className="field" />
+      <input name="issueNo" required placeholder="Issue or Vol. 1" className="field" />
+      <select name="shelfFormat" defaultValue={detectShelfFormat({ barcode })} className="field" aria-label="Format">
+        {SHELF_FORMAT_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
       <input name="publisher" placeholder="Publisher" className="field" />
       <button type="submit" className="rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink">
         Add to collection

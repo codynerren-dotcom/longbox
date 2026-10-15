@@ -2,6 +2,7 @@ import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
 import { recordFetch } from "@/lib/log/api";
 import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
+import { readCollectedIssues } from "@/lib/shelf-format";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -95,6 +96,7 @@ export type GcdIssueRow = {
   /** Present only when the GCD payload itself names another catalog. */
   comicvineIssueId: string | null;
   metronIssueId: string | null;
+  collects?: string | null;
 };
 
 export type GcdCatalog = {
@@ -266,6 +268,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     seriesYear,
     comicvineIssueId: foreignDigits(row, ["cv_id", "comicvine_id", "comicvine_issue_id"]),
     metronIssueId: foreignDigits(row, ["metron_id", "metron_issue_id"]),
+    collects: readCollectedIssues(row),
   };
 }
 

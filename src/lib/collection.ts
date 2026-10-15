@@ -1,6 +1,7 @@
 import type { CollectionSort } from "@/lib/settings/preferences";
 import { seriesRouteId, type SeriesIdentity } from "@/lib/series";
 import { copyGroupKey, copyQuantity } from "@/lib/series-view";
+import { seriesHeaderFormat } from "@/lib/shelf-format";
 
 export type ShelfComic = SeriesIdentity & {
   id: string;
@@ -15,6 +16,7 @@ export type ShelfComic = SeriesIdentity & {
   grade: string | null;
   storageBox: string | null;
   read: boolean;
+  shelfFormat?: string | null;
 };
 
 export type SeriesCardModel = {
@@ -28,6 +30,7 @@ export type SeriesCardModel = {
   slabs: number;
   coverUrl: string | null;
   sampleIssue: string | null;
+  shelfFormat: string | null;
 };
 
 export function seriesCardCountLabel(card: Pick<SeriesCardModel, "count" | "copies">): string {
@@ -38,7 +41,7 @@ export function seriesCardCountLabel(card: Pick<SeriesCardModel, "count" | "copi
 }
 
 export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
-  const map = new Map<string, SeriesCardModel & { issueSort: number; coverSort: number; seen: Set<string>; keyed: Set<string> }>();
+  const map = new Map<string, SeriesCardModel & { issueSort: number; coverSort: number; seen: Set<string>; keyed: Set<string>; formats: Array<string | null | undefined> }>();
   for (const comic of comics) {
     const id = seriesRouteId(comic);
     const sort = comic.issueSort ?? Number.MAX_SAFE_INTEGER;
@@ -55,10 +58,12 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
         slabs: 0,
         coverUrl: comic.coverUrl,
         sampleIssue: comic.issueNo,
+        shelfFormat: null,
         issueSort: sort,
         coverSort: comic.coverUrl ? sort : Number.MAX_SAFE_INTEGER,
         seen: new Set<string>(),
         keyed: new Set<string>(),
+        formats: [],
       };
       map.set(id, card);
     }
@@ -74,6 +79,7 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
       card.count += 1;
     }
     card.copies += copyQuantity(comic);
+    card.formats.push(comic.shelfFormat);
     if (comic.keyLevel === "Major" || comic.keyLevel === "Minor") {
       if (!card.keyed.has(identity)) {
         card.keyed.add(identity);
@@ -125,7 +131,9 @@ export function orderSeriesCards<T extends { id: string; series: string; publish
   return copy;
 }
 
-function sortedSeriesCards(cards: Array<SeriesCardModel & { issueSort: number; coverSort: number }>): SeriesCardModel[] {
+function sortedSeriesCards(
+  cards: Array<SeriesCardModel & { issueSort: number; coverSort: number; formats: Array<string | null | undefined> }>,
+): SeriesCardModel[] {
   return [...cards]
     .sort((a, b) => a.series.localeCompare(b.series))
     .map((card) => ({
@@ -139,5 +147,6 @@ function sortedSeriesCards(cards: Array<SeriesCardModel & { issueSort: number; c
       slabs: card.slabs,
       coverUrl: card.coverUrl,
       sampleIssue: card.sampleIssue,
+      shelfFormat: seriesHeaderFormat(card.formats),
     }));
 }

@@ -8,6 +8,7 @@ import { RemoveCopyButton } from "@/app/issues/remove-copy";
 import { CatalogIdLink } from "@/components/catalog-id-link";
 import { IssueCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
+import { FormatBadge } from "@/components/format-badge";
 import { ReadToggle } from "@/components/read-toggle";
 import { matchQuery, readManualLink } from "@/lib/catalog/manual-link";
 import { metronConfigured } from "@/lib/catalog/metron";
@@ -23,12 +24,13 @@ import { getPreferences, getSettings } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
 import { copiesOf, type ShelfCopy } from "@/lib/shelf-copies";
 import { groupQuantity } from "@/lib/series-view";
+import { isCollected, shelfFormatOf, tradeSearchSeries, volumeLabel, volumeNumber } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const comic = await prisma.comic.findUnique({ where: { id }, select: { series: true, issueNo: true } });
-  return { title: comic ? `${comic.series}${comic.issueNo ? ` ${formatIssue(comic.issueNo)}` : ""}` : "Issue" };
+  const comic = await prisma.comic.findUnique({ where: { id }, select: { series: true, issueNo: true, issue: true, shelfFormat: true } });
+  return { title: comic ? `${comic.series}${issueHeading(comic)}` : "Issue" };
 }
 
 export default async function IssuePage({ params }: { params: Promise<{ id: string }> }) {
@@ -92,11 +94,12 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
       <div className="relative">
         <CoverTile
           title={comic.series}
-          issue={comic.issueNo}
+          issue={isCollected(shelfFormatOf(comic.shelfFormat)) ? volumeLabel(comic.issueNo, comic.issue) : comic.issueNo}
           coverUrl={comic.coverUrl}
           keyLevel={comic.keyLevel}
           slab={comic.rawOrSlabbed === "Slabbed"}
           variant={comic.variant}
+          shelfFormat={comic.shelfFormat}
         />
         <CoverControls comicId={comic.id} hasCover={hasCover} canRevert={canRevert} placement={hasCover ? "menu" : "overlay"} />
         <p className="mt-3 text-sm text-mist">
@@ -109,13 +112,17 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         {comic.publisher ? (
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-comic">{comic.publisher}</p>
         ) : null}
-        <h1 className="font-display text-5xl tracking-wide sm:text-6xl">
-          {comic.series}
-          {comic.issueNo ? ` ${formatIssue(comic.issueNo)}` : ""}
+        <h1 className="flex flex-wrap items-center gap-3 font-display text-5xl tracking-wide sm:text-6xl">
+          <span>
+            {comic.series}
+            {issueHeading(comic)}
+          </span>
+          <FormatBadge format={comic.shelfFormat} className="font-sans" />
         </h1>
         {comic.variantDescription || comic.variant ? (
           <p className="mt-1 text-mist">{comic.variantDescription || comic.variant}</p>
         ) : null}
+        {comic.collects ? <p className="mt-2 text-sm text-paper">Collects {comic.collects}</p> : null}
         {copies.length > 1 ? (
           <CopyList copies={copies} currentId={comic.id} currency={money} when={when} />
         ) : comic.quantity > 1 ? (
@@ -124,9 +131,16 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         <IssueCatalogLinks comic={comic} />
         <MatchPanel
           comicId={comic.id}
+          shelfFormat={comic.shelfFormat}
           query={matchQuery({
-            series: edition.searchNames[0] || comic.series,
-            issueNo: edition.kind === "facsimile" || edition.kind === "printing" ? edition.issueNo : comic.issueNo,
+            series: isCollected(shelfFormatOf(comic.shelfFormat))
+              ? tradeSearchSeries(comic.series) || comic.series
+              : edition.searchNames[0] || comic.series,
+            issueNo: isCollected(shelfFormatOf(comic.shelfFormat))
+              ? volumeNumber(comic.issueNo, comic.issue)
+              : edition.kind === "facsimile" || edition.kind === "printing"
+                ? edition.issueNo
+                : comic.issueNo,
             year: matchYear,
           })}
           barcode={comic.barcode ?? ""}
@@ -321,6 +335,14 @@ function copyDetail(copy: ShelfCopy, currency: string, when: DateDisplay) {
   const basis = copy.quantity > 1 && spent ? formatMoney(spent, currency) : null;
   const date = copy.purchaseDate ? formatDate(copy.purchaseDate, when) : "No date";
   return { condition, slab: slabBits.join(" · "), price, basis, date };
+}
+
+function issueHeading(comic: { issueNo: string | null; issue: string | null; shelfFormat: string | null }): string {
+  if (isCollected(shelfFormatOf(comic.shelfFormat))) {
+    const label = volumeLabel(comic.issueNo, comic.issue);
+    return label === "Vol." ? "" : ` ${label}`;
+  }
+  return comic.issueNo ? ` ${formatIssue(comic.issueNo)}` : "";
 }
 
 function fact(label: string, value: ReactNode, credit?: string | null) {

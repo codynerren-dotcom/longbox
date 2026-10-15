@@ -1,3 +1,5 @@
+import { shelfFormatOf } from "@/lib/shelf-format";
+
 export const RAW_CHOICES = ["Raw", "Slabbed"] as const;
 export const KEY_LEVELS = ["No", "Minor", "Major"] as const;
 
@@ -15,7 +17,8 @@ export type IssueFieldKind =
   | "keyLevel"
   | "category"
   | "company"
-  | "box";
+  | "box"
+  | "shelfFormat";
 
 export type IssueFieldDef = {
   key: string;
@@ -33,7 +36,8 @@ export const ISSUE_FIELDS = [
   { key: "variant", label: "Variant", kind: "text", group: "Copy", max: 80 },
   { key: "variantDescription", label: "Variant description", kind: "text", group: "Copy", max: 200 },
   { key: "publisher", label: "Publisher", kind: "text", group: "Copy", max: 120 },
-  { key: "format", label: "Format", kind: "text", group: "Copy", max: 80 },
+  { key: "format", label: "CLZ format", kind: "text", group: "Copy", max: 80 },
+  { key: "shelfFormat", label: "Format", kind: "shelfFormat", group: "Copy" },
   { key: "fullTitle", label: "Full title", kind: "text", group: "Copy", max: 300 },
   { key: "subtitle", label: "Subtitle", kind: "text", group: "Copy", max: 200 },
   { key: "seriesGroup", label: "Series group", kind: "text", group: "Copy", max: 120 },
@@ -207,6 +211,7 @@ export function canonical(field: string, value: unknown): string {
 }
 
 export function sameStored(field: string, current: unknown, next: unknown): boolean {
+  if (field === "shelfFormat") return shelfFormatOf(canonical(field, current)) === shelfFormatOf(canonical(field, next));
   return canonical(field, current) === canonical(field, next);
 }
 
@@ -219,6 +224,7 @@ export function toIssueDraft(comic: { id: string } & Record<string, unknown>): I
 }
 
 export function displayValue(field: string, value: unknown): string {
+  if (field === "shelfFormat") return shelfFormatOf(canonical(field, value));
   const text = canonical(field, value);
   if (!text) return "";
   if (field === "myRating") {

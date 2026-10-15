@@ -86,6 +86,7 @@ export async function searchMatchesAction(args: {
   query: string;
   barcode: string;
   mode: "query" | "barcode";
+  shelfFormat?: string | null;
 }): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
   return searchIssueCatalog(args);
 }

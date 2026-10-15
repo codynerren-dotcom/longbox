@@ -1,10 +1,22 @@
 "use client";
 
+import { SHELF_FORMATS, type ShelfFormat } from "@/lib/shelf-format";
+
+const FORMAT_CHIPS: Array<{ value: ShelfFormat; label: string }> = [
+  { value: "single", label: "Singles" },
+  { value: "tp", label: "TP" },
+  { value: "hc", label: "HC" },
+  { value: "omnibus", label: "Omnibus" },
+  { value: "gn", label: "GN" },
+  { value: "compendium", label: "Compendium" },
+];
+
 type FilterBarProps = {
   q: string;
   keys: boolean;
   slabs: boolean;
   read: string;
+  format: string;
   publisher: string;
   box: string;
   publishers: string[];
@@ -25,6 +37,7 @@ export function FilterBar(props: FilterBarProps) {
   if (props.keys) current.set("keys", "1");
   if (props.slabs) current.set("slabs", "1");
   if (props.read) current.set("read", props.read);
+  if (props.format) current.set("format", props.format);
   if (props.publisher) current.set("publisher", props.publisher);
   if (props.box) current.set("box", props.box);
 
@@ -33,6 +46,11 @@ export function FilterBar(props: FilterBarProps) {
     { label: "Slabs", href: toggleHref(current, "slabs", "1"), active: props.slabs },
     { label: "Unread", href: toggleHref(current, "read", "unread"), active: props.read === "unread" },
     { label: "Read", href: toggleHref(current, "read", "read"), active: props.read === "read" },
+    ...FORMAT_CHIPS.map((chip) => ({
+      label: chip.label,
+      href: toggleHref(current, "format", chip.value),
+      active: props.format === chip.value,
+    })),
   ];
 
   return (
@@ -61,6 +79,7 @@ export function FilterBar(props: FilterBarProps) {
         {props.keys ? <input type="hidden" name="keys" value="1" /> : null}
         {props.slabs ? <input type="hidden" name="slabs" value="1" /> : null}
         {props.read ? <input type="hidden" name="read" value={props.read} /> : null}
+        {props.format && (SHELF_FORMATS as readonly string[]).includes(props.format) ? <input type="hidden" name="format" value={props.format} /> : null}
         <select
           name="publisher"
           defaultValue={props.publisher}

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CoverTile } from "@/components/cover-tile";
+import { FormatBadge } from "@/components/format-badge";
 import { KeyBadge } from "@/components/key-badge";
 import { paletteFor } from "@/lib/visual";
 import type { RowFacts, SeriesRow } from "@/lib/series-view";
@@ -30,6 +31,7 @@ export function SeriesList({ series, rows }: { series: string; rows: DisplayRow[
               <span className="flex flex-col items-end">
                 <span className="flex items-center gap-1">
                   <IssueBadge badge={row.badge} />
+                  <FormatBadge format={row.comic.shelfFormat} />
                   {row.quantity > 1 ? <QuantityBadge quantity={row.quantity} /> : null}
                 </span>
                 {row.date ? <span className="mt-1 text-[11px] text-mist">{row.date}</span> : null}
@@ -56,9 +58,11 @@ export function SeriesGrid({ series, rows }: { series: string; rows: DisplayRow[
             keyLevel={row.comic.keyLevel}
             slab={row.copies.every((copy) => copy.rawOrSlabbed === "Slabbed")}
             quantity={row.quantity}
+            shelfFormat={row.comic.shelfFormat}
           />
           <p className="mt-1 flex items-center gap-1 truncate text-xs font-semibold text-paper">
             <span className="truncate">{row.badge}</span>
+            <FormatBadge format={row.comic.shelfFormat} />
             {row.quantity > 1 ? <QuantityBadge quantity={row.quantity} /> : null}
           </p>
           <p className="truncate text-[11px] text-mist" title={row.description ?? undefined}>

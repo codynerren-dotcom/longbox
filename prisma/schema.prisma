@@ -25,6 +25,10 @@ model Comic {
   publisher          String?
   releaseDate        DateTime?
   format             String?
+  /// single, tp, hc, omnibus, gn, or compendium. The CLZ Format string stays in `format`.
+  shelfFormat        String    @default("single")
+  /// Single issues this collected edition reprints, when a catalog listed them.
+  collects           String?   @db.Text
   addedDate          DateTime?
   coverDate          String?
   barcode            String?
@@ -121,6 +125,7 @@ model Comic {
   @@index([rawOrSlabbed])
   @@index([read])
   @@index([coverStatus])
+  @@index([shelfFormat])
   @@index([metronIssueId])
   @@index([gcdIssueId])
 }

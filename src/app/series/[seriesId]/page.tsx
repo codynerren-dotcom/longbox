@@ -4,6 +4,7 @@ import { SeriesGrid, SeriesList, type DisplayRow } from "@/app/series/series-row
 import { SeriesShelf } from "@/app/series/series-shelf";
 import { SeriesSummary } from "@/app/series/series-summary";
 import { SeriesCatalogLinks } from "@/components/catalog-links";
+import { FormatBadge } from "@/components/format-badge";
 import { prisma } from "@/lib/db";
 import { formatDate, formatMoney } from "@/lib/format";
 import { seriesRouteId } from "@/lib/series";
@@ -20,6 +21,7 @@ import {
   yearSpan,
   type SeriesCopy,
 } from "@/lib/series-view";
+import { detectShelfFormat, seriesHeaderFormat } from "@/lib/shelf-format";
 import { dateOptions } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
 import { safeImageUrl } from "@/lib/url";
@@ -69,8 +71,17 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
       <header className="mb-5">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-comic">{publisher || "Series"}</p>
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <h1 className="min-w-0 flex-1 font-display text-5xl tracking-wide text-paper sm:text-6xl">{series}</h1>
-          <AddSeriesIssue series={series} publisher={publisher} seriesId={decoded} coreSeriesId={coreSeriesId} />
+          <h1 className="flex min-w-0 flex-1 flex-wrap items-center gap-3 font-display text-5xl tracking-wide text-paper sm:text-6xl">
+            <span>{series}</span>
+            <FormatBadge format={seriesHeaderFormat(comics.map((comic) => comic.shelfFormat))} className="font-sans tracking-wide" />
+          </h1>
+          <AddSeriesIssue
+            series={series}
+            publisher={publisher}
+            seriesId={decoded}
+            coreSeriesId={coreSeriesId}
+            defaultFormat={detectShelfFormat({ series })}
+          />
         </div>
         <SeriesSummary copies={copyCountLabel(comics)} have={have} missing={missing} />
         <p className="mt-2 text-sm text-mist">
@@ -144,5 +155,6 @@ function toCopy(comic: Awaited<ReturnType<typeof loadSeriesComics>>[number]): Se
     priceQuote: comic.priceSnapshots[0]
       ? { amount: comic.priceSnapshots[0].amount, currency: comic.priceSnapshots[0].currency }
       : null,
+    shelfFormat: comic.shelfFormat,
   };
 }

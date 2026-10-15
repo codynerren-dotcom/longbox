@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { collectedText } from "@/lib/catalog/link-plan";
 import { saveChosenCover } from "@/lib/catalog/link-issue";
 import { readManualLink, stripLockedCover, withLinkedId } from "@/lib/catalog/manual-link";
 import { coverPublicPath, backfillCovers, type BackfillSummary } from "@/lib/covers/backfill";
@@ -55,6 +56,7 @@ const enrichSelect = {
   gcdSeriesId: true,
   fieldSources: true,
   manualLink: true,
+  collects: true,
 } as const;
 
 const globalBackfill = globalThis as unknown as { longboxCoverBackfill?: Promise<unknown> };
@@ -75,6 +77,7 @@ async function loadComics(): Promise<CoverRecord[]> {
       title: true,
       fullTitle: true,
       format: true,
+      shelfFormat: true,
       subtitle: true,
       publisher: true,
       releaseYear: true,
@@ -103,6 +106,7 @@ async function loadComics(): Promise<CoverRecord[]> {
       title: row.title,
       fullTitle: row.fullTitle,
       format: row.format,
+      shelfFormat: row.shelfFormat,
       subtitle: row.subtitle,
       publisher: row.publisher,
       releaseYear: row.releaseYear,
@@ -164,6 +168,8 @@ export async function applyEnrichment(
     Object.assign(data, enrichmentPatch(plan));
   }
   if (detail && current) {
+    const collected = collectedText(current, current.fieldSources, detail);
+    if (collected) data.collects = collected;
     const cross = blankCrossIds(current, current.fieldSources, current.manualLink, detail);
     Object.assign(data, cross);
     if (cross.comicvineIssueId) {
@@ -218,7 +224,11 @@ export async function applyGcdLink(
     data.coverUrl = null;
   }
   if (plan && plan.filled.length > 0) Object.assign(data, enrichmentPatch(plan));
-  if (detail && current) Object.assign(data, blankCrossIds(current, current.fieldSources, current.manualLink, detail));
+  if (detail && current) {
+    const collected = collectedText(current, current.fieldSources, detail);
+    if (collected) data.collects = collected;
+    Object.assign(data, blankCrossIds(current, current.fieldSources, current.manualLink, detail));
+  }
   const gcdLink = readManualLink(current?.manualLink);
   if (gcdLink.gcdIssueId) data.gcdIssueId = gcdLink.gcdIssueId;
   stripLockedCover(data, current?.manualLink);
@@ -309,7 +319,9 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
 
 async function runCoverBackfillBody(emit: (line: string) => void, startedAt: string): Promise<BackfillSummary> {
   const { scheduleFacsimileRematch } = await import("@/lib/covers/facsimile-rematch");
+  const { ensureShelfFormats } = await import("@/lib/shelf-format-backfill");
   scheduleFacsimileRematch();
+  await ensureShelfFormats();
   const dir = coversDir();
   const transport = await metronTransport();
   const lookup = createMetronCoverLookup(transport);
@@ -464,6 +476,7 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       title: true,
       fullTitle: true,
       format: true,
+      shelfFormat: true,
       subtitle: true,
       publisher: true,
       releaseYear: true,
@@ -684,6 +697,7 @@ export async function refreshIssueFromMetron(comicId: string): Promise<{ ok: boo
       variant: true,
       variantDescription: true,
       format: true,
+      shelfFormat: true,
       title: true,
       fullTitle: true,
       subtitle: true,

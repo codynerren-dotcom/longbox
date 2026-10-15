@@ -6,6 +6,7 @@ import { saveIssueAction } from "@/app/issues/actions";
 import { RefreshFromMetron } from "@/app/issues/refresh-metron";
 import { CatalogIdLink, catalogIdHref } from "@/components/catalog-id-link";
 import type { CatalogIdKind } from "@/lib/catalog-id-text";
+import { SHELF_FORMAT_OPTIONS } from "@/lib/shelf-format";
 import {
   ISSUE_FIELDS,
   KEY_LEVELS,
@@ -251,6 +252,17 @@ function control(
   }
   if (field.kind === "textarea") {
     return <textarea id={id} name={field.key} defaultValue={value} rows={4} maxLength={field.max} className="field" aria-describedby={described} />;
+  }
+  if (field.kind === "shelfFormat") {
+    return (
+      <select id={id} name={field.key} defaultValue={value || "single"} className="field min-h-11" aria-describedby={described}>
+        {SHELF_FORMAT_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
   }
   if (field.kind === "raw" || field.kind === "keyLevel" || field.kind === "category" || field.kind === "company") {
     const options =

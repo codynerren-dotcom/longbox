@@ -55,7 +55,7 @@ function dropFields(plan: ReturnType<typeof planEnrichment>, fields: readonly Me
 export function linkUpdate(args: {
   source: CatalogSource;
   hit: MatchHit;
-  current: Partial<Record<MetronField, unknown>> & { gcdIssueId?: string | null; gcdSeriesId?: string | null };
+  current: Partial<Record<MetronField, unknown>> & { gcdIssueId?: string | null; gcdSeriesId?: string | null; collects?: string | null };
   fieldSources: unknown;
   manualLink: unknown;
   detail: MetronDetails | null;
@@ -93,6 +93,8 @@ export function linkUpdate(args: {
     data.coverNote = "Linked on GCD. Cover stays on GCD.";
     if (!args.cover) data.coverStatus = "gcd";
   }
+  const collected = collectedText(args.current, args.fieldSources, args.detail);
+  if (collected) data.collects = collected;
   if (args.cover) {
     data.coverFile = args.cover.file;
     data.coverUrl = args.cover.url;
@@ -130,4 +132,16 @@ export function unlinkUpdate(args: {
     if (data.coverStatus === undefined) data.coverNote = null;
   }
   return data;
+}
+
+export function collectedText(
+  current: { collects?: string | null } | null,
+  fieldSources: unknown,
+  detail: { collects?: string | null } | null,
+): string | null {
+  const text = detail?.collects?.trim();
+  if (!current || !text) return null;
+  if (current.collects?.trim()) return null;
+  if (readFieldSources(fieldSources).collects === "user") return null;
+  return text;
 }

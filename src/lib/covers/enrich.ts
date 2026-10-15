@@ -1,6 +1,7 @@
 import { metronSiteUrl } from "@/lib/catalog-links";
 import { variantCoversFrom } from "@/lib/catalog/match-hits";
 import { coverYearOf } from "@/lib/covers/match";
+import { readCollectedIssues } from "@/lib/shelf-format";
 
 export const METRON_FIELDS = [
   "coverDate",
@@ -81,6 +82,8 @@ export type MetronDetails = {
   gcdSeriesId: string | null;
   /** Variant covers from the same issue payload. The first entry is often the 1st-print "Cover". */
   covers?: Array<{ label: string; imageUrl: string }>;
+  /** Single issues this collected edition reprints, when the catalog listed them. */
+  collects?: string | null;
 };
 
 export type FieldMark = "metron" | "gcd" | "user";
@@ -173,6 +176,7 @@ export function mapMetronDetails(value: unknown): MetronDetails | null {
     gcdIssueId: externalId(row.gcd_id),
     gcdSeriesId: externalId(series?.gcd_id ?? row.series_gcd_id),
     covers: variantCoversFrom(row),
+    collects: readCollectedIssues(row),
   };
 }
 

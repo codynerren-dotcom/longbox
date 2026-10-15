@@ -1,5 +1,6 @@
 import { issueNumberValue, parseClzDate, parseClzPrice } from "@/lib/clz/parse";
 import { readFieldSources, type FieldSources } from "@/lib/covers/enrich";
+import { isShelfFormat, volumeNumber } from "@/lib/shelf-format";
 import {
   ISSUE_FIELDS,
   KEY_LEVELS,
@@ -78,7 +79,13 @@ export function planIssueEdit(
   }
   if (changed.length === 0) return { ok: true, data: {}, sources, changed };
   if ("series" in data && typeof data.series === "string") data.seriesSort = data.series.toLowerCase();
-  if ("issueNo" in data) data.issueSort = issueNumberValue(data.issueNo == null ? null : String(data.issueNo));
+  if ("issueNo" in data || "issue" in data) {
+    const issueNo = "issueNo" in data ? data.issueNo : row.issueNo;
+    const issue = "issue" in data ? data.issue : row.issue;
+    const numeric = issueNumberValue(issueNo == null ? null : String(issueNo));
+    const volume = volumeNumber(issueNo == null ? null : String(issueNo), issue == null ? null : String(issue));
+    data.issueSort = numeric ?? (volume ? Number(volume) : null);
+  }
   data.fieldSources = sources;
   return { ok: true, data, sources, changed };
 }
@@ -117,6 +124,14 @@ function readField(key: IssueFieldKey, text: string, lists: IssueChoiceLists, er
   const trimmed = text.trim();
   if (field?.kind === "bool") return trimmed === "true";
   if (field?.kind === "quantity") return readQuantity(key, trimmed, label, errors);
+  if (field?.kind === "shelfFormat") {
+    if (!trimmed) return "single";
+    if (!isShelfFormat(trimmed)) {
+      errors.push({ field: key, message: "Choose a format from the list." });
+      return null;
+    }
+    return trimmed;
+  }
   if (!trimmed) {
     if (key === "series") errors.push({ field: key, message: "Series is required." });
     return null;
@@ -246,6 +261,8 @@ function fillDerivedYears(values: Record<IssueFieldKey, unknown>) {
 
 export function blankIssueRaw(overrides: Partial<Record<IssueFieldKey, string>> = {}): Record<string, string> {
   const raw: Record<string, string> = {};
-  for (const field of ISSUE_FIELDS) raw[field.key] = field.kind === "quantity" ? "1" : field.kind === "bool" ? "false" : "";
+  for (const field of ISSUE_FIELDS) {
+    raw[field.key] = field.kind === "quantity" ? "1" : field.kind === "bool" ? "false" : field.kind === "shelfFormat" ? "single" : "";
+  }
   return { ...raw, ...overrides };
 }

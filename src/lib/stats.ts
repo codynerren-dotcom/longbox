@@ -1,5 +1,6 @@
 import { costBasis } from "@/lib/clz/parse";
 import { AGE_ORDER, ageBucket } from "@/lib/series";
+import { isCollected, shelfFormatOf } from "@/lib/shelf-format";
 
 export type StatsComic = {
   quantity: number;
@@ -9,6 +10,7 @@ export type StatsComic = {
   rawOrSlabbed: string | null;
   coverYear: number | null;
   purchasePrice: { toString(): string } | string | null;
+  shelfFormat?: string | null;
 };
 
 export type ShelfStats = {
@@ -20,6 +22,10 @@ export type ShelfStats = {
   minorKeys: number;
   slabs: number;
   spend: number;
+  singles: number;
+  trades: number;
+  singleSpend: number;
+  tradeSpend: number;
   ages: Array<{ label: string; count: number }>;
   publisherBars: Array<{ label: string; count: number }>;
   topSeries: Array<{ label: string; count: number; copies: number }>;
@@ -36,6 +42,10 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
   let minorKeys = 0;
   let slabs = 0;
   let spendCents = 0;
+  let singles = 0;
+  let trades = 0;
+  let singleCents = 0;
+  let tradeCents = 0;
 
   for (const comic of comics) {
     copies += comic.quantity;
@@ -45,7 +55,15 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
     if (comic.keyLevel === "Minor") minorKeys += 1;
     if (comic.rawOrSlabbed === "Slabbed") slabs += 1;
     const line = costBasis(comic.purchasePrice, comic.quantity);
-    if (line) spendCents += Number(line.replace(".", ""));
+    const cents = line ? Number(line.replace(".", "")) : 0;
+    if (line) spendCents += cents;
+    if (isCollected(shelfFormatOf(comic.shelfFormat))) {
+      trades += 1;
+      tradeCents += cents;
+    } else {
+      singles += 1;
+      singleCents += cents;
+    }
     const bucket = ageBucket(comic.coverYear);
     ageCounts.set(bucket, (ageCounts.get(bucket) ?? 0) + comic.quantity);
     const publisher = comic.publisher ?? "Unknown";
@@ -65,6 +83,10 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
     minorKeys,
     slabs,
     spend: spendCents / 100,
+    singles,
+    trades,
+    singleSpend: singleCents / 100,
+    tradeSpend: tradeCents / 100,
     ages: AGE_ORDER.filter((label) => (ageCounts.get(label) ?? 0) > 0).map((label) => ({
       label,
       count: ageCounts.get(label) ?? 0,

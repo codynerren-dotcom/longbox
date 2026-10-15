@@ -67,16 +67,17 @@ async function comicForLink(id: string) {
       seriesYear: true,
       seriesVolume: true,
       releaseDate: true,
+      collects: true,
     },
   });
 }
 
 function currentFields(
   comic: NonNullable<Awaited<ReturnType<typeof comicForLink>>>,
-): Partial<Record<MetronField, unknown>> & { gcdIssueId: string | null; gcdSeriesId: string | null } {
+): Partial<Record<MetronField, unknown>> & { gcdIssueId: string | null; gcdSeriesId: string | null; collects: string | null } {
   const current: Partial<Record<MetronField, unknown>> = {};
   for (const field of METRON_FIELDS) current[field] = comic[field];
-  return { ...current, gcdIssueId: comic.gcdIssueId, gcdSeriesId: comic.gcdSeriesId };
+  return { ...current, gcdIssueId: comic.gcdIssueId, gcdSeriesId: comic.gcdSeriesId, collects: comic.collects };
 }
 
 function storedLink(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
@@ -88,11 +89,17 @@ export async function searchIssueCatalog(args: {
   query: string;
   barcode: string;
   mode: "query" | "barcode";
+  shelfFormat?: string | null;
 }): Promise<MatchSearchResult> {
   const needle = args.mode === "barcode" ? args.barcode.trim() : args.query.trim();
   if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue." };
   try {
-    const hits = args.source === "metron" ? await searchMetron(args) : args.source === "gcd" ? await searchGcdMatches(args.query, args.barcode, args.mode) : await searchComicVine(args);
+    const hits =
+      args.source === "metron"
+        ? await searchMetron(args)
+        : args.source === "gcd"
+          ? await searchGcdMatches(args.query, args.barcode, args.mode, args.shelfFormat)
+          : await searchComicVine(args);
     if ("ok" in hits) return hits;
     await writeLog({
       level: "info",
@@ -108,9 +115,14 @@ export async function searchIssueCatalog(args: {
   }
 }
 
-async function searchMetron(args: { query: string; barcode: string; mode: "query" | "barcode" }): Promise<MatchHit[] | MatchSearchResult> {
+async function searchMetron(args: {
+  query: string;
+  barcode: string;
+  mode: "query" | "barcode";
+  shelfFormat?: string | null;
+}): Promise<MatchHit[] | MatchSearchResult> {
   if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
-  return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode);
+  return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode, args.shelfFormat);
 }
 
 async function searchComicVine(args: { query: string; barcode: string; mode: "query" | "barcode" }): Promise<MatchHit[] | MatchSearchResult> {

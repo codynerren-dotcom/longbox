@@ -1,12 +1,14 @@
 import { parseComicBarcode } from "@/lib/barcode";
 import type { AddComicInput } from "@/lib/catalog/types";
 import { findByBarcode } from "@/lib/catalog/lookup";
+import { issueNumberValue } from "@/lib/clz/parse";
 import { readFieldSources } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
 import { issueLabel } from "@/lib/issue-fields";
 import { logIssueEdited } from "@/lib/log/events";
 import { seriesRouteId, slugify } from "@/lib/series";
 import { getPreferences } from "@/lib/settings/service";
+import { detectShelfFormat, isCollected, isShelfFormat, volumeNumber } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 function addDedupeKey(input: AddComicInput, barcode: string | null): string {
@@ -55,6 +57,10 @@ export async function addComics(items: AddComicInput[], owner: string) {
     const coreSeriesId =
       item.coreSeriesId ??
       seriesRouteId({ series, publisher: item.publisher ?? null, coreSeriesId: null });
+    const shelfFormat = isShelfFormat(item.shelfFormat)
+      ? item.shelfFormat
+      : detectShelfFormat({ series, issue: issueNo, issueNo, barcode });
+    const volume = volumeNumber(issueNo);
     const comic = await prisma.comic.create({
       data: {
         dedupeKey,
@@ -62,7 +68,7 @@ export async function addComics(items: AddComicInput[], owner: string) {
         seriesSort: series.toLowerCase(),
         issue: issueNo,
         issueNo,
-        issueSort: /^\d+$/.test(issueNo) ? Number.parseInt(issueNo, 10) : null,
+        issueSort: issueNumberValue(issueNo) ?? (volume ? Number(volume) : null),
         publisher: item.publisher?.trim() || null,
         variant: item.variant?.trim() || null,
         variantDescription: item.variantDescription?.trim() || null,
@@ -76,7 +82,9 @@ export async function addComics(items: AddComicInput[], owner: string) {
         keyLevel: "No",
         rawOrSlabbed: "Raw",
         collectionStatus: "Owned",
-        format: "Comic",
+        format: isCollected(shelfFormat) ? null : "Comic",
+        shelfFormat,
+        fieldSources: isShelfFormat(item.shelfFormat) ? { shelfFormat: "user" } : undefined,
         owner,
         source: item.source,
         read: false,

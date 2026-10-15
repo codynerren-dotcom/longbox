@@ -4,6 +4,7 @@ import { recordFetch } from "@/lib/log/api";
 import { getSettings } from "@/lib/settings/service";
 import { probeMetron, type ProbeResult } from "@/lib/settings/probe";
 import { metronAuthorization } from "@/lib/settings/resolve";
+import { isbnDigits } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 type MetronIssue = {
@@ -99,7 +100,8 @@ function toMatch(issue: MetronIssue, barcode: string | null): CatalogMatch | nul
 
 export async function metronByBarcode(parsed: ParsedBarcode): Promise<CatalogMatch[]> {
   if (!(await metronConfigured())) return [];
-  const queries = [`/issue/?upc=${encodeURIComponent(parsed.combined)}`];
+  const isbn = isbnDigits(parsed.combined);
+  const queries = isbn ? [`/issue/?isbn=${encodeURIComponent(isbn)}`] : [`/issue/?upc=${encodeURIComponent(parsed.combined)}`];
   if (parsed.upc && parsed.upc !== parsed.combined) {
     queries.push(`/issue/?upc_starts_with=${encodeURIComponent(parsed.upc)}`);
   }

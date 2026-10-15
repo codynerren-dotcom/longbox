@@ -29,4 +29,6 @@ export type AddComicInput = {
   source: CatalogSource | "manual";
   externalId?: string | null;
   coreSeriesId?: string | null;
+  /** Chosen format. When set, the shelf keeps it across a later CLZ import. */
+  shelfFormat?: string | null;
 };

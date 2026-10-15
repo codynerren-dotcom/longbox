@@ -225,6 +225,15 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
       const hits = await collect(transport, `/series/?${params.toString()}`, mapSeries);
       return hits as MetronSeriesHit[];
     },
+    async issuesByIsbn(isbn) {
+      const hits = await collect(transport, `/issue/?isbn=${encodeURIComponent(isbn)}`, mapIssue);
+      return hits as MetronIssueHit[];
+    },
+    async searchSeriesByType(name, seriesType) {
+      const params = new URLSearchParams({ name, series_type: seriesType });
+      const hits = await collect(transport, `/series/?${params.toString()}`, mapSeries);
+      return hits as MetronSeriesHit[];
+    },
     async issuesForSeries(seriesId, number, coverYear) {
       const params = new URLSearchParams({ series_id: seriesId, number });
       if (coverYear != null) params.set("cover_year", String(coverYear));

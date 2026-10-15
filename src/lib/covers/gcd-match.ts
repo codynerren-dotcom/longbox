@@ -7,18 +7,32 @@ import { detectEdition, scoreCandidate, seriesMentionsIssue, type MatchCandidate
 import { chooseFacsimileIssue, choosePrintingIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
+import { gcdFormatMatches, isbnDigits, isCollected, resolveShelfFormat, tradeSearchSeries, volumeNumber, type ShelfFormat } from "@/lib/shelf-format";
 
-export async function searchGcdMatches(query: string, barcode: string, mode: "query" | "barcode"): Promise<MatchHit[]> {
+export async function searchGcdMatches(
+  query: string,
+  barcode: string,
+  mode: "query" | "barcode",
+  shelfFormat?: string | null,
+): Promise<MatchHit[]> {
   const catalog = createGcdCatalog();
+  const format = resolveShelfFormat({ shelfFormat });
   if (mode === "barcode") {
     const code = barcode.trim();
     if (!code) return [];
-    const issues = await catalog.issuesByBarcode(code);
+    const isbn = isbnDigits(code);
+    const issues = await catalog.issuesByBarcode(isbn ?? code);
     return issues.map(gcdHit);
   }
   const parsed = parseMatchQuery(query);
   if (!parsed.series) return [];
-  const seriesRows = await catalog.seriesByName(parsed.series);
+  const wanted = isCollected(format) ? tradeSearchSeries(parsed.series) || parsed.series : parsed.series;
+  let seriesRows = await catalog.seriesByName(wanted);
+  if (isCollected(format)) {
+    const collected = seriesRows.filter((row) => gcdFormatMatches(row.format, row.name, format));
+    if (collected.length === 0) return [];
+    seriesRows = collected;
+  }
   const hits: MatchHit[] = [];
   for (const series of seriesRows.slice(0, 3)) {
     const ids = (parsed.issueNo ? issuesFor(series, parsed.issueNo, true) : series.issues.map((issue) => issue.id)).slice(0, 4);
@@ -49,6 +63,8 @@ export function gcdHit(issue: GcdIssueRow): MatchHit {
 }
 
 export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): Promise<CoverDecision> {
+  const shelf = resolveShelfFormat(comic);
+  if (isCollected(shelf)) return resolveGcdCollected(comic, shelf, catalog);
   const edition = detectEdition(comic);
   if (edition.kind === "facsimile") return resolveGcdFacsimile(comic, edition, catalog);
   if (edition.kind === "printing") return resolveGcdPrinting(comic, edition, catalog);
@@ -116,7 +132,44 @@ export function gcdDetails(issue: GcdIssueRow): MetronDetails {
     comicvineSeriesId: null,
     gcdIssueId: null,
     gcdSeriesId: null,
+    collects: issue.collects,
   };
+}
+
+async function resolveGcdCollected(comic: CoverQuery, format: ShelfFormat, catalog: GcdCatalog): Promise<CoverDecision> {
+  const seriesName = tradeSearchSeries(comic.series) || comic.series.trim();
+  const scored = { ...comic, series: seriesName };
+  const issueNo = volumeNumber(comic.issueNo, comic.issue) || (comic.issueNo || comic.issue || "").trim();
+  const isbn = isbnDigits(comic.barcode);
+  if (isbn) {
+    const decision = chooseGcd(await catalog.issuesByBarcode(isbn), scored, issueNo);
+    if (decision.status === "matched") return decision;
+  } else if (comic.barcode) {
+    const barcode = parseComicBarcode(comic.barcode);
+    if (barcode) {
+      const decision = chooseGcd(await catalog.issuesByBarcode(barcode.combined), scored, issueNo);
+      if (decision.status === "matched") return decision;
+    }
+  }
+  if (!seriesName || !issueNo) return { status: "unmatched", reason: "GCD needs a series and a volume number.", score: 0 };
+  const seriesRows = (await catalog.seriesByName(seriesName)).filter((row) => gcdFormatMatches(row.format, row.name, format));
+  if (seriesRows.length === 0) return { status: "unmatched", reason: `No GCD collected series named ${seriesName}.`, score: 0 };
+  let best: CoverDecision = { status: "unmatched", reason: `No GCD volume ${issueNo} in ${seriesName}.`, score: 0 };
+  let fetched = 0;
+  for (const series of seriesRows.slice(0, 3)) {
+    const issueIds = issuesFor(series, issueNo, true).slice(0, 2);
+    for (const id of issueIds) {
+      if (fetched >= 4) return best;
+      fetched += 1;
+      const issue = await catalog.issue(id);
+      if (!issue) continue;
+      issue.seriesYear = issue.seriesYear ?? series.yearBegan;
+      const decision = chooseGcd([issue], scored, issueNo);
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+    }
+  }
+  return best;
 }
 
 async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {

@@ -18,6 +18,7 @@ export default async function DashboardPage() {
       rawOrSlabbed: true,
       coverYear: true,
       purchasePrice: true,
+      shelfFormat: true,
     },
   });
   const stats = computeStats(comics);
@@ -36,6 +37,8 @@ export default async function DashboardPage() {
         <Stat label="Minor keys" value={String(stats.minorKeys)} />
         <Stat label="Slabs" value={String(stats.slabs)} />
         <Stat label="Recorded spend" value={formatMoney(stats.spend, prefs.pricing.currency)} hint="Purchase price × quantity" />
+        <Stat label="Singles" value={String(stats.singles)} hint={formatMoney(stats.singleSpend, prefs.pricing.currency)} />
+        <Stat label="Trades" value={String(stats.trades)} hint={formatMoney(stats.tradeSpend, prefs.pricing.currency)} />
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-2">

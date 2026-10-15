@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CoverTile } from "@/components/cover-tile";
+import { FormatBadge } from "@/components/format-badge";
 import { PageHeader } from "@/components/page-header";
 import { prisma } from "@/lib/db";
 import { copyCountLabel, groupCopies, groupQuantity, issueBadge, variantLetter } from "@/lib/series-view";
@@ -46,22 +47,25 @@ export default async function KeysPage({
             const keyLevel = copies.some((copy) => copy.keyLevel === "Major") ? "Major" : comic.keyLevel;
             const reason = copies.map((copy) => copy.keyReason || copy.keyCategory).find((text) => text?.trim()) || keyLevel;
             const letter = variantLetter(comic.variant, comic.variantDescription);
+            const badge = issueBadge(comic.issueNo, letter, comic.shelfFormat);
             return (
               <li key={comic.id}>
                 <CoverTile
                   href={`/issues/${comic.id}`}
                   title={comic.series}
-                  issue={comic.issueNo}
+                  issue={badge.replace(/^#/, "")}
                   coverUrl={comic.coverUrl}
                   keyLevel={keyLevel}
                   slab={copies.every((copy) => copy.rawOrSlabbed === "Slabbed")}
                   variant={comic.variant}
                   quantity={quantity}
+                  shelfFormat={comic.shelfFormat}
                 />
-                <p className="mt-2 font-medium">
+                <p className="mt-2 flex items-center gap-2 font-medium">
                   <Link href={`/issues/${comic.id}`} className="hover:text-comic">
-                    {comic.series} {issueBadge(comic.issueNo, letter)}
+                    {comic.series} {badge}
                   </Link>
+                  <FormatBadge format={comic.shelfFormat} />
                 </p>
                 <p className="text-sm text-mist">{reason}</p>
               </li>

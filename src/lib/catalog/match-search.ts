@@ -3,19 +3,57 @@ import { catalogIssueCount } from "@/lib/series-view";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { fetchMetronIssueBody, listMetronIssueRows, type MetronTransport } from "@/lib/covers/metron-client";
 import { recordFetch } from "@/lib/log/api";
+import { isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
 
 const CV_BASE = "https://comicvine.gamespot.com/api";
 
-export async function searchMetronMatches(transport: MetronTransport, query: string, barcode: string, mode: "query" | "barcode"): Promise<MatchHit[]> {
+export async function searchMetronMatches(
+  transport: MetronTransport,
+  query: string,
+  barcode: string,
+  mode: "query" | "barcode",
+  shelfFormat?: string | null,
+): Promise<MatchHit[]> {
+  const format = resolveShelfFormat({ shelfFormat });
   if (mode === "barcode") {
     const code = barcode.trim();
     if (!code) return [];
+    const isbn = isbnDigits(code);
+    if (isbn) {
+      const byIsbn = await listMetronIssueRows(transport, `/issue/?isbn=${encodeURIComponent(isbn)}`);
+      if (byIsbn.length > 0) return byIsbn.map(mapMetronMatchHit).filter((hit): hit is MatchHit => hit !== null);
+    }
     const exact = await listMetronIssueRows(transport, `/issue/?upc=${encodeURIComponent(code)}`);
     const rows = exact.length > 0 ? exact : await listMetronIssueRows(transport, `/issue/?upc_starts_with=${encodeURIComponent(code)}`);
     return rows.map(mapMetronMatchHit).filter((hit): hit is MatchHit => hit !== null);
   }
   const parsed = parseMatchQuery(query);
   if (!parsed.series && !parsed.issueNo) return [];
+  const typeName = isCollected(format) ? metronSeriesType(format) : null;
+  if (typeName) {
+    const seriesName = tradeSearchSeries(parsed.series) || parsed.series;
+    const number = volumeNumber(parsed.issueNo) ?? parsed.issueNo;
+    if (!seriesName) return [];
+    const seriesRows = await listMetronIssueRows(
+      transport,
+      `/series/?${new URLSearchParams({ name: seriesName, series_type: typeName }).toString()}`,
+    );
+    const hits: MatchHit[] = [];
+    for (const row of seriesRows) {
+      const seriesId = idOf(row);
+      if (!seriesId) continue;
+      const params = new URLSearchParams({ series_id: seriesId });
+      if (number) params.set("number", number);
+      if (parsed.year != null) params.set("cover_year", String(parsed.year));
+      const issues = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
+      for (const issue of issues) {
+        const hit = mapMetronMatchHit(issue);
+        if (hit && !hits.some((item) => item.id === hit.id)) hits.push(hit);
+      }
+      if (hits.length >= 12) break;
+    }
+    return orderMatchHits(hits.slice(0, 12), parsed.year);
+  }
   const params = new URLSearchParams();
   if (parsed.series) params.set("series_name", parsed.series);
   if (parsed.issueNo) params.set("number", parsed.issueNo);
@@ -134,6 +172,14 @@ export async function searchComicVineMatches(args: {
     }
   }
   return orderMatchHits(hits.slice(0, 12), parsed.year);
+}
+
+function idOf(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const id = (value as { id?: unknown }).id;
+  if (typeof id !== "number" && typeof id !== "string") return null;
+  const text = String(id);
+  return /^\d+$/.test(text) ? text : null;
 }
 
 function publisherOf(value: unknown): string | null {

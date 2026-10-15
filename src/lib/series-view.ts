@@ -1,5 +1,6 @@
 import { costBasis, issueNumberValue } from "@/lib/clz/parse";
 import { formatMoney } from "@/lib/format";
+import { isCollected, shelfFormatOf, volumeLabel, volumeNumber } from "@/lib/shelf-format";
 
 export type SeriesCopy = {
   id: string;
@@ -32,6 +33,7 @@ export type SeriesCopy = {
   myValue: { toString(): string } | string | null;
   /** Latest priced quote, when a pricing run has stored one. */
   priceQuote: { amount: { toString(): string } | string | null; currency: string | null } | null;
+  shelfFormat?: string | null;
 };
 
 export type OwnedSeriesRow = {
@@ -65,8 +67,9 @@ function letterFrom(value: string | null | undefined): string {
   return labeled ? labeled[1].toUpperCase() : "";
 }
 
-/** `#1` plus the variant letter: `#1A`. A letter already on the issue number is not repeated. */
-export function issueBadge(issueNo: string | null | undefined, letter: string): string {
+/** `#1` plus the variant letter: `#1A`. Collected editions read `Vol. 1`. */
+export function issueBadge(issueNo: string | null | undefined, letter: string, format?: string | null): string {
+  if (format && isCollected(shelfFormatOf(format))) return volumeLabel(issueNo);
   const issue = (issueNo ?? "").trim();
   const mark = letter.trim().toUpperCase();
   if (!issue) return mark ? `#${mark}` : "#";
@@ -111,6 +114,8 @@ export function copyGroupKey(comic: CopyIdentity): string {
 function issueAndLetter(comic: Pick<CopyIdentity, "issueNo" | "variant" | "variantDescription">): { issue: string; letter: string } {
   const fromFields = variantLetter(comic.variant, comic.variantDescription);
   const raw = (comic.issueNo ?? "").trim();
+  const volume = volumeNumber(raw);
+  if (volume && /vol|volume|^v\.?\s*\d/i.test(raw)) return { issue: volume, letter: fromFields };
   const numeric = issueNumberValue(raw);
   if (numeric != null) return { issue: String(numeric), letter: fromFields };
   const trailing = raw.match(/^(\d+)([A-Za-z])$/);
@@ -459,7 +464,7 @@ function groupedRow(copies: SeriesCopy[]): OwnedSeriesRow {
     kind: "owned",
     comic: { ...lead, keyLevel, read: copies.every((copy) => copy.read) },
     copies,
-    badge: issueBadge(lead.issueNo, letter),
+    badge: issueBadge(lead.issueNo, letter, lead.shelfFormat),
     letter,
     description: variantDescriptionText(lead),
     key: isKeyIssue(keyLevel),

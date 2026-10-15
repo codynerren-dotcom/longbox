@@ -54,6 +54,7 @@ function coverQuery(comic: {
   fullTitle?: string | null;
   variantDescription?: string | null;
   format?: string | null;
+  shelfFormat?: string | null;
   subtitle?: string | null;
   releaseYear?: number | null;
   releaseDate?: Date | null;
@@ -72,6 +73,7 @@ function coverQuery(comic: {
     fullTitle: comic.fullTitle,
     variantDescription: comic.variantDescription,
     format: comic.format,
+    shelfFormat: comic.shelfFormat,
     subtitle: comic.subtitle,
     releaseYear: comic.releaseYear,
     releaseDate: comic.releaseDate,
@@ -207,6 +209,7 @@ const linkedSelect = {
   variant: true,
   variantDescription: true,
   format: true,
+  shelfFormat: true,
   subtitle: true,
   publisher: true,
   coverYear: true,

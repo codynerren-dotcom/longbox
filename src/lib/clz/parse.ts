@@ -1,5 +1,6 @@
 import { CLZ_HEADERS, type ClzHeader } from "@/lib/clz/headers";
 import { parseCsv } from "@/lib/clz/csv";
+import { detectShelfFormat, volumeNumber, type ShelfFormat } from "@/lib/shelf-format";
 
 export class ClzParseError extends Error {
   constructor(message: string) {
@@ -38,6 +39,7 @@ export type NormalizedComic = {
   publisher: string | null;
   releaseDate: Date | null;
   format: string | null;
+  shelfFormat: ShelfFormat;
   addedDate: Date | null;
   coverDate: string | null;
   barcode: string | null;
@@ -234,6 +236,11 @@ export function issueNumberValue(issueNo: string | null | undefined): number | n
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function numberedVolume(issueNo: string | null, issue: string | null): number | null {
+  const volume = volumeNumber(issueNo, issue);
+  return volume ? Number(volume) : null;
+}
+
 /**
  * A usable CLZ core id is a positive integer. `0`, `0.0`, blanks, and
  * anything that is not an integer are missing ids, not a shared comic.
@@ -296,12 +303,21 @@ export function normalizeClzRecord(record: Record<string, string>): NormalizedCo
     seriesSort: series.toLowerCase(),
     issue,
     issueNo,
-    issueSort: issueNumberValue(issueNo),
+    issueSort: issueNumberValue(issueNo) ?? numberedVolume(issueNo, issue),
     variantDescription: blankToNull(cell(record, "Variant Description")),
     variant,
     publisher: blankToNull(cell(record, "Publisher")),
     releaseDate: parseClzDate(cell(record, "Release Date")),
     format: blankToNull(cell(record, "Format")),
+    shelfFormat: detectShelfFormat({
+      format: blankToNull(cell(record, "Format")),
+      series,
+      issue,
+      issueNo,
+      title: blankToNull(cell(record, "Title")),
+      fullTitle: blankToNull(cell(record, "Full Title")),
+      barcode,
+    }),
     addedDate: parseClzDate(cell(record, "Added Date")),
     coverDate: blankToNull(cell(record, "Cover Date")),
     barcode,

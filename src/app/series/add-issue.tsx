@@ -2,6 +2,7 @@
 
 import { useActionState, useEffect, useState } from "react";
 import { addSeriesIssueAction, type AddIssueState } from "@/app/series/actions";
+import { SHELF_FORMAT_OPTIONS, type ShelfFormat } from "@/lib/shelf-format";
 
 const initial: AddIssueState = { status: "idle", message: "" };
 
@@ -10,11 +11,13 @@ export function AddSeriesIssue({
   publisher,
   seriesId,
   coreSeriesId,
+  defaultFormat = "single",
 }: {
   series: string;
   publisher: string;
   seriesId: string;
   coreSeriesId: string;
+  defaultFormat?: ShelfFormat;
 }) {
   const [open, setOpen] = useState(false);
   const [state, action, pending] = useActionState(addSeriesIssueAction, initial);
@@ -56,7 +59,17 @@ export function AddSeriesIssue({
           <input type="hidden" name="coreSeriesId" value={coreSeriesId} />
           <label className="block text-sm">
             <span className="mb-1 block text-mist">Issue number</span>
-            <input name="issueNo" required inputMode="numeric" placeholder="1" className="field" />
+            <input name="issueNo" required placeholder={defaultFormat === "single" ? "1" : "Vol. 1"} className="field" />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-mist">Format</span>
+            <select name="shelfFormat" defaultValue={defaultFormat} className="field">
+              {SHELF_FORMAT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-mist">Variant letter</span>
