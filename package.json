@@ -10,7 +10,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "validate": "npm run lint && npm run typecheck && npm run test",
+    "validate": "npm run lint && npm run typecheck && npm run test && npm run build",
     "import:clz": "tsx scripts/import-clz.ts",
     "covers:backfill": "tsx scripts/covers-backfill.ts",
     "db:migrate": "prisma migrate deploy",
@@ -28,6 +28,7 @@
     "prisma": "^6.16.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "server-only": "^0.0.1",
     "sharp": "^0.35.5",
     "tsx": "^4.20.5"
   },

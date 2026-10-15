@@ -87,7 +87,10 @@ describe("edition re-match budget pause", () => {
     );
     const settings = readFileSync("src/components/backfill-status.tsx", "utf8");
     const logs = readFileSync("src/app/logs/page.tsx", "utf8");
-    expect(settings).toContain("editionJobText");
+    expect(settings).toContain('from "@/lib/covers/edition-job"');
+    expect(settings).not.toContain('from "@/lib/covers/job-state"');
+    expect(readFileSync("src/lib/covers/job-state.ts", "utf8")).toContain('import "server-only"');
+    expect(readFileSync("src/lib/covers/files.ts", "utf8")).toContain('import "server-only"');
     expect(logs).toContain("editionJobText");
     expect(settings).not.toContain("\u2014");
     expect(logs).not.toContain("\u2014");

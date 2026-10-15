@@ -2,8 +2,8 @@
 
 import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { editionJobText, type EditionJobState } from "@/lib/covers/edition-job";
 import type { BackfillStatus } from "@/lib/covers/files";
-import { editionJobText, type EditionJobState } from "@/lib/covers/job-state";
 import { BACKFILL_POLL_MS, backfillPollPlan, backfillProgressLabel, normalizeBackfillStatus } from "@/lib/covers/poll";
 
 type BackfillContextValue = {

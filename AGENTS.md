@@ -34,6 +34,6 @@ Run this before considering a change done:
 npm run validate
 ```
 
-That is `next lint`, `tsc --noEmit`, and `vitest run`.
+That is `next lint`, `tsc --noEmit`, `vitest run`, and `next build`.
 
 `docker compose up` from a clean checkout must boot Postgres 16 and the app on port 3210. The app image runs `prisma migrate deploy` before `next start`.

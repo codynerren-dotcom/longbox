@@ -1,31 +1,14 @@
+import "server-only";
+
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { coversDir } from "@/lib/covers/files";
-import { formatResumeTime } from "@/lib/covers/limiter";
+import type { EditionJobState } from "@/lib/covers/edition-job";
+
+export type { EditionJobState } from "@/lib/covers/edition-job";
+export { editionJobText } from "@/lib/covers/edition-job";
 
 const FILE_NAME = "edition-rematch.json";
-
-export type EditionJobState = {
-  state: "running" | "paused" | "finished";
-  message: string | null;
-  resumeAt: string | null;
-  metronResumeAt: string | null;
-  matched: number;
-  unmatched: number;
-  updatedAt: string;
-};
-
-export function editionJobText(job: EditionJobState | null): string | null {
-  if (!job) return null;
-  if (job.state === "running") return "Edition re-match: running";
-  if (job.state === "finished") return "Edition re-match: finished";
-  if (job.resumeAt) {
-    const at = Date.parse(job.resumeAt);
-    const when = Number.isFinite(at) ? formatResumeTime(at) : job.resumeAt;
-    return `Edition re-match: paused until ${when}`;
-  }
-  return "Edition re-match: paused";
-}
 
 export function readEditionJob(dir = coversDir()): EditionJobState | null {
   try {

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { BackfillMobileNote, BackfillSidebarNote, BackfillStatusProvider } from "@/components/backfill-status";
 import type { BackfillStatus } from "@/lib/covers/files";
-import type { EditionJobState } from "@/lib/covers/job-state";
+import type { EditionJobState } from "@/lib/covers/edition-job";
 import type { Viewer } from "@/lib/auth";
 
 const desktopNav = [
