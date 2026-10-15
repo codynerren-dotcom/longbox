@@ -368,7 +368,7 @@ describe("CLZ facsimile variants", () => {
     const bane = examples[6];
     const batman = examples[5];
     const cases = [
-      { example: bane, query: "Vengeance of Bane 1", seriesName: "Batman: Vengeance of Bane 1 (Facsimile Edition)", id: "bane-fac" },
+      { example: bane, query: "Vengeance of Bane", seriesName: "Batman: Vengeance of Bane 1 (Facsimile Edition)", id: "bane-fac" },
       { example: batman, query: "Batman 1", seriesName: "Batman 1 (Facsimile Edition)", id: "batman-fac" },
     ];
     for (const { example, query, seriesName, id } of cases) {
@@ -543,7 +543,7 @@ describe("CLZ facsimile variants", () => {
       },
     };
     const decision = await resolveGcdCover(copyOf(spider), catalog);
-    expect(asked.slice(0, 2)).toEqual(["Amazing Spider-Man 1", "Amazing Spider-Man No. 1"]);
+    expect(asked.slice(0, 3)).toEqual(["Amazing Spider-Man", "Amazing Spider-Man 1", "Amazing Spider-Man No. 1"]);
     expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "right" } });
   });
 
@@ -612,7 +612,9 @@ describe("Vengeance of Bane facsimile fixture", () => {
   }
 
   it("names the core series, including the part after Batman:", () => {
-    expect(gcdFacsimileQueries("Batman: Vengeance of Bane", "1")[0]).toBe("Vengeance of Bane 1");
+    expect(gcdFacsimileQueries("Batman: Vengeance of Bane", "1")[0]).toBe("Vengeance of Bane");
+    expect(gcdFacsimileQueries("Batman: Vengeance of Bane Facsimile Edition #1 2023", "1")[0]).toBe("Vengeance of Bane");
+    expect(gcdFacsimileQueries("Batman: Vengeance of Bane Facsimile Edition #1 2023", "1").some((query) => /facsimile|2023/i.test(query))).toBe(false);
     expect(gcdFacsimileQueries("The Amazing Spider-Man, Vol. 1", "300")).toContain("Amazing Spider-Man No. 300");
     expect(gcdFacsimileQueries("Batman, Vol. 1", "1")[0]).toBe("Batman 1");
     expect(gcdFacsimileQueries("Batman, Vol. 1", "1")).not.toContain("Batman");
@@ -629,7 +631,7 @@ describe("Vengeance of Bane facsimile fixture", () => {
     const asked: string[] = [];
     const decision = await resolveGcdCover(copyOf(bane), catalog(asked));
     expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "2513854" } });
-    expect(asked[0]).toBe("Vengeance of Bane 1");
+    expect(asked[0]).toBe("Vengeance of Bane");
 
     const hits = await searchGcdMatches("Batman: Vengeance of Bane Facsimile Edition #1 2023", bane.barcode, "barcode", null, {
       facsimile: true,

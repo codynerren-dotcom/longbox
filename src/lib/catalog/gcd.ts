@@ -110,7 +110,6 @@ export type GcdCatalog = {
 
 const MIN_GAP_MS = 2_000;
 const HOURLY_CAP = 30;
-export const GCD_BARCODE_TIMEOUT_MS = 20_000;
 const GCD_DEFAULT_TIMEOUT_MS = 8_000;
 let nextGcdAt = 0;
 let gcdWindowStarted = 0;
@@ -305,20 +304,6 @@ function pageCount(value: unknown): number | null {
   return Math.round(amount);
 }
 
-function barcodeMatches(issue: GcdIssueRow, code: string): boolean {
-  const want = code.replace(/\D/g, "");
-  const got = (issue.barcode ?? "").replace(/\D/g, "");
-  if (want.length < 11 || got.length < 11) return false;
-  return got === want || got.startsWith(want) || want.startsWith(got);
-}
-
-function isTimeoutError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const name = "name" in error ? String((error as { name?: unknown }).name) : "";
-  const message = error instanceof Error ? error.message : "";
-  return name === "TimeoutError" || name === "AbortError" || /timeout|aborted/i.test(message);
-}
-
 async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS): Promise<unknown> {
   await gcdPause();
   const url = `${gcdBase()}${pathAndQuery}`;
@@ -360,39 +345,13 @@ async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS):
   return response.json();
 }
 
-async function readBarcodeIssues(load: () => Promise<unknown>, code: string): Promise<GcdIssueRow[]> {
-  let last: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const body = await load();
-      return asArray(body)
-        .map((item) => parseGcdIssue(item))
-        .filter((issue): issue is GcdIssueRow => issue !== null)
-        .filter((issue) => barcodeMatches(issue, code))
-        .slice(0, 8);
-    } catch (error) {
-      if (error instanceof GcdBudgetError) throw error;
-      last = error;
-      if (!isTimeoutError(error) || attempt === 1) return [];
-    }
-  }
-  void last;
-  return [];
-}
-
 /**
- * Barcode lookup is `/api/v2/issues/?barcode=`. It gets 20 seconds and one retry
- * after a timeout. A 404 or a second timeout is ignored so series search can continue.
- * `/api/issue/?barcode=` and `/api/issues/?barcode=` are not called.
+ * comics.org has no barcode or ISBN lookup. `/api/v2/issues/?barcode=`,
+ * `/api/issues/?barcode=`, `/api/issue/?barcode=`, and `?isbn=` all 404.
+ * Callers find the series by name and compare the barcode on each issue.
  */
-export async function gcdByBarcode(parsed: ParsedBarcode): Promise<CatalogMatch[]> {
-  const code = parsed.combined.trim();
-  if (!code) return [];
-  const path = `/api/v2/issues/?barcode=${encodeURIComponent(code)}`;
-  const issues = await readBarcodeIssues(() => gcdGet(path, GCD_BARCODE_TIMEOUT_MS), code);
-  return issues
-    .map((issue) => toMatch({ id: issue.id, series_name: issue.seriesName, number: issue.number, barcode: issue.barcode }, code))
-    .filter((match): match is CatalogMatch => match !== null);
+export async function gcdByBarcode(_parsed: ParsedBarcode): Promise<CatalogMatch[]> {
+  return [];
 }
 
 export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
@@ -406,11 +365,8 @@ export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
       const body = await gcdFetch(fetchImpl, `/api/issue/${id}/`);
       return parseGcdIssue(body);
     },
-    async issuesByBarcode(code) {
-      const trimmed = code.trim();
-      if (!trimmed) return [];
-      const path = `/api/v2/issues/?barcode=${encodeURIComponent(trimmed)}`;
-      return readBarcodeIssues(() => gcdFetch(fetchImpl, path, GCD_BARCODE_TIMEOUT_MS), trimmed);
+    async issuesByBarcode() {
+      return [];
     },
   };
 }

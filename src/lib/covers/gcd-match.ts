@@ -20,7 +20,11 @@ import {
   type ShelfFormat,
 } from "@/lib/shelf-format";
 
-/** Names to send to `/api/series/name/`. The issue number lives in the GCD series title. */
+/**
+ * Names to send to `/api/series/name/`. The base name goes first, after the issue
+ * number, year, and Facsimile Edition are removed. Issue-number forms follow,
+ * because GCD often stores that number inside the series title.
+ */
 export function gcdFacsimileQueries(series: string, issueNo: string | null): string[] {
   const names = gcdCoreNames(series);
   const issue = issueNo && /^\d+$/.test(issueNo) ? issueNo : null;
@@ -28,16 +32,18 @@ export function gcdFacsimileQueries(series: string, issueNo: string | null): str
   const add = (value: string) => {
     const trimmed = value.replace(/\s+/g, " ").trim();
     if (trimmed.length < 3) return;
+    if (/\bfacsimile\b/i.test(trimmed)) return;
     if (queries.some((query) => query.toLowerCase() === trimmed.toLowerCase())) return;
     queries.push(trimmed);
   };
   for (const name of names) {
-    if (issue) {
-      add(`${name} ${issue}`);
-      add(`${name} No. ${issue}`);
-      add(`${name} #${issue}`);
-    }
     if (name.split(" ").filter(Boolean).length >= 2) add(name);
+  }
+  for (const name of names) {
+    if (!issue) continue;
+    add(`${name} ${issue}`);
+    add(`${name} No. ${issue}`);
+    add(`${name} #${issue}`);
   }
   return queries;
 }
@@ -353,7 +359,11 @@ function candidateFrom(issue: MetronIssueHit): MatchCandidate {
 }
 
 function gcdCoreNames(series: string): string[] {
-  const withoutEdition = series.replace(/\bfacsimile editions?\b/gi, " ").replace(/\bfacsimiles?\b/gi, " ");
+  const withoutEdition = series
+    .replace(/\bfacsimile editions?\b/gi, " ")
+    .replace(/\bfacsimiles?\b/gi, " ")
+    .replace(/#\s*\d+[A-Za-z]?/g, " ")
+    .replace(/\b(?:18|19|20)\d{2}\b/g, " ");
   const base = withoutEdition
     .replace(/\s*\((?:18|19|20)\d{2}(?:\s+series)?\)\s*$/i, "")
     .replace(/,?\s+\bvol(?:ume)?\.?\s*\d+\s*$/i, "")
@@ -374,7 +384,9 @@ function gcdCoreNames(series: string): string[] {
 }
 
 function keepFacsimileSeries(rows: GcdSeriesRow[], issueNo: string, releaseYear: number | null): GcdSeriesRow[] {
-  const named = rows.filter((row) => /facsimile/i.test(row.name) && seriesMentionsIssue(row.name, issueNo));
+  const facsimile = rows.filter((row) => /facsimile/i.test(row.name) && seriesMentionsIssue(row.name, issueNo));
+  const parenthetical = facsimile.filter((row) => /\(\s*facsimile edition\s*\)/i.test(row.name));
+  const named = parenthetical.length > 0 ? parenthetical : facsimile;
   if (named.length === 0 || releaseYear == null) return named;
   const close = named.filter((row) => row.yearBegan == null || Math.abs(row.yearBegan - releaseYear) <= 1);
   if (close.length > 0) return close;
