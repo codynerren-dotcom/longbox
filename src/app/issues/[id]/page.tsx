@@ -132,6 +132,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         <MatchPanel
           comicId={comic.id}
           shelfFormat={comic.shelfFormat}
+          shelfSeries={comic.series}
           query={matchQuery({
             series: isCollected(shelfFormatOf(comic.shelfFormat))
               ? tradeSearchSeries(comic.series) || comic.series

@@ -12,6 +12,7 @@ import {
   gcdFormatMatches,
   isbnDigits,
   isCollected,
+  normalizeSeriesName,
   resolveShelfFormat,
   sameIsbn,
   seriesNamesMatch,
@@ -53,13 +54,16 @@ export async function searchGcdMatches(
   barcode: string,
   mode: "query" | "barcode",
   shelfFormat?: string | null,
-  options?: { facsimile?: boolean; catalog?: GcdCatalog },
+  options?: { facsimile?: boolean; catalog?: GcdCatalog; shelfSeries?: string | null },
 ): Promise<MatchHit[]> {
   const catalog = options?.catalog ?? createGcdCatalog();
   const format = resolveShelfFormat({ shelfFormat });
-  const parsed = parseMatchQuery(mode === "barcode" && !query.trim() ? "" : query);
+  const typed = query.trim();
+  const parsed = parseMatchQuery(mode === "barcode" && !typed ? "" : query);
+  const shelf = tradeSearchSeries(options?.shelfSeries) || (options?.shelfSeries ?? "").trim();
+  const series = parsed.series || (mode === "barcode" ? shelf : "") || typed;
   const probe: CoverQuery = {
-    series: parsed.series || query.trim(),
+    series,
     issueNo: parsed.issueNo,
     issue: parsed.issueNo,
     coverYear: null,
@@ -206,6 +210,34 @@ async function resolveGcdCollected(comic: CoverQuery, format: ShelfFormat, catal
   return { status: "unmatched", reason: `Several GCD collected editions match ${seriesName || comic.series}.`, score: 70 };
 }
 
+/**
+ * Names for `/api/series/name/`. GCD matches a literal prefix or a subtitle, not a bag of words.
+ * `Beneath the Trees: Where Nobody Sees - Rite of Spring` returns nothing; the catalog name is
+ * `Beneath the Trees Where Nobody Sees: Rite of Spring`. `Beneath the Trees` does return that series.
+ */
+export function gcdCollectedQueries(series: string | null | undefined): string[] {
+  const raw = tradeSearchSeries(series).replace(/\s+/g, " ").trim();
+  const queries: string[] = [];
+  const add = (value: string) => {
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    if (trimmed.length < 3) return;
+    if (queries.some((query) => query.toLowerCase() === trimmed.toLowerCase())) return;
+    queries.push(trimmed);
+  };
+  add(gcdNormalizedTitle(raw));
+  add(raw);
+  const colon = raw.indexOf(":");
+  if (colon >= 0) {
+    const after = raw.slice(colon + 1).trim();
+    add(gcdNormalizedTitle(after));
+    add(after);
+  }
+  const dash = raw.split(/\s+[-–—]\s+/);
+  if (dash.length > 1) add(dash[dash.length - 1] ?? "");
+  add(gcdBaseName(raw));
+  return queries.slice(0, 6);
+}
+
 /** Collected series from the normalized name, then the issue whose ISBN matches. */
 export async function collectGcdCollectedIssues(comic: CoverQuery, format: ShelfFormat, catalog: GcdCatalog): Promise<GcdIssueRow[]> {
   const seriesName = tradeSearchSeries(comic.series) || comic.series.trim();
@@ -216,15 +248,22 @@ export async function collectGcdCollectedIssues(comic: CoverQuery, format: Shelf
   const fallback: GcdIssueRow[] = [];
   const seenSeries = new Set<string>();
   let fetched = 0;
-  for (const name of catalogNameQueries(seriesName, { broad: true })) {
-    if (exact.length > 0 || fetched >= 8) break;
+  const trade = format === "tp" || format === "hc";
+  const names = trade ? gcdCollectedQueries(seriesName) : catalogNameQueries(seriesName, { broad: true });
+  const issueCap = trade ? 12 : 8;
+  for (const name of names) {
+    if (exact.length > 0 || fetched >= issueCap) break;
     const rows = await catalog.seriesByName(name);
-    const kept = rows.filter((row) => gcdFormatMatches(row.format, row.name, format) && seriesNamesMatch(seriesName, row.name));
-    for (const series of kept.slice(0, 4)) {
+    const kept = orderCollected(
+      rows.filter((row) => keepCollectedSeries(row, seriesName, format)),
+      format,
+    );
+    for (const series of kept) {
+      if (exact.length > 0 || fetched >= issueCap) break;
       if (seenSeries.has(series.id)) continue;
       seenSeries.add(series.id);
       for (const item of series.issues.slice(0, 4)) {
-        if (fetched >= 8) break;
+        if (fetched >= issueCap) break;
         fetched += 1;
         const issue = await catalog.issue(item.id);
         if (!issue) continue;
@@ -240,6 +279,57 @@ export async function collectGcdCollectedIssues(comic: CoverQuery, format: Shelf
     }
   }
   return exact.length > 0 ? exact : fallback;
+}
+
+function gcdNormalizedTitle(value: string): string {
+  const parts = value
+    .split(/\s+[-–—]\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length > 1) {
+    const subtitle = parts[parts.length - 1] ?? "";
+    const stem = parts
+      .slice(0, -1)
+      .join(" ")
+      .replace(/:/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (stem && subtitle) return `${stem}: ${subtitle}`;
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function gcdBaseName(value: string): string {
+  const cut = value.split(/\s*(?::|[-–—])\s*/)[0] ?? "";
+  return cut.replace(/\s+/g, " ").trim();
+}
+
+function collectedEdition(format: string | null | undefined): boolean {
+  return /\bcollected edition\b/i.test(format ?? "");
+}
+
+/**
+ * A two-token query such as "Beneath the Trees" cannot fuzzy-match a longer series name.
+ * GCD already returned that series for the prefix, so a leading prefix or a trailing subtitle still counts.
+ */
+function nameRelated(wanted: string, found: string): boolean {
+  if (seriesNamesMatch(wanted, found)) return true;
+  const want = normalizeSeriesName(wanted);
+  const got = normalizeSeriesName(found);
+  if (!want || !got) return false;
+  if (got === want || got.startsWith(`${want} `)) return true;
+  return want.length >= 8 && got.endsWith(` ${want}`);
+}
+
+function keepCollectedSeries(row: GcdSeriesRow, seriesName: string, format: ShelfFormat): boolean {
+  if ((format === "tp" || format === "hc") && collectedEdition(row.format)) return nameRelated(seriesName, row.name);
+  if (format === "tp" || format === "hc") return gcdFormatMatches(row.format, row.name, format) && nameRelated(seriesName, row.name);
+  return gcdFormatMatches(row.format, row.name, format) && seriesNamesMatch(seriesName, row.name);
+}
+
+function orderCollected(rows: GcdSeriesRow[], format: ShelfFormat): GcdSeriesRow[] {
+  if (format !== "tp" && format !== "hc") return rows;
+  return rows.slice().sort((a, b) => Number(collectedEdition(b.format)) - Number(collectedEdition(a.format)));
 }
 
 async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {

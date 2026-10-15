@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseGcdIssue, parseGcdSeries, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
-import { searchGcdMatches } from "@/lib/covers/gcd-match";
+import { gcdCollectedQueries, searchGcdMatches } from "@/lib/covers/gcd-match";
+import { seriesNamesMatch } from "@/lib/shelf-format";
 
 const baneQuery = "Batman: Vengeance of Bane Facsimile Edition #1 2023";
 const baneBarcode = "76194137966100111";
@@ -105,5 +106,127 @@ describe("recorded GCD responses", () => {
     const hits = await searchGcdMatches(`${tradeSeries} 2026`, tradeIsbn, "barcode", "tp", { catalog });
     expect(hits.map((hit) => hit.id)).toEqual(["2853617"]);
     expect(barcodeCalls).toBe(0);
+  });
+});
+
+describe("Rite of Spring query forms", () => {
+  const nameSearch = JSON.parse(readFileSync(new URL("../fixtures/gcd/beneath-the-trees.json", import.meta.url), "utf8")) as {
+    count: number;
+    results: unknown[];
+  };
+  const allSeries = nameSearch.results.map((row) => parseGcdSeries(row)).filter((row): row is GcdSeriesRow => row !== null);
+  const tradeFixture = JSON.parse(readFileSync(new URL("../fixtures/gcd/rite-of-spring-tp.json", import.meta.url), "utf8")) as {
+    issue: unknown;
+    otherIssue: unknown;
+  };
+  const tradeIssue = parseGcdIssue(tradeFixture.issue);
+  const otherTrade = parseGcdIssue(tradeFixture.otherIssue);
+  const riteIds = new Set(["225911", "239303", "239304"]);
+  const emptyNames = new Set([
+    "Beneath the Trees: Where Nobody Sees - Rite of Spring",
+    "Where Nobody Sees - Rite of Spring",
+    "Beneath the Trees Where Nobody Sees Rite of Spring",
+  ]);
+
+  function rowsFor(name: string): GcdSeriesRow[] {
+    if (emptyNames.has(name)) return [];
+    if (name === "Beneath the Trees") return allSeries;
+    if (name === "Beneath the Trees Where Nobody Sees") return allSeries.filter((row) => row.id !== "239416");
+    if (
+      name === "Beneath the Trees Where Nobody Sees: Rite of Spring" ||
+      name === "Where Nobody Sees: Rite of Spring" ||
+      name === "Rite of Spring"
+    ) {
+      return allSeries.filter((row) => riteIds.has(row.id));
+    }
+    return [];
+  }
+
+  function catalog(asked: string[], fetched: string[]): GcdCatalog {
+    return {
+      async seriesByName(name) {
+        asked.push(name);
+        return rowsFor(name);
+      },
+      async issue(id) {
+        fetched.push(id);
+        if (id === "2853617") return tradeIssue;
+        if (id === "2853616") return otherTrade;
+        return {
+          id,
+          seriesId: "205119",
+          seriesName: "Beneath the Trees Where Nobody Sees",
+          number: "1",
+          variant: "Cover A",
+          title: null,
+          coverDate: null,
+          coverYear: 2024,
+          onSaleYear: 2024,
+          onSaleDate: null,
+          price: null,
+          pageCount: null,
+          barcode: "75960600000000111",
+          isbn: null,
+          publisher: "IDW Publishing",
+          writer: null,
+          artist: null,
+          coverArtist: null,
+          characters: null,
+          seriesYear: 2024,
+          comicvineIssueId: null,
+          metronIssueId: null,
+        };
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    };
+  }
+
+  async function find(query: string, mode: "query" | "barcode", shelfSeries?: string) {
+    const asked: string[] = [];
+    const fetched: string[] = [];
+    const hits = await searchGcdMatches(query, tradeIsbn, mode, "tp", {
+      catalog: catalog(asked, fetched),
+      shelfSeries,
+    });
+    return { hits, asked, fetched };
+  }
+
+  it("records that Beneath the Trees is a GCD prefix hit our token filter used to drop", () => {
+    expect(nameSearch.count).toBe(9);
+    expect(allSeries.map((row) => row.id)).toContain("239304");
+    expect(seriesNamesMatch("Beneath the Trees", "Beneath the Trees Where Nobody Sees: Rite of Spring")).toBe(false);
+    expect(gcdCollectedQueries(tradeSeries)).toEqual([
+      "Beneath the Trees Where Nobody Sees: Rite of Spring",
+      tradeSeries,
+      "Where Nobody Sees: Rite of Spring",
+      "Where Nobody Sees - Rite of Spring",
+      "Rite of Spring",
+      "Beneath the Trees",
+    ]);
+  });
+
+  it("finds 2853617 from the ISBN alone by falling back to the shelf series", async () => {
+    const { hits, asked, fetched } = await find("", "barcode", tradeSeries);
+    expect(hits.map((hit) => hit.id)).toEqual(["2853617"]);
+    expect(asked[0]).toBe("Beneath the Trees Where Nobody Sees: Rite of Spring");
+    expect(fetched).not.toContain("2574374");
+    expect(hits.some((hit) => hit.issueNo === "1")).toBe(false);
+  });
+
+  it.each([
+    ["Beneath the Trees", "Beneath the Trees"],
+    ["Beneath the Trees Where Nobody Sees", "Beneath the Trees Where Nobody Sees"],
+    [tradeSeries, "Beneath the Trees Where Nobody Sees: Rite of Spring"],
+    ["Where Nobody Sees - Rite of Spring", "Where Nobody Sees: Rite of Spring"],
+    ["Rite of Spring", "Rite of Spring"],
+  ])("finds 2853617 from %s", async (query, firstAsk) => {
+    const { hits, asked, fetched } = await find(query, "query");
+    expect(hits.map((hit) => hit.id)).toEqual(["2853617"]);
+    expect(hits.map((hit) => hit.issueNo)).not.toContain("1");
+    expect(asked[0]).toBe(firstAsk);
+    expect(fetched).not.toContain("2574374");
+    expect(fetched).toContain("2853617");
   });
 });

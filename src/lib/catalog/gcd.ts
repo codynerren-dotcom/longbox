@@ -1,7 +1,8 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
-import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
+import { formatResumeTime, retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
+import { writeLog } from "@/lib/log/write";
 import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { readCollectedIssues } from "@/lib/shelf-format";
 
@@ -111,9 +112,12 @@ export type GcdCatalog = {
 const MIN_GAP_MS = 2_000;
 const HOURLY_CAP = 30;
 const GCD_DEFAULT_TIMEOUT_MS = 8_000;
+const GCD_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000] as const;
+const GCD_BACKOFF_CAP_MS = 10 * 60 * 1000;
 let nextGcdAt = 0;
 let gcdWindowStarted = 0;
 let gcdWindowCount = 0;
+let gcdRateStrikes = 0;
 
 export class GcdBudgetError extends Error {
   readonly pause: { budget: string; count: number | null; resumeAt: number };
@@ -133,6 +137,51 @@ export function resetGcdBudget(now = Date.now()): void {
   nextGcdAt = now;
   gcdWindowStarted = now;
   gcdWindowCount = 0;
+  gcdRateStrikes = 0;
+}
+
+/** Fallback wait after a 429 with no Retry-After: 30s, 1m, 2m, 5m, then 10m. */
+export function gcdBackoffMs(priorPauses: number): number {
+  if (priorPauses >= GCD_BACKOFF_MS.length) return GCD_BACKOFF_CAP_MS;
+  return GCD_BACKOFF_MS[Math.max(0, priorPauses)] ?? GCD_BACKOFF_CAP_MS;
+}
+
+/**
+ * Delay for one HTTP 429. A Retry-After header or an "expected available" body wins.
+ * Otherwise the wait climbs and stays at 10 minutes.
+ */
+export function gcdRetryDelay(explicitMs: number | null): number {
+  if (explicitMs != null) return explicitMs;
+  const delay = gcdBackoffMs(gcdRateStrikes);
+  gcdRateStrikes += 1;
+  return delay;
+}
+
+function formatPause(ms: number): string {
+  if (ms > 0 && ms % 60_000 === 0) return `${ms / 60_000}m`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+export function gcdRatePauseMessage(delayMs: number, resumeAt: number): string {
+  return `GCD rate limit. Pausing for ${formatPause(delayMs)}. Resumes at ${formatResumeTime(resumeAt)}.`;
+}
+
+async function pauseForRateLimit(response: Response, now = Date.now()): Promise<never> {
+  const body = await response.text().catch(() => "");
+  const explicit = retryAfterMs(response.headers, now) ?? retryAfterFromMessage(body);
+  const delay = gcdRetryDelay(explicit);
+  const resumeAt = now + delay;
+  await writeLog({
+    level: "info",
+    source: "gcd",
+    message: gcdRatePauseMessage(delay, resumeAt),
+    details: { delayMs: delay, resumeAt: new Date(resumeAt).toISOString() },
+  });
+  throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
+    budget: "GCD rate limit",
+    count: gcdWindowCount,
+    resumeAt,
+  });
 }
 
 async function gcdPause(now = Date.now()): Promise<void> {
@@ -328,15 +377,8 @@ async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS):
     throw error;
   }
   await recordFetch({ source: "system", url, startedAt: started, status: response.status });
-  if (response.status === 429) {
-    const body = await response.text().catch(() => "");
-    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60 * 60 * 1000;
-    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
-      budget: "GCD rate limit",
-      count: gcdWindowCount,
-      resumeAt: Date.now() + delay,
-    });
-  }
+  if (response.status === 429) await pauseForRateLimit(response);
+  gcdRateStrikes = 0;
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) {
@@ -392,15 +434,8 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs
     throw error;
   }
   await recordFetch({ source: "gcd", url, startedAt: started, status: response.status });
-  if (response.status === 429) {
-    const body = await response.text().catch(() => "");
-    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60 * 60 * 1000;
-    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
-      budget: "GCD rate limit",
-      count: gcdWindowCount,
-      resumeAt: Date.now() + delay,
-    });
-  }
+  if (response.status === 429) await pauseForRateLimit(response);
+  gcdRateStrikes = 0;
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) throw new Error("GCD response was not JSON");

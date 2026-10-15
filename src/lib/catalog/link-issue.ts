@@ -90,6 +90,7 @@ export async function searchIssueCatalog(args: {
   barcode: string;
   mode: "query" | "barcode";
   shelfFormat?: string | null;
+  shelfSeries?: string | null;
   facsimile?: boolean;
 }): Promise<MatchSearchResult> {
   const needle = args.mode === "barcode" ? args.barcode.trim() : args.query.trim();
@@ -99,7 +100,10 @@ export async function searchIssueCatalog(args: {
       args.source === "metron"
         ? await searchMetron(args)
         : args.source === "gcd"
-          ? await searchGcdMatches(args.query, args.barcode, args.mode, args.shelfFormat, { facsimile: args.facsimile })
+          ? await searchGcdMatches(args.query, args.barcode, args.mode, args.shelfFormat, {
+              facsimile: args.facsimile,
+              shelfSeries: args.shelfSeries,
+            })
           : await searchComicVine(args);
     if ("ok" in hits) return hits;
     await writeLog({

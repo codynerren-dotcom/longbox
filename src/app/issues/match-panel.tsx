@@ -15,6 +15,7 @@ type Props = {
   barcode: string;
   facsimile?: boolean;
   shelfFormat?: string | null;
+  shelfSeries?: string | null;
   metronReady: boolean;
   comicVineReady: boolean;
   metronIssueId: string | null;
@@ -150,6 +151,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         barcode,
         mode,
         shelfFormat: props.shelfFormat ?? null,
+        shelfSeries: props.shelfSeries ?? null,
         facsimile: props.facsimile,
       });
       if (!result.ok) {
@@ -167,6 +169,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           barcode,
           mode,
           shelfFormat: props.shelfFormat ?? null,
+          shelfSeries: props.shelfSeries ?? null,
           facsimile: props.facsimile,
         });
         if (!gcd.ok) {
