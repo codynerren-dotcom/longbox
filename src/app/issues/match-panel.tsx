@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { linkMatchAction, loadGcdMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
 import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
+import { LimitToast } from "@/components/limit-toast";
+import { matchPanelNote } from "@/lib/catalog/limit-notice";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
@@ -30,14 +32,16 @@ export function MatchPanel(props: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
+  const [toast, setToast] = useState("");
   const [ok, setOk] = useState(true);
   const [pending, start] = useTransition();
 
-  function run(action: () => Promise<{ ok: boolean; message: string }>) {
+  function run(action: () => Promise<{ ok: boolean; message: string; notice?: string | null }>) {
     start(async () => {
       const result = await action();
       setOk(result.ok);
-      setMessage(result.message);
+      setMessage(result.notice ?? result.message);
+      setToast(result.notice ?? "");
       if (result.ok) router.refresh();
     });
   }
@@ -99,18 +103,21 @@ export function MatchPanel(props: Props) {
         <MatchSheet
           {...props}
           onClose={() => setOpen(false)}
-          onLinked={(text) => {
+          onNotice={setToast}
+          onLinked={(text, notice) => {
             setOk(true);
-            setMessage(text);
+            setMessage(notice ?? text);
+            setToast(notice ?? "");
             router.refresh();
           }}
         />
       ) : null}
+      <LimitToast message={toast} onDismiss={() => setToast("")} />
     </section>
   );
 }
 
-function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: string) => void }) {
+function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: string) => void; onLinked: (message: string, notice: string | null) => void }) {
   const [source, setSource] = useState<CatalogSource>("metron");
   const [query, setQuery] = useState(props.query);
   const [barcode, setBarcode] = useState(props.barcode);
@@ -158,9 +165,19 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         facsimile: props.facsimile,
         comicId: props.comicId,
       });
+      props.onNotice(result.notice ?? "");
       if (!result.ok) {
         setHits([]);
-        setError(result.message);
+        setError(result.notice ? "" : result.message);
+        setNote(result.notice ?? "");
+        return;
+      }
+      if (result.notice) {
+        setHits(result.hits);
+        setNote(matchPanelNote(result.hits.length, result.notice));
+        const sources = new Set(result.hits.map((hit) => hit.source));
+        const only = sources.size === 1 ? result.hits[0]?.source : null;
+        if (only) setSource(only);
         return;
       }
       if (source === "metron" && followGcd && result.hits.length === 0) {
@@ -177,8 +194,16 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           facsimile: props.facsimile,
           comicId: props.comicId,
         });
+        props.onNotice(gcd.notice ?? "");
         if (!gcd.ok) {
-          setError(gcd.message);
+          setError(gcd.notice ? "" : gcd.message);
+          setNote(gcd.notice ?? "");
+          return;
+        }
+        if (gcd.notice) {
+          setHits(gcd.hits);
+          setNote(matchPanelNote(gcd.hits.length, gcd.notice));
+          if (gcd.hits[0]?.source) setSource(gcd.hits[0].source);
           return;
         }
         if (gcd.hits.length > 0) {
@@ -213,16 +238,18 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
     setSelected(null);
     start(async () => {
       const result = await loadGcdMatchAction(gcdRef);
+      props.onNotice(result.notice ?? "");
       if (!result.ok) {
         setHits([]);
-        setError(result.message);
+        setError(result.notice ? "" : result.message);
+        setNote(result.notice ?? "");
         return;
       }
       setHits(result.hits);
       const id = parseGcdIssueRef(gcdRef);
       const hit = result.hits.find((item) => item.id === id) ?? result.hits[0] ?? null;
       if (!hit) {
-        setNote("No matches.");
+        setNote(matchPanelNote(0, result.notice));
         return;
       }
       setSelected(hit);
@@ -238,18 +265,20 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
     start(async () => {
       const result = await linkMatchAction({
         comicId: props.comicId,
-        source,
+        source: selected.source,
         hit: selected,
         useCover: source === "gcd" ? false : useCover,
         fillMissing,
         overwrite: source === "gcd" && overwrite,
         coverImageUrl: useCover ? coverUrl : null,
       });
+      props.onNotice(result.notice ?? "");
       if (!result.ok) {
-        setError(result.message);
+        setError(result.notice ? "" : result.message);
+        setNote(result.notice ?? "");
         return;
       }
-      props.onLinked(result.message);
+      props.onLinked(result.message, result.notice);
     });
   }
 
@@ -338,7 +367,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         {selected ? (
           <div className="mt-4 rounded-2xl bg-ink/30 p-3 ring-1 ring-white/5">
             <p className="text-sm text-paper">
-              Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {source === "metron" ? "Metron" : source === "gcd" ? "GCD" : "Comic Vine"}{" "}
+              Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {selected.source === "metron" ? "Metron" : selected.source === "gcd" ? "GCD" : "Comic Vine"}{" "}
               <CatalogIdLink kind={source === "metron" ? "metron-issue" : source === "gcd" ? "gcd-issue" : "comicvine-issue"} id={selected.id} />. The other catalogs stay as they are.
             </p>
             {covers.length > 1 ? (

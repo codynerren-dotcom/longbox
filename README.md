@@ -110,6 +110,8 @@ Background jobs pause with a reason and a resume time, then continue from a save
 
 A new integration has to route through that limiter, cite its published limits in code, read rate-limit headers, honor `Retry-After`, and persist its window across restarts. `npm run validate` fails if `src` calls `fetch()` to an external host without reserving a window first.
 
+A manual search, re-match, or backfill shows a notice when a source is already at its limit, for example `Metron limit reached (20/min). Resets at 11:42 AM.` If another source was still searched, the notice says so. A Metron connect pause says `Metron unreachable, retrying at 11:42 AM.` The time is America/Chicago.
+
 ## Settings
 
 **Settings** is in the desktop sidebar and on the mobile More tab. The page is grouped into cards:

@@ -93,7 +93,7 @@ export async function searchMatchesAction(args: {
   shelfSeries?: string | null;
   facsimile?: boolean;
   comicId?: string | null;
-}): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
+}): Promise<{ ok: true; hits: MatchHit[]; notice: string | null } | { ok: false; message: string; notice: string | null }> {
   return searchIssueCatalog(args);
 }
 
@@ -101,23 +101,27 @@ export async function loadMatchCoversAction(source: CatalogSource, issueId: stri
   return loadIssueCovers(source, issueId);
 }
 
-export async function loadGcdMatchAction(ref: string): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
+export async function loadGcdMatchAction(ref: string): Promise<{ ok: true; hits: MatchHit[]; notice: string | null } | { ok: false; message: string; notice: string | null }> {
   const id = parseGcdIssueRef(ref);
-  if (!id) return { ok: false, message: "Enter a GCD issue id or a comics.org issue URL." };
+  if (!id) return { ok: false, message: "Enter a GCD issue id or a comics.org issue URL.", notice: null };
   try {
     const hits = await loadGcdIssueHits(ref);
-    if (hits.length === 0) return { ok: false, message: `GCD has no issue ${id}.` };
+    if (hits.length === 0) return { ok: false, message: `GCD has no issue ${id}.`, notice: null };
     await writeLog({
       level: "info",
       source: "gcd",
       message: `Match load of GCD ${id} returned ${hits.length}.`,
       details: { id, count: hits.length },
     });
-    return { ok: true, hits };
+    return { ok: true, hits, notice: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "GCD load failed.";
+    const { limitBlockFromError, limitNotices } = await import("@/lib/catalog/limit-notice");
+    const { sharedMetronLimiter } = await import("@/lib/covers/metron-client");
+    const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
+    const notice = block ? limitNotices([block], []) || null : null;
+    const message = notice ?? (error instanceof Error ? error.message : "GCD load failed.");
     await writeLog({ level: "warn", source: "gcd", message, details: { id } });
-    return { ok: false, message };
+    return { ok: false, message, notice };
   }
 }
 
@@ -129,7 +133,7 @@ export async function linkMatchAction(args: {
   fillMissing: boolean;
   overwrite?: boolean;
   coverImageUrl: string | null;
-}): Promise<{ ok: boolean; message: string }> {
+}): Promise<{ ok: boolean; message: string; notice: string | null }> {
   const result = await linkIssueToCatalog(args);
   if (result.ok) await refreshIssue(args.comicId);
   return result;

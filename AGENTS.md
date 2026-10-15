@@ -37,6 +37,8 @@ Every new integration that calls an external host goes through the shared limite
 
 `tests/external-fetch.test.ts` fails when `src` calls `fetch()` or `loggedFetch()` to an external host without a gate. Add the new reserve function to `RATE_GATES` in `tests/external-fetch-scan.ts` in the same change. Current gates: `acquire`, `gcdPause`, `reserveGcdRequest`, `reserveComicVineRequest`, `reserveCoverDownload`, `reserveEbayRequest`.
 
+A manual Match search, re-match, or backfill shows a notice instead of an empty result. Name the source, the limit, and the America/Chicago reset time, for example `Metron limit reached (20/min). Resets at 11:42 AM.` When another source was still searched, say so. A Metron connect pause uses `Metron unreachable, retrying at 11:42 AM.` `tests/limit-notice.test.ts` covers the wording.
+
 ## Validation
 
 Run this before considering a change done:

@@ -189,8 +189,9 @@ async function pauseForRateLimit(response: Response, now = Date.now()): Promise<
     message: gcdRatePauseMessage(delay, resumeAt),
     details: { delayMs: delay, resumeAt: new Date(resumeAt).toISOString() },
   });
+  const mode = await gcdRateMode();
   throw new GcdBudgetError(pauseLabel("GCD", resumeAt), {
-    budget: "GCD rate limit",
+    budget: mode === "authenticated" ? "GCD daily" : "GCD hourly",
     count: gcdHits.length,
     resumeAt,
   });

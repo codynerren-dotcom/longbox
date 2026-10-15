@@ -1,6 +1,7 @@
 import { mapComicVineMatchHit, mapMetronMatchHit, orderMatchHits, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
 import { catalogIssueCount } from "@/lib/series-view";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
+import { ComicVineBudgetError } from "@/lib/catalog/limit-notice";
 import {
   comicVineResource,
   emptyComicVineRate,
@@ -98,7 +99,11 @@ export async function reserveComicVineRequest(path: string, now = Date.now()): P
     const plan = planComicVineAcquire(vineMemory, now, resource);
     if (plan.kind === "pause") {
       vineMemory = plan.state;
-      throw new Error(pauseLabel("Comic Vine", plan.hold.resumeAt));
+      throw new ComicVineBudgetError(pauseLabel("Comic Vine", plan.hold.resumeAt), {
+        budget: plan.hold.budget,
+        count: plan.hold.count,
+        resumeAt: plan.hold.resumeAt,
+      });
     }
     vineMemory = plan.state;
     return;
@@ -108,7 +113,11 @@ export async function reserveComicVineRequest(path: string, now = Date.now()): P
   const plan = planComicVineAcquire(readComicVineWindow(), now, resource);
   if (plan.kind === "pause") {
     await saveComicVineWindow(plan.state);
-    throw new Error(pauseLabel("Comic Vine", plan.hold.resumeAt));
+    throw new ComicVineBudgetError(pauseLabel("Comic Vine", plan.hold.resumeAt), {
+      budget: plan.hold.budget,
+      count: plan.hold.count,
+      resumeAt: plan.hold.resumeAt,
+    });
   }
   await saveComicVineWindow(plan.state);
   if (plan.waitMs > 0) await new Promise((resolve) => setTimeout(resolve, plan.waitMs));
@@ -152,14 +161,22 @@ async function comicVineGet(fetchImpl: typeof fetch, apiKey: string, path: strin
     const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60 * 60 * 1000;
     const resumeAt = Date.now() + delay;
     await pauseComicVineUntil(resumeAt);
-    throw new Error(pauseLabel("Comic Vine", resumeAt));
+    throw new ComicVineBudgetError(pauseLabel("Comic Vine", resumeAt), {
+      budget: "Comic Vine",
+      count: null,
+      resumeAt,
+    });
   }
   if (!response.ok) throw new Error(`Comic Vine returned ${response.status}`);
   const body = (await response.json()) as { status_code?: number; error?: string; results?: unknown };
   if (body.status_code === 107) {
     const resumeAt = Date.now() + 60 * 60 * 1000;
     await pauseComicVineUntil(resumeAt);
-    throw new Error(pauseLabel("Comic Vine", resumeAt));
+    throw new ComicVineBudgetError(pauseLabel("Comic Vine", resumeAt), {
+      budget: "Comic Vine",
+      count: null,
+      resumeAt,
+    });
   }
   if (body.status_code != null && body.status_code !== 1) {
     throw new Error(body.error || `Comic Vine returned status ${body.status_code}.`);

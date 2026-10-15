@@ -1,17 +1,20 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { startCoverBackfillAction, type BackfillActionState } from "@/app/covers/actions";
 import { useBackfillStatus } from "@/components/backfill-status";
+import { LimitToast } from "@/components/limit-toast";
 
-const initial: BackfillActionState = { status: "idle", message: "" };
+const initial: BackfillActionState = { status: "idle", message: "", notice: "" };
 
 export function BackfillButton() {
   const [state, action, pending] = useActionState(startCoverBackfillAction, initial);
+  const [toast, setToast] = useState("");
   const { refresh } = useBackfillStatus();
   useEffect(() => {
     if (state.status !== "idle") refresh();
-  }, [state.status, state.message, refresh]);
+    setToast(state.notice);
+  }, [state.status, state.message, state.notice, refresh]);
   return (
     <form action={action} className="space-y-3">
       <button
@@ -22,6 +25,7 @@ export function BackfillButton() {
         {pending ? "Starting…" : "Backfill covers"}
       </button>
       {state.message ? <p className={state.status === "error" ? "text-sm text-red-300" : "text-sm text-paper"}>{state.message}</p> : null}
+      <LimitToast message={toast} onDismiss={() => setToast("")} />
     </form>
   );
 }

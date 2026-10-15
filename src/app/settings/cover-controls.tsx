@@ -3,11 +3,14 @@
 import { useActionState, useState, useTransition } from "react";
 import { enrichMatchedAction, pauseCoversAction, refetchCoverAction, runCoversAction, saveFillMissingAction, type LibraryState } from "@/app/settings/library-actions";
 import { useBackfillStatus } from "@/components/backfill-status";
+import { LimitToast } from "@/components/limit-toast";
 
 const initial: LibraryState = { status: "idle", message: "" };
 
 export function CoverControls({ paused, running, fillMissing: fillMissingInitial }: { paused: boolean; running: boolean; fillMissing: boolean }) {
   const [runMessage, setRunMessage] = useState("");
+  const [toast, setToast] = useState("");
+  const [hiddenNotice, setHiddenNotice] = useState("");
   const [runError, setRunError] = useState(false);
   const [fillMissing, setFillMissing] = useState(fillMissingInitial);
   const [pending, start] = useTransition();
@@ -28,6 +31,7 @@ export function CoverControls({ paused, running, fillMissing: fillMissingInitial
               const result = await runCoversAction();
               setRunError(result.status === "error");
               setRunMessage(result.message);
+              setToast(result.notice ?? "");
               refresh();
             });
           }}
@@ -88,6 +92,7 @@ export function CoverControls({ paused, running, fillMissing: fillMissingInitial
             const result = await enrichMatchedAction();
             setRunError(result.status === "error");
             setRunMessage(result.message);
+            setToast(result.notice ?? "");
             refresh();
           });
         }}
@@ -107,6 +112,13 @@ export function CoverControls({ paused, running, fillMissing: fillMissingInitial
         </button>
         {refetch.message ? <p className={refetch.status === "error" ? "text-sm text-red-300" : "text-sm text-paper"}>{refetch.message}</p> : null}
       </form>
+      <LimitToast
+        message={(toast || refetch.notice || "") === hiddenNotice ? "" : toast || refetch.notice || ""}
+        onDismiss={() => {
+          setHiddenNotice(toast || refetch.notice || "");
+          setToast("");
+        }}
+      />
     </div>
   );
 }
