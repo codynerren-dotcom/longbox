@@ -76,7 +76,7 @@ export async function backfillCovers(args: {
     if (!(error instanceof MetronBudgetError)) return false;
     const pause = await recordBudgetPause("Cover backfill", error);
     summary.stoppedReason = budgetPauseMessage("Cover backfill", pause);
-    if (pause.budget === "Metron job") summary.resumeAt = pause.resumeAt;
+    if (pause.budget === "Metron job" || pause.budget === "Metron connect") summary.resumeAt = pause.resumeAt;
     args.onProgress?.(summary);
     return true;
   }

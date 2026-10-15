@@ -5,6 +5,14 @@ import { scoreCandidate } from "@/lib/covers/edition";
 import { emptyBudget, METRON_DAILY_LIMIT, METRON_MIN_INTERVAL_MS, MetronLimiter, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 import { chooseIssue, narrowSeries, resolveCover } from "@/lib/covers/match";
 import {
+  METRON_CIRCUIT_BASE_MS,
+  METRON_CIRCUIT_MAX_MS,
+  readMetronCircuit,
+  recordMetronTransportFailure,
+  recordMetronTransportSuccess,
+  resetMetronCircuit,
+} from "@/lib/covers/metron-circuit";
+import {
   armMetronJobBudget,
   basicAuthHeader,
   clearMetronJobBudget,
@@ -688,6 +696,7 @@ describe("cover backfill", () => {
 describe("Metron rate limit", () => {
   afterEach(() => {
     clearMetronJobBudget();
+    resetMetronCircuit();
     vi.restoreAllMocks();
   });
 
@@ -1038,6 +1047,76 @@ describe("Metron rate limit", () => {
     for (let n = 0; n < METRON_JOB_LIMIT; n += 1) await limited.issuesByUpc(String(n));
     await expect(limited.issuesByUpc("over")).rejects.toMatchObject({ pause: { budget: "Metron job", count: METRON_JOB_LIMIT } });
     expect(logs.some((message) => message.startsWith("Metron job budget reached after 60 requests. Yielding. Resumes at "))).toBe(true);
+  });
+
+  it("pauses every Metron call after 3 connect timeouts and does not retry the timed-out request", async () => {
+    const logs: string[] = [];
+    vi.spyOn(logWrite, "writeLog").mockImplementation(async (input) => {
+      logs.push(input.message);
+    });
+    let calls = 0;
+    const { store } = memoryStore();
+    const transport: MetronTransport = {
+      limiter: new MetronLimiter(store, () => 0, async () => undefined, () => "2026-10-15"),
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => 0,
+      fetch: async () => {
+        calls += 1;
+        const cause = new Error("Connect Timeout Error");
+        (cause as Error & { code: string }).code = "UND_ERR_CONNECT_TIMEOUT";
+        const error = new TypeError("fetch failed");
+        (error as TypeError & { cause: Error }).cause = cause;
+        throw error;
+      },
+    };
+    const lookup = createMetronCoverLookup(transport);
+    await expect(lookup.issuesByUpc("1")).rejects.toThrow(/fetch failed/);
+    await expect(lookup.issuesByUpc("2")).rejects.toThrow(/fetch failed/);
+    await expect(lookup.issuesByUpc("3")).rejects.toMatchObject({ pause: { budget: "Metron connect", resumeAt: METRON_CIRCUIT_BASE_MS } });
+    expect(calls).toBe(3);
+    await expect(lookup.issuesByUpc("4")).rejects.toMatchObject({ pause: { budget: "Metron connect" } });
+    expect(calls).toBe(3);
+    expect(logs.some((message) => message.startsWith("Metron connect failed 3 times: fetch failed (UND_ERR_CONNECT_TIMEOUT). Pausing all Metron calls. Resumes at "))).toBe(true);
+  });
+
+  it("doubles the connect pause up to 2 hours and clears it after any response", async () => {
+    const timeout = new TypeError("fetch failed");
+    (timeout as TypeError & { cause: { code: string } }).cause = { code: "UND_ERR_CONNECT_TIMEOUT" };
+    let now = 1_000;
+    const fail = () => recordMetronTransportFailure(timeout, now);
+    await fail();
+    await fail();
+    recordMetronTransportSuccess(now);
+    await fail();
+    await fail();
+    expect(readMetronCircuit().openUntil).toBe(0);
+
+    await expect(fail()).rejects.toMatchObject({ pause: { resumeAt: now + METRON_CIRCUIT_BASE_MS } });
+    expect(readMetronCircuit().pauseMs).toBe(METRON_CIRCUIT_BASE_MS * 2);
+
+    now += METRON_CIRCUIT_BASE_MS;
+    await fail();
+    await fail();
+    await expect(fail()).rejects.toMatchObject({ pause: { resumeAt: now + METRON_CIRCUIT_BASE_MS * 2 } });
+    expect(readMetronCircuit().pauseMs).toBe(METRON_CIRCUIT_BASE_MS * 4);
+
+    now = 5_000_000;
+    recordMetronTransportSuccess(now);
+    expect(readMetronCircuit()).toMatchObject({ failures: 0, openUntil: 0, pauseMs: METRON_CIRCUIT_BASE_MS });
+
+    for (let pause = METRON_CIRCUIT_BASE_MS; pause < METRON_CIRCUIT_MAX_MS; pause *= 2) {
+      await fail();
+      await fail();
+      await expect(fail()).rejects.toMatchObject({ pause: { resumeAt: now + pause } });
+      now += pause;
+    }
+    expect(readMetronCircuit().pauseMs).toBe(METRON_CIRCUIT_MAX_MS);
+    await fail();
+    await fail();
+    await expect(fail()).rejects.toMatchObject({ pause: { resumeAt: now + METRON_CIRCUIT_MAX_MS } });
+    expect(readMetronCircuit().pauseMs).toBe(METRON_CIRCUIT_MAX_MS);
   });
 });
 

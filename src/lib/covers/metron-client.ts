@@ -4,6 +4,12 @@ import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
 import { budgetDay, formatResumeTime, retryAfterFromMessage, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
+import {
+  assertMetronCircuit,
+  isMetronTransportFailure,
+  recordMetronTransportFailure,
+  recordMetronTransportSuccess,
+} from "@/lib/covers/metron-circuit";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit, type MetronSeriesQuery } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
@@ -246,6 +252,7 @@ async function takeJobSlot(now: number): Promise<void> {
 async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<MetronPage> {
   let attempt = 0;
   while (true) {
+    assertMetronCircuit(transport.now());
     await takeJobSlot(transport.now());
     await transport.limiter.acquire();
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
@@ -269,8 +276,10 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
         error: error instanceof Error ? error.message : "Request failed.",
         now: transport.now(),
       });
+      if (isMetronTransportFailure(error)) await recordMetronTransportFailure(error, transport.now());
       throw error;
     }
+    recordMetronTransportSuccess(transport.now());
     await recordFetch({ source: "metron", url, startedAt: started, status: response.status, now: transport.now() });
     if (response.status === 429) {
       attempt += 1;

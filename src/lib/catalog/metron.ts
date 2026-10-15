@@ -1,5 +1,7 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { assertMetronCircuit, isMetronTransportFailure, recordMetronTransportFailure, recordMetronTransportSuccess } from "@/lib/covers/metron-circuit";
+import { MetronBudgetError } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import { getSettings } from "@/lib/settings/service";
 import { probeMetron, type ProbeResult } from "@/lib/settings/probe";
@@ -38,8 +40,10 @@ export async function testMetronConnection(fetchImpl?: typeof fetch): Promise<Pr
 async function metronGet(pathAndQuery: string): Promise<MetronPage> {
   const auth = metronAuthorization(await getSettings());
   if (!auth) return { results: [] };
+  const now = Date.now();
+  assertMetronCircuit(now);
   const url = `${auth.baseUrl}${pathAndQuery}`;
-  const started = Date.now();
+  const started = now;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -58,8 +62,10 @@ async function metronGet(pathAndQuery: string): Promise<MetronPage> {
       status: null,
       error: error instanceof Error ? error.message : "Request failed.",
     });
+    if (!(error instanceof MetronBudgetError) && isMetronTransportFailure(error)) await recordMetronTransportFailure(error, Date.now());
     throw error;
   }
+  recordMetronTransportSuccess(Date.now());
   await recordFetch({ source: "metron", url, startedAt: started, status: response.status });
   if (!response.ok) {
     throw new Error(`Metron returned ${response.status}`);

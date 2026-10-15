@@ -1,3 +1,5 @@
+import { assertMetronCircuit, isMetronTransportFailure, recordMetronTransportFailure, recordMetronTransportSuccess } from "@/lib/covers/metron-circuit";
+import { MetronBudgetError } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import type { LogSource } from "@/lib/log/types";
 import type { IntegrationConfig } from "@/lib/settings/resolve";
@@ -14,12 +16,19 @@ export async function probeMetron(config: IntegrationConfig, fetchImpl: typeof f
       ? `Bearer ${config.metron.token}`
       : null;
   if (!header) return { ok: false, message: "Metron username and password are not set." };
+  try {
+    assertMetronCircuit(Date.now());
+  } catch (error) {
+    if (error instanceof MetronBudgetError) return { ok: false, message: error.message };
+    throw error;
+  }
   const url = `${config.metron.baseUrl}/series/?name=Saga`;
   try {
     const response = await loggedFetch(fetchImpl, "metron", url, {
       headers: { Accept: "application/json", Authorization: header, "User-Agent": "longbox/1.0" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    recordMetronTransportSuccess(Date.now());
     if (response.ok) {
       return { ok: true, message: basic ? "Metron accepted the username and password." : "Metron accepted the API token." };
     }
@@ -27,7 +36,15 @@ export async function probeMetron(config: IntegrationConfig, fetchImpl: typeof f
       return { ok: false, message: basic ? "Metron rejected the username or password." : "Metron rejected the API token." };
     }
     return { ok: false, message: `Metron returned ${response.status}.` };
-  } catch {
+  } catch (error) {
+    if (!(error instanceof MetronBudgetError) && isMetronTransportFailure(error)) {
+      try {
+        await recordMetronTransportFailure(error, Date.now());
+      } catch (paused) {
+        if (paused instanceof MetronBudgetError) return { ok: false, message: paused.message };
+      }
+    }
+    if (error instanceof MetronBudgetError) return { ok: false, message: error.message };
     return { ok: false, message: "Metron could not be reached." };
   }
 }

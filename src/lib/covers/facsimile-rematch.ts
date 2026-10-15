@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { createGcdCatalog, GcdBudgetError } from "@/lib/catalog/gcd";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { coverPublicPath } from "@/lib/covers/backfill";
@@ -24,6 +26,112 @@ let nextAttemptAt = 0;
 let metronClosedUntil = 0;
 let gcdClosedUntil = 0;
 let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+
+const EDITION_REMATCH_LOCK = "edition-rematch.lock";
+const EDITION_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
+
+function editionLockFile(dir: string): string {
+  return path.join(dir, EDITION_REMATCH_LOCK);
+}
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function editionLockStale(file: string): boolean {
+  try {
+    const stat = statSync(file);
+    const pid = Number(readFileSync(file, "utf8").split("\n")[0]);
+    if (!pidAlive(pid)) return true;
+    return Date.now() - stat.mtimeMs > EDITION_LOCK_STALE_MS;
+  } catch {
+    return true;
+  }
+}
+
+/** One pass across processes. A dead pid or a lock older than two hours can be taken. */
+export function acquireEditionRematchLock(dir = coversDir()): boolean {
+  mkdirSync(dir, { recursive: true });
+  const file = editionLockFile(dir);
+  const payload = `${process.pid}\n${Date.now()}\n`;
+  try {
+    writeFileSync(file, payload, { flag: "wx" });
+    return true;
+  } catch {
+    if (!editionLockStale(file)) return false;
+    try {
+      unlinkSync(file);
+      writeFileSync(file, payload, { flag: "wx" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function editionRematchLockHeld(dir = coversDir()): boolean {
+  const file = editionLockFile(dir);
+  try {
+    statSync(file);
+  } catch {
+    return false;
+  }
+  return !editionLockStale(file);
+}
+
+export function editionRematchLockOwned(dir = coversDir()): boolean {
+  try {
+    return readFileSync(editionLockFile(dir), "utf8").startsWith(`${process.pid}\n`);
+  } catch {
+    return false;
+  }
+}
+
+/** Keep a long pass from looking abandoned. False when another process owns the file. */
+export function refreshEditionRematchLock(dir = coversDir()): boolean {
+  if (!editionRematchLockOwned(dir)) return false;
+  const now = new Date();
+  try {
+    utimesSync(editionLockFile(dir), now, now);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function releaseEditionRematchLock(dir = coversDir()): void {
+  if (!editionRematchLockOwned(dir)) return;
+  try {
+    unlinkSync(editionLockFile(dir));
+  } catch {
+    // The lock is already gone.
+  }
+}
+
+/**
+ * Run at most one edition pass. The callback writes the done marker only after its last pass.
+ * A second caller gets false while the lock is held, and true when the marker is already done.
+ */
+export async function guardEditionPass(
+  dir: string,
+  already: () => Promise<boolean>,
+  run: () => Promise<boolean>,
+): Promise<boolean> {
+  if (await already()) return true;
+  if (!acquireEditionRematchLock(dir)) return false;
+  try {
+    if (await already()) return true;
+    return await run();
+  } finally {
+    releaseEditionRematchLock(dir);
+  }
+}
 
 export function armJobResume(waitMs: number, fire: () => void, schedule?: (ms: number, fn: () => void) => void): void {
   if (waitMs <= 0) {
@@ -57,7 +165,7 @@ function wakeLater(resumeAt: number): void {
 
 export function scheduleFacsimileRematch(): void {
   if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
-  if (finishedForProcess || inflight) return;
+  if (finishedForProcess || inflight || editionRematchLockHeld()) return;
   const persisted = readEditionJob();
   if (persisted?.metronResumeAt) {
     const at = Date.parse(persisted.metronResumeAt);
@@ -435,14 +543,22 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
   return { ok: true, message };
 }
 
+async function rematchAlreadyDone(): Promise<boolean> {
+  const row = await prisma.appSetting.findUnique({ where: { key: FACSIMILE_REMATCH_KEY } });
+  return row?.plain === "done";
+}
+
 async function runStoredFacsimileRematch(): Promise<boolean> {
+  if (await rematchAlreadyDone()) return true;
   if (!(await metronBasicAuth())) return false;
-  armMetronJobBudget();
-  try {
-    return await runStoredFacsimileRematchBody();
-  } finally {
-    clearMetronJobBudget();
-  }
+  return guardEditionPass(coversDir(), rematchAlreadyDone, async () => {
+    armMetronJobBudget();
+    try {
+      return await runStoredFacsimileRematchBody();
+    } finally {
+      clearMetronJobBudget();
+    }
+  });
 }
 
 async function runStoredFacsimileRematchBody(): Promise<boolean> {
@@ -456,11 +572,9 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
     unmatched: 0,
   });
   const summary = await runFacsimilePass({
-    already: async () => {
-      const row = await prisma.appSetting.findUnique({ where: { key: FACSIMILE_REMATCH_KEY } });
-      return row?.plain === "done";
-    },
+    already: rematchAlreadyDone,
     markDone: async () => {
+      if (!editionRematchLockOwned()) return;
       await prisma.appSetting.upsert({
         where: { key: FACSIMILE_REMATCH_KEY },
         create: { key: FACSIMILE_REMATCH_KEY, plain: "done", secret: null },
@@ -485,6 +599,7 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
       });
     },
     rematch: async (id, ctx) => {
+      if (!refreshEditionRematchLock()) return "stopped";
       try {
         const result = await rematchShelfCopy(id, { metron: ctx?.metron !== false });
         return result.outcome;
@@ -507,6 +622,7 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
       }
     },
   });
+  if (!editionRematchLockOwned()) return false;
   if (summary.done) {
     writeEditionJob({
       state: "finished",

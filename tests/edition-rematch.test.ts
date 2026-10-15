@@ -1,14 +1,13 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { budgetPauseMessage } from "@/lib/covers/budget-pause";
 import { editionOutcome, runFacsimilePass } from "@/lib/covers/facsimile-once";
-import { armJobResume } from "@/lib/covers/facsimile-rematch";
+import { acquireEditionRematchLock, armJobResume, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock } from "@/lib/covers/facsimile-rematch";
 import { editionJobText, writeEditionJob } from "@/lib/covers/job-state";
 import { budgetDay, nextBudgetDayStart } from "@/lib/covers/limiter";
 import { keptPrintingCover } from "@/lib/covers/printing-cover";
-import { readFileSync } from "node:fs";
 
 describe("edition re-match budget pause", () => {
   it("names the budget, the request count, and the resume time", () => {
@@ -94,6 +93,43 @@ describe("edition re-match budget pause", () => {
     expect(logs).toContain("editionJobText");
     expect(settings).not.toContain("\u2014");
     expect(logs).not.toContain("\u2014");
+  });
+
+  it("lets one edition pass hold the lock and writes the marker only after that pass", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "longbox-edition-lock-"));
+    let marks = 0;
+    let started = 0;
+    const finished = await guardEditionPass(dir, async () => marks > 0, async () => {
+      started += 1;
+      expect(editionRematchLockHeld(dir)).toBe(true);
+      const overlapped = await guardEditionPass(dir, async () => false, async () => {
+        started += 1;
+        return true;
+      });
+      expect(overlapped).toBe(false);
+      expect(started).toBe(1);
+      marks += 1;
+      return true;
+    });
+    expect(finished).toBe(true);
+    expect(marks).toBe(1);
+    expect(editionRematchLockHeld(dir)).toBe(false);
+    const skipped = await guardEditionPass(dir, async () => marks > 0, async () => {
+      throw new Error("the finished marker should stop a second pass");
+    });
+    expect(skipped).toBe(true);
+
+    expect(acquireEditionRematchLock(dir)).toBe(true);
+    expect(acquireEditionRematchLock(dir)).toBe(false);
+    const stale = path.join(dir, "edition-rematch.lock");
+    utimesSync(stale, new Date(Date.now() - 3 * 60 * 60 * 1000), new Date(Date.now() - 3 * 60 * 60 * 1000));
+    expect(acquireEditionRematchLock(dir)).toBe(true);
+    releaseEditionRematchLock(dir);
+    writeFileSync(stale, "2147483646\n0\n");
+    expect(editionRematchLockHeld(dir)).toBe(false);
+    expect(acquireEditionRematchLock(dir)).toBe(true);
+    releaseEditionRematchLock(dir);
+    expect(readFileSync("src/lib/covers/facsimile-once.ts", "utf8")).toContain("await deps.markDone()");
   });
 
   it("keeps the existing cover until a printing replacement exists", () => {

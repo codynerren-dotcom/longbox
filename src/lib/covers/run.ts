@@ -324,7 +324,7 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
   armMetronJobBudget();
   try {
     const summary = await runCoverBackfillBody(emit, startedAt);
-    if (summary.resumeAt && summary.resumeAt > Date.now() && summary.stoppedReason?.includes("Metron job")) {
+    if (summary.resumeAt && summary.resumeAt > Date.now() && /Metron (?:job|connect)/.test(summary.stoppedReason ?? "")) {
       scheduleJobResume("backfill", summary.resumeAt, () => startCoverBackfillInBackground({ resume: true }));
     }
     return summary;
@@ -684,7 +684,7 @@ async function runMetronEnrichmentBody(startedAt: string): Promise<void> {
       if (error instanceof MetronBudgetError) {
         const pause = await recordBudgetPause("Metron enrichment", error);
         summary.stoppedReason = budgetPauseMessage("Metron enrichment", pause);
-        if (pause.budget === "Metron job") {
+        if (pause.budget === "Metron job" || pause.budget === "Metron connect") {
           scheduleJobResume("enrich", pause.resumeAt, () => startMetronEnrichmentInBackground({ resume: true }));
         }
         break;
