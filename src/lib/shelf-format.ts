@@ -54,6 +54,86 @@ export function tradeSearchSeries(series: string | null | undefined): string {
     .trim();
 }
 
+/**
+ * Series names for comparison. CLZ often writes " - " where a catalog writes ": ".
+ * Volumes are removed so "Vol. 1" can match a title that omits it, and compared separately.
+ */
+export function normalizeSeriesName(value: string | null | undefined): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[–—]/g, "-")
+    .replace(/\bvol(?:ume)?\.?\s*\d+\b/g, " ")
+    .replace(/\b(?:tpb|tp|hc)\b/g, " ")
+    .replace(/[:\-–—'`.]/g, " ")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\bthe\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function seriesTokens(value: string | null | undefined): string[] {
+  return normalizeSeriesName(value)
+    .split(" ")
+    .filter((token) => token && !/^(?:18|19|20)\d{2}$/.test(token));
+}
+
+function volumeToken(value: string | null | undefined): string | null {
+  const match = (value ?? "").match(/\bvol(?:ume)?\.?\s*(\d+)\b/i);
+  return match?.[1] ?? null;
+}
+
+/** Token-set match. A shared volume number has to agree when both titles carry one. */
+export function seriesNamesMatch(wanted: string | null | undefined, found: string | null | undefined): boolean {
+  const leftVol = volumeToken(wanted);
+  const rightVol = volumeToken(found);
+  if (leftVol && rightVol && leftVol !== rightVol) return false;
+  const want = new Set(seriesTokens(wanted));
+  const got = new Set(seriesTokens(found));
+  if (want.size === 0 || got.size === 0) return false;
+  let missing = 0;
+  for (const token of want) if (!got.has(token)) missing += 1;
+  let extra = 0;
+  for (const token of got) if (!want.has(token)) extra += 1;
+  if (missing === 0 && extra === 0) return true;
+  if (want.size >= 4 && missing === 0 && extra <= 2) return true;
+  if (want.size >= 5 && missing <= 1 && extra <= 1) return (want.size - missing) / want.size >= 0.8;
+  return false;
+}
+
+/** Queries to send a catalog. Punctuation variants first, then a short prefix for long trade titles. */
+export function catalogNameQueries(series: string | null | undefined, options?: { broad?: boolean }): string[] {
+  const base = tradeSearchSeries(series);
+  const queries: string[] = [];
+  const add = (value: string) => {
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    if (trimmed.length < 3) return;
+    if (queries.some((query) => query.toLowerCase() === trimmed.toLowerCase())) return;
+    queries.push(trimmed);
+  };
+  const colon = base.indexOf(":");
+  if (colon >= 0) add(`${base.slice(0, colon)} ${base.slice(colon + 1)}`);
+  add(base.replace(/\s+[-–—]\s+/g, ": "));
+  add(base.replace(/[:\-–—'`.]/g, " "));
+  add(base);
+  if (options?.broad) {
+    const words = base.replace(/[:\-–—'`.]/g, " ").split(/\s+/).filter(Boolean);
+    if (words.length >= 5) add(words.slice(0, 3).join(" "));
+  }
+  return queries.slice(0, 5);
+}
+
+/** True when a Metron collected series title ends in TPB, HC, or the format word. */
+export function metronCollectedTitle(name: string, format: ShelfFormat): boolean {
+  const text = name.toLowerCase();
+  if (format === "hc") return /\bhc\b|\bhardcover\b/.test(text);
+  if (format === "omnibus") return /\bomnibus\b/.test(text);
+  if (format === "compendium") return /\bcompendium\b/.test(text);
+  if (format === "gn") return /\bgraphic novel\b|\bgn\b|\bogn\b/.test(text);
+  return /\btpb\b|\btrade paperback\b|\btp\b/.test(text);
+}
+
 /** The volume digits from `1`, `Vol. 1`, or `Volume 1`. */
 export function volumeNumber(issueNo: string | null | undefined, issue?: string | null): string | null {
   for (const raw of [issueNo, issue]) {
@@ -81,6 +161,18 @@ export function isbnDigits(barcode: string | null | undefined): string | null {
   return null;
 }
 
+/** Digits-only ISBN, or the first 13 digits of a longer book barcode that starts with the ISBN. */
+export function sameIsbn(wanted: string | null | undefined, ...found: Array<string | null | undefined>): boolean {
+  const want = isbnDigits(wanted);
+  if (!want) return false;
+  for (const value of found) {
+    const digits = (value ?? "").replace(/\D/g, "");
+    if (!digits) continue;
+    if (digits === want || (digits.length > 13 && digits.startsWith(want))) return true;
+  }
+  return false;
+}
+
 export function detectShelfFormat(input: {
   format?: string | null;
   series?: string | null;
@@ -94,6 +186,8 @@ export function detectShelfFormat(input: {
   if (fromFormat) return fromFormat;
   const fromName = formatFromText([input.series, input.title, input.fullTitle].filter(Boolean).join(" "));
   if (fromName && fromName !== "single") return fromName;
+  const fromIssue = tradeIssueToken(input.issue) ?? tradeIssueToken(input.issueNo);
+  if (fromIssue) return fromIssue;
   if (isVolumeNumber(input.issueNo) || isVolumeNumber(input.issue)) return "tp";
   if (isbnDigits(input.barcode)) return "tp";
   return "single";
@@ -132,7 +226,9 @@ export function seriesLooksCollected(name: string, format: ShelfFormat): boolean
 }
 
 export function gcdFormatMatches(publishingFormat: string | null | undefined, name: string, format: ShelfFormat): boolean {
-  return seriesLooksCollected(`${publishingFormat ?? ""} ${name}`, format);
+  const text = `${publishingFormat ?? ""} ${name}`;
+  if (isCollected(format) && /\bcollected edition\b/i.test(text)) return true;
+  return seriesLooksCollected(text, format);
 }
 
 type CollectedItem = { series: string; number: string };
@@ -199,6 +295,14 @@ function formatFromText(value: string | null | undefined): ShelfFormat | null {
 
 function isVolumeNumber(value: string | null | undefined): boolean {
   return VOLUME_TEXT.test((value ?? "").trim());
+}
+
+/** CLZ stores a collected copy as issue TP, HC, or TPB in the same series as the singles. */
+function tradeIssueToken(value: string | null | undefined): ShelfFormat | null {
+  const text = (value ?? "").trim();
+  if (/^hc$/i.test(text)) return "hc";
+  if (/^tpb?$/i.test(text)) return "tp";
+  return null;
 }
 
 function proseCollected(value: unknown): string | null {

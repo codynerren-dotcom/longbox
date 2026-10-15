@@ -3,7 +3,7 @@ import { catalogIssueCount } from "@/lib/series-view";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { fetchMetronIssueBody, listMetronIssueRows, type MetronTransport } from "@/lib/covers/metron-client";
 import { recordFetch } from "@/lib/log/api";
-import { isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
+import { catalogNameQueries, isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, seriesNamesMatch, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
 
 const CV_BASE = "https://comicvine.gamespot.com/api";
 
@@ -32,36 +32,45 @@ export async function searchMetronMatches(
   const typeName = isCollected(format) ? metronSeriesType(format) : null;
   if (typeName) {
     const seriesName = tradeSearchSeries(parsed.series) || parsed.series;
-    const number = volumeNumber(parsed.issueNo) ?? parsed.issueNo;
+    const number = volumeNumber(parsed.issueNo);
     if (!seriesName) return [];
-    const seriesRows = await listMetronIssueRows(
-      transport,
-      `/series/?${new URLSearchParams({ name: seriesName, series_type: typeName }).toString()}`,
-    );
     const hits: MatchHit[] = [];
-    for (const row of seriesRows) {
-      const seriesId = idOf(row);
-      if (!seriesId) continue;
-      const params = new URLSearchParams({ series_id: seriesId });
-      if (number) params.set("number", number);
-      if (parsed.year != null) params.set("cover_year", String(parsed.year));
-      const issues = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
-      for (const issue of issues) {
-        const hit = mapMetronMatchHit(issue);
-        if (hit && !hits.some((item) => item.id === hit.id)) hits.push(hit);
+    for (const name of catalogNameQueries(seriesName, { broad: true })) {
+      const seriesRows = await listMetronIssueRows(
+        transport,
+        `/series/?${new URLSearchParams({ name, series_type: typeName }).toString()}`,
+      );
+      for (const row of seriesRows) {
+        if (!seriesNamesMatch(seriesName, rowName(row))) continue;
+        const seriesId = idOf(row);
+        if (!seriesId) continue;
+        const params = new URLSearchParams({ series_id: seriesId });
+        if (number) params.set("number", number);
+        if (parsed.year != null) params.set("cover_year", String(parsed.year));
+        const issues = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
+        for (const issue of issues) {
+          const hit = mapMetronMatchHit(issue);
+          if (hit && !hits.some((item) => item.id === hit.id)) hits.push(hit);
+        }
+        if (hits.length >= 12) return orderMatchHits(hits.slice(0, 12), parsed.year);
       }
-      if (hits.length >= 12) break;
+      if (hits.length > 0) break;
     }
     return orderMatchHits(hits.slice(0, 12), parsed.year);
   }
-  const params = new URLSearchParams();
-  if (parsed.series) params.set("series_name", parsed.series);
-  if (parsed.issueNo) params.set("number", parsed.issueNo);
-  if (parsed.year != null) params.set("cover_year", String(parsed.year));
-  let rows = params.size > 0 ? await listMetronIssueRows(transport, `/issue/?${params.toString()}`) : [];
-  if (rows.length === 0 && parsed.year != null) {
-    params.delete("cover_year");
-    if (params.size > 0) rows = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
+  const names = dedupeNames(parsed.series ? [parsed.series, ...catalogNameQueries(parsed.series)] : []);
+  let rows: unknown[] = [];
+  for (const name of names) {
+    const params = new URLSearchParams();
+    if (name) params.set("series_name", name);
+    if (parsed.issueNo) params.set("number", parsed.issueNo);
+    if (parsed.year != null) params.set("cover_year", String(parsed.year));
+    rows = params.size > 0 ? await listMetronIssueRows(transport, `/issue/?${params.toString()}`) : [];
+    if (rows.length === 0 && parsed.year != null) {
+      params.delete("cover_year");
+      if (params.size > 0) rows = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
+    }
+    if (rows.length > 0) break;
   }
   return orderMatchHits(
     rows.map(mapMetronMatchHit).filter((hit): hit is MatchHit => hit !== null),
@@ -172,6 +181,23 @@ export async function searchComicVineMatches(args: {
     }
   }
   return orderMatchHits(hits.slice(0, 12), parsed.year);
+}
+
+function dedupeNames(values: string[]): string[] {
+  const names: string[] = [];
+  for (const value of values) {
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    if (!trimmed) continue;
+    if (names.some((name) => name.toLowerCase() === trimmed.toLowerCase())) continue;
+    names.push(trimmed);
+  }
+  return names.length > 0 ? names : [""];
+}
+
+function rowName(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const name = (value as { name?: unknown }).name;
+  return typeof name === "string" ? name : "";
 }
 
 function idOf(value: unknown): string | null {

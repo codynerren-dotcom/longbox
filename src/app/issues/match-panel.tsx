@@ -7,6 +7,7 @@ import { linkMatchAction, loadMatchCoversAction, repullCoverAction, searchMatche
 import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
+import { isCollected, shelfFormatOf } from "@/lib/shelf-format";
 
 type Props = {
   comicId: string;
@@ -124,12 +125,18 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
   const ready = source === "metron" ? props.metronReady : source === "comicvine" ? props.comicVineReady : true;
   const hint = source === "metron" ? "Add a Metron username and password in Settings to search." : "Add a Comic Vine API key in Settings to search.";
 
+  const collected = isCollected(shelfFormatOf(props.shelfFormat));
+  const followGcd = props.facsimile || collected;
+  const metronEmptyNote = props.facsimile
+    ? "Metron may not list facsimiles, try GCD."
+    : "Metron may not list this trade, try GCD.";
+
   function selectSource(next: CatalogSource) {
     setSource(next);
     setHits([]);
     setSelected(null);
     setError("");
-    setNote(next === "metron" && metronMissed ? "Metron may not list facsimiles, try GCD." : "");
+    setNote(next === "metron" && metronMissed && followGcd ? metronEmptyNote : "");
   }
 
   function search(mode: "query" | "barcode") {
@@ -150,17 +157,17 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         setError(result.message);
         return;
       }
-      if (source === "metron" && props.facsimile && result.hits.length === 0) {
+      if (source === "metron" && followGcd && result.hits.length === 0) {
         setMetronMissed(true);
         setHits([]);
-        setNote("Metron may not list facsimiles, try GCD.");
+        setNote(metronEmptyNote);
         const gcd = await searchMatchesAction({
           source: "gcd",
           query,
           barcode,
           mode,
           shelfFormat: props.shelfFormat ?? null,
-          facsimile: true,
+          facsimile: props.facsimile,
         });
         if (!gcd.ok) {
           setError(gcd.message);

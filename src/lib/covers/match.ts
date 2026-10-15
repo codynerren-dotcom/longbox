@@ -12,11 +12,14 @@ import {
 } from "@/lib/covers/edition";
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
 import {
+  catalogNameQueries,
   isbnDigits,
   isCollected,
+  metronCollectedTitle,
   metronSeriesType,
   resolveShelfFormat,
   seriesLooksCollected,
+  seriesNamesMatch,
   tradeSearchSeries,
   volumeNumber,
   type ShelfFormat,
@@ -66,7 +69,7 @@ function seriesCoversYear(series: MetronSeriesHit, year: number): boolean {
 export function narrowSeries(hits: MetronSeriesHit[], comic: CoverQuery): MetronSeriesHit[] {
   const wanted = normName(comic.series);
   if (!wanted) return [];
-  let rows = hits.filter((hit) => normName(hit.name) === wanted);
+  let rows = hits.filter((hit) => normName(hit.name) === wanted || seriesNamesMatch(comic.series, hit.name));
   if (rows.length === 0) return [];
   if (comic.publisher) {
     const published = rows.filter((hit) => publishersMatch(comic.publisher, hit.publisher));
@@ -81,6 +84,17 @@ export function narrowSeries(hits: MetronSeriesHit[], comic: CoverQuery): Metron
     }
   }
   return rows;
+}
+
+function uniqueSearchNames(first: string[], second: string[]): string[] {
+  const names: string[] = [];
+  for (const name of [...first, ...second]) {
+    const trimmed = name.replace(/\s+/g, " ").trim();
+    if (!trimmed) continue;
+    if (names.some((item) => item.toLowerCase() === trimmed.toLowerCase())) continue;
+    names.push(trimmed);
+  }
+  return names;
 }
 
 function issueToken(comic: CoverQuery): string {
@@ -416,13 +430,16 @@ async function resolvePrintingCover(comic: CoverQuery, edition: EditionProfile, 
 async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, lookup: CoverLookup): Promise<CoverDecision> {
   const seriesName = tradeSearchSeries(comic.series) || comic.series.trim();
   const scored = { ...comic, series: seriesName };
-  const issueNo = volumeNumber(comic.issueNo, comic.issue) || issueToken(comic);
+  const issueNo = volumeNumber(comic.issueNo, comic.issue) || "";
   const typeName = metronSeriesType(format);
   const isbn = isbnDigits(comic.barcode);
 
   if (isbn) {
     const hits = lookup.issuesByIsbn ? await lookup.issuesByIsbn(isbn) : await lookup.issuesByUpc(isbn);
     if (hits.length > 0) {
+      if (!issueNo && hits.length === 1 && hits[0]) {
+        return { status: "matched", via: "barcode", issue: hits[0], score: 98 };
+      }
       const decision = chooseIssue(hits, scored, issueNo, "barcode");
       if (decision.status === "matched") return decision;
     }
@@ -440,20 +457,27 @@ async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, loo
     }
   }
 
-  if (!seriesName || !issueNo) {
-    return { status: "unmatched", reason: "A collected edition needs a series and a volume number.", score: 0 };
+  if (!seriesName) {
+    return { status: "unmatched", reason: "A collected edition needs a series name.", score: 0 };
   }
 
   let found: MetronSeriesHit[] = [];
-  if (typeName && lookup.searchSeriesByType) {
-    found = await lookup.searchSeriesByType(seriesName, typeName);
-  } else {
-    const broad = await lookup.searchSeries(seriesName);
-    found = broad.filter((row) => seriesLooksCollected(row.name, format));
+  for (const name of catalogNameQueries(seriesName, { broad: true })) {
+    const rows = typeName && lookup.searchSeriesByType
+      ? await lookup.searchSeriesByType(name, typeName)
+      : (await lookup.searchSeries(name)).filter((row) => seriesLooksCollected(row.name, format) || metronCollectedTitle(row.name, format));
+    const named = rows.filter((row) => seriesNamesMatch(seriesName, row.name));
+    if (named.length > 0) {
+      found = named;
+      break;
+    }
   }
   if (found.length === 0) {
     const kind = typeName ?? "collected";
     return { status: "unmatched", reason: `No Metron ${kind} series named ${seriesName}.`, score: 0 };
+  }
+  if (!issueNo) {
+    return { status: "unmatched", reason: `No Metron ${typeName ?? "collected"} issue for ${seriesName}.`, score: 0 };
   }
 
   const candidates = found.slice(0, 4);
@@ -507,7 +531,7 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
     return { status: "unmatched", reason: "No barcode and no series plus issue number to search.", score: 0 };
   }
 
-  const names = edition.searchNames.length > 0 ? edition.searchNames : [comic.series];
+  const names = uniqueSearchNames(edition.searchNames.length > 0 ? edition.searchNames : [comic.series], catalogNameQueries(comic.series));
   let best: CoverDecision = { status: "unmatched", reason: `No Metron series named ${comic.series}.`, score: 0 };
   for (const name of names) {
     const found = await lookup.searchSeries(name);

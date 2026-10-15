@@ -3,11 +3,22 @@ import { createGcdCatalog } from "@/lib/catalog/gcd";
 import type { MatchHit } from "@/lib/catalog/match-hits";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { parseComicBarcode } from "@/lib/barcode";
-import { detectEdition, scoreCandidate, seriesMentionsIssue, type MatchCandidate } from "@/lib/covers/edition";
+import { calendarDay, daysApart, detectEdition, normName, scoreCandidate, seriesMentionsIssue, type MatchCandidate } from "@/lib/covers/edition";
 import { chooseFacsimileIssue, choosePrintingIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
-import { gcdFormatMatches, isbnDigits, isCollected, resolveShelfFormat, tradeSearchSeries, volumeNumber, type ShelfFormat } from "@/lib/shelf-format";
+import {
+  catalogNameQueries,
+  gcdFormatMatches,
+  isbnDigits,
+  isCollected,
+  resolveShelfFormat,
+  sameIsbn,
+  seriesNamesMatch,
+  tradeSearchSeries,
+  volumeNumber,
+  type ShelfFormat,
+} from "@/lib/shelf-format";
 
 /** Names to send to `/api/series/name/`. The issue number lives in the GCD series title. */
 export function gcdFacsimileQueries(series: string, issueNo: string | null): string[] {
@@ -56,13 +67,19 @@ export async function searchGcdMatches(
     const issues = await collectGcdFacsimileIssues(probe, catalog);
     return issues.map(gcdHit);
   }
+  if (isCollected(format) || isbnDigits(barcode)) {
+    const collected = await collectGcdCollectedIssues({ ...probe, shelfFormat: isCollected(format) ? format : "tp" }, isCollected(format) ? format : "tp", catalog);
+    return collected.map(gcdHit);
+  }
   if (!parsed.series) return [];
-  const wanted = isCollected(format) ? tradeSearchSeries(parsed.series) || parsed.series : parsed.series;
-  let seriesRows = await catalog.seriesByName(wanted);
-  if (isCollected(format)) {
-    const collected = seriesRows.filter((row) => gcdFormatMatches(row.format, row.name, format));
-    if (collected.length === 0) return [];
-    seriesRows = collected;
+  let seriesRows: GcdSeriesRow[] = [];
+  for (const name of uniqueNames([parsed.series], catalogNameQueries(parsed.series))) {
+    const rows = await catalog.seriesByName(name);
+    const named = rows.filter((row) => seriesNamesMatch(parsed.series, row.name));
+    if (named.length > 0) {
+      seriesRows = named;
+      break;
+    }
   }
   const hits: MatchHit[] = [];
   for (const series of seriesRows.slice(0, 3)) {
@@ -109,7 +126,7 @@ export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): P
   if (!comic.series.trim() || !issueNo) {
     return { status: "unmatched", reason: "GCD needs a series and issue number.", score: 0 };
   }
-  const names = edition.searchNames.length > 0 ? edition.searchNames : [comic.series];
+  const names = uniqueNames(edition.searchNames.length > 0 ? edition.searchNames : [comic.series], catalogNameQueries(comic.series));
   let best: CoverDecision = { status: "unmatched", reason: `No GCD series named ${comic.series}.`, score: 0 };
   let fetched = 0;
   for (const name of names) {
@@ -169,38 +186,54 @@ export function gcdDetails(issue: GcdIssueRow): MetronDetails {
 
 async function resolveGcdCollected(comic: CoverQuery, format: ShelfFormat, catalog: GcdCatalog): Promise<CoverDecision> {
   const seriesName = tradeSearchSeries(comic.series) || comic.series.trim();
-  const scored = { ...comic, series: seriesName };
-  const issueNo = volumeNumber(comic.issueNo, comic.issue) || (comic.issueNo || comic.issue || "").trim();
+  const issues = await collectGcdCollectedIssues(comic, format, catalog);
+  if (issues.length === 0) {
+    return { status: "unmatched", reason: `No GCD collected edition for ${seriesName || comic.series}.`, score: 0 };
+  }
   const isbn = isbnDigits(comic.barcode);
-  if (isbn) {
-    const decision = chooseGcd(await catalog.issuesByBarcode(isbn), scored, issueNo);
-    if (decision.status === "matched") return decision;
-  } else if (comic.barcode) {
-    const barcode = parseComicBarcode(comic.barcode);
-    if (barcode) {
-      const decision = chooseGcd(await catalog.issuesByBarcode(barcode.combined), scored, issueNo);
-      if (decision.status === "matched") return decision;
-    }
+  const best = issues[0];
+  if (!best) return { status: "unmatched", reason: `No GCD collected edition for ${seriesName || comic.series}.`, score: 0 };
+  if (isbn && sameIsbn(isbn, best.isbn, best.barcode)) {
+    return { status: "matched", via: "gcd", issue: toHit(best), score: 98 };
   }
-  if (!seriesName || !issueNo) return { status: "unmatched", reason: "GCD needs a series and a volume number.", score: 0 };
-  const seriesRows = (await catalog.seriesByName(seriesName)).filter((row) => gcdFormatMatches(row.format, row.name, format));
-  if (seriesRows.length === 0) return { status: "unmatched", reason: `No GCD collected series named ${seriesName}.`, score: 0 };
-  let best: CoverDecision = { status: "unmatched", reason: `No GCD volume ${issueNo} in ${seriesName}.`, score: 0 };
+  if (issues.length === 1) return { status: "matched", via: "gcd", issue: toHit(best), score: 86 };
+  return { status: "unmatched", reason: `Several GCD collected editions match ${seriesName || comic.series}.`, score: 70 };
+}
+
+/** Collected series from the normalized name, then the issue whose ISBN matches. */
+export async function collectGcdCollectedIssues(comic: CoverQuery, format: ShelfFormat, catalog: GcdCatalog): Promise<GcdIssueRow[]> {
+  const seriesName = tradeSearchSeries(comic.series) || comic.series.trim();
+  if (!seriesName) return [];
+  const isbn = isbnDigits(comic.barcode);
+  const volume = volumeNumber(comic.issueNo, comic.issue);
+  const exact: GcdIssueRow[] = [];
+  const fallback: GcdIssueRow[] = [];
+  const seenSeries = new Set<string>();
   let fetched = 0;
-  for (const series of seriesRows.slice(0, 3)) {
-    const issueIds = issuesFor(series, issueNo, true).slice(0, 2);
-    for (const id of issueIds) {
-      if (fetched >= 4) return best;
-      fetched += 1;
-      const issue = await catalog.issue(id);
-      if (!issue) continue;
-      issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-      const decision = chooseGcd([issue], scored, issueNo);
-      if (decision.status === "matched") return decision;
-      if (decision.score > best.score) best = decision;
+  for (const name of catalogNameQueries(seriesName, { broad: true })) {
+    if (exact.length > 0 || fetched >= 8) break;
+    const rows = await catalog.seriesByName(name);
+    const kept = rows.filter((row) => gcdFormatMatches(row.format, row.name, format) && seriesNamesMatch(seriesName, row.name));
+    for (const series of kept.slice(0, 4)) {
+      if (seenSeries.has(series.id)) continue;
+      seenSeries.add(series.id);
+      for (const item of series.issues.slice(0, 4)) {
+        if (fetched >= 8) break;
+        fetched += 1;
+        const issue = await catalog.issue(item.id);
+        if (!issue) continue;
+        issue.seriesYear = issue.seriesYear ?? series.yearBegan;
+        if (isbn && sameIsbn(isbn, issue.isbn, issue.barcode)) {
+          exact.push(issue);
+          continue;
+        }
+        const hasCode = Boolean((issue.isbn ?? "").replace(/\D/g, "") || (issue.barcode ?? "").replace(/\D/g, ""));
+        if (isbn && hasCode) continue;
+        if (collectedFallback(issue, comic, volume)) fallback.push(issue);
+      }
     }
   }
-  return best;
+  return exact.length > 0 ? exact : fallback;
 }
 
 async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {
@@ -416,11 +449,48 @@ function yearFromDate(value: Date | string | null | undefined): number | null {
   return match?.[1] ? Number(match[1]) : null;
 }
 
+function uniqueNames(first: string[], second: string[]): string[] {
+  const names: string[] = [];
+  for (const name of [...first, ...second]) {
+    const trimmed = name.replace(/\s+/g, " ").trim();
+    if (!trimmed) continue;
+    if (names.some((item) => item.toLowerCase() === trimmed.toLowerCase())) continue;
+    names.push(trimmed);
+  }
+  return names;
+}
+
+function collectedFallback(issue: GcdIssueRow, comic: CoverQuery, volume: string | null): boolean {
+  if (!volume || !volumeMatches(issue, volume)) return false;
+  if (comic.publisher && issue.publisher && !publisherAgrees(comic.publisher, issue.publisher)) return false;
+  const copyDay = calendarDay(comic.releaseDate);
+  const sale = calendarDay(issue.onSaleDate);
+  if (copyDay && sale) {
+    const days = daysApart(copyDay, sale);
+    if (days == null || days > 60) return false;
+  }
+  return true;
+}
+
+function volumeMatches(issue: GcdIssueRow, volume: string): boolean {
+  const number = issue.number.trim().toLowerCase();
+  if (number === volume || number === `vol. ${volume}` || number === `vol ${volume}`) return true;
+  if (number === "[nn]" || number === "" || number === "nn") return seriesMentionsIssue(issue.seriesName, volume);
+  return false;
+}
+
+function publisherAgrees(wanted: string, found: string): boolean {
+  const left = normName(wanted);
+  const right = normName(found);
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
 function pickSeries(rows: GcdSeriesRow[], name: string, year: number | null): GcdSeriesRow[] {
   const wanted = norm(name);
   const named = rows.filter((row) => {
     const got = norm(row.name);
-    return got === wanted || got.includes(wanted) || wanted.includes(got);
+    return seriesNamesMatch(name, row.name) || got === wanted || got.includes(wanted) || wanted.includes(got);
   });
   const pool = named.length > 0 ? named : [];
   if (year == null) return pool.slice(0, 2);

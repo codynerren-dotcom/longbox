@@ -87,6 +87,8 @@ export type GcdIssueRow = {
   price: string | null;
   pageCount: number | null;
   barcode: string | null;
+  /** Digits may include hyphens in the raw GCD field. Compared after stripping them. */
+  isbn?: string | null;
   publisher: string | null;
   writer: string | null;
   artist: string | null;
@@ -260,6 +262,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     price: text(row.price),
     pageCount: pageCount(row.page_count),
     barcode: text(row.barcode),
+    isbn: text(row.isbn),
     publisher: text(row.indicia_publisher),
     writer: creditText(story?.script),
     artist: creditText(story?.pencils),

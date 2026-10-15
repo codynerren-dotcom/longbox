@@ -1,20 +1,23 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { GcdCatalog, GcdIssueRow, GcdSeriesRow } from "@/lib/catalog/gcd";
+import { parseGcdIssue, parseGcdSeries, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
 import { searchMetronMatches } from "@/lib/catalog/match-search";
 import { emptyBudget, MetronLimiter, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 import { resolveCover } from "@/lib/covers/match";
-import { resolveGcdCover } from "@/lib/covers/gcd-match";
+import { resolveGcdCover, searchGcdMatches } from "@/lib/covers/gcd-match";
 import type { MetronTransport } from "@/lib/covers/metron-client";
 import type { CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
 import { issueBadge } from "@/lib/series-view";
 import { mapMetronDetails } from "@/lib/covers/enrich";
 import {
+  catalogNameQueries,
   detectShelfFormat,
   formatCollectedList,
   metronSeriesType,
   readCollectedIssues,
   resolveShelfFormat,
   seriesHeaderFormat,
+  seriesNamesMatch,
   tradeSearchSeries,
   volumeLabel,
 } from "@/lib/shelf-format";
@@ -63,6 +66,10 @@ describe("shelf format detection", () => {
   });
 
   it("treats Vol. numbering and an ISBN as a trade when the format column is empty", () => {
+    expect(detectShelfFormat({ issue: "TP", issueNo: "TP" })).toBe("tp");
+    expect(detectShelfFormat({ issue: "TPB" })).toBe("tp");
+    expect(detectShelfFormat({ issue: "HC", issueNo: "HC" })).toBe("hc");
+    expect(detectShelfFormat({ format: "Comic", issue: "TP" })).toBe("single");
     expect(detectShelfFormat({ issue: "Vol. 1", issueNo: "Vol. 1" })).toBe("tp");
     expect(detectShelfFormat({ barcode: "9781534318331" })).toBe("tp");
     expect(volumeLabel("1")).toBe("Vol. 1");
@@ -215,13 +222,78 @@ describe("collected catalog search", () => {
     const found = await resolveGcdCover(query({ series: "Saga TP", barcode: "9781607068064", coverYear: 2014 }), catalog);
     expect(found.status).toBe("matched");
     if (found.status === "matched") expect(found.issue.id).toBe("20");
-    expect(asked[0]).toBe("barcode:9781607068064");
+    expect(asked[0]).toBe("Saga");
+    expect(asked.some((call) => call.startsWith("barcode:"))).toBe(false);
 
     asked.length = 0;
     const byName = await resolveGcdCover(query({ series: "Saga TP", barcode: null, coverYear: 2014 }), catalog);
     expect(asked).toContain("Saga");
     expect(byName.status).toBe("matched");
     if (byName.status === "matched") expect(byName.issue.seriesId).toBe("2");
+  });
+});
+
+describe("Rite of Spring trade paperback", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../fixtures/gcd/rite-of-spring-tp.json", import.meta.url), "utf8")) as {
+    series: { results: unknown[] };
+    issue: unknown;
+    otherIssue: unknown;
+  };
+  const series = fixture.series.results.map((row) => parseGcdSeries(row)).filter((row): row is GcdSeriesRow => row !== null);
+  const issue = parseGcdIssue(fixture.issue);
+  const other = parseGcdIssue(fixture.otherIssue);
+  const clzSeries = "Beneath the Trees: Where Nobody Sees - Rite of Spring";
+
+  function catalog(asked: string[]): GcdCatalog {
+    return {
+      async seriesByName(name) {
+        asked.push(name);
+        return /beneath the trees/i.test(name) ? series : [];
+      },
+      async issue(id) {
+        if (id === "2853617") return issue;
+        if (id === "2853616") return other;
+        return null;
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    };
+  }
+
+  it("lines up CLZ punctuation with the catalog title and keeps a volume number distinct", () => {
+    expect(seriesNamesMatch(clzSeries, "Beneath the Trees Where Nobody Sees: Rite of Spring")).toBe(true);
+    expect(seriesNamesMatch(clzSeries, "Beneath the Trees Where Nobody Sees")).toBe(false);
+    expect(seriesNamesMatch("Amazing Spider-Man, Vol. 1", "Amazing Spider-Man, Vol. 2")).toBe(false);
+    expect(seriesNamesMatch("Saga", "Saga (2012)")).toBe(true);
+    expect(catalogNameQueries(clzSeries, { broad: true })).toContain("Beneath the Trees");
+    expect(issue?.id).toBe("2853617");
+    expect(issue?.isbn).toBe("979-8-88724-384-9");
+    expect(issue?.number).toBe("[nn]");
+    expect(series.map((row) => row.id)).toEqual(expect.arrayContaining(["239303", "239304"]));
+  });
+
+  it("resolves the CLZ TP issue and ISBN to GCD issue 2853617", async () => {
+    const copy: CoverQuery = {
+      series: clzSeries,
+      issueNo: "TP",
+      issue: "TP",
+      coverYear: null,
+      releaseYear: 2026,
+      releaseDate: "2026-07-21",
+      barcode: "9798887243849",
+      variant: null,
+      publisher: "IDW",
+      format: "Trade Paperback",
+      shelfFormat: "tp",
+    };
+    const asked: string[] = [];
+    const decision = await resolveGcdCover(copy, catalog(asked));
+    expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "2853617" } });
+    expect(asked.some((name) => /beneath the trees/i.test(name))).toBe(true);
+
+    const hits = await searchGcdMatches(`${clzSeries} 2026`, copy.barcode ?? "", "barcode", "tp", { catalog: catalog([]) });
+    expect(hits.map((hit) => hit.id)).toEqual(["2853617"]);
   });
 });
 

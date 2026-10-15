@@ -1,4 +1,5 @@
 import { parseComicBarcode } from "@/lib/barcode";
+import { seriesNamesMatch } from "@/lib/shelf-format";
 
 export const AUTO_LINK_SCORE = 75;
 export const DECADE_YEARS = 10;
@@ -252,6 +253,7 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
   const candidateBase = normName(baseSeriesName(candidate.seriesName));
   let seriesPoints = 0;
   if (copyBase && candidateBase && copyBase === candidateBase) seriesPoints = 30;
+  else if (seriesNamesMatch(copy.series, candidate.seriesName) || seriesNamesMatch(edition.baseSeries, candidate.seriesName)) seriesPoints = 30;
   else if (copyBase && candidateBase && (copyBase.includes(candidateBase) || candidateBase.includes(copyBase))) seriesPoints = 16;
   if (edition.kind !== "regular" && candidateKind === edition.kind) seriesPoints = 30;
   const printingOnSameIssue = edition.kind === "printing" && (candidateKind === "regular" || candidateKind === "printing");
