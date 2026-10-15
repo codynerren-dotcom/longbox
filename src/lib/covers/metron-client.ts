@@ -179,7 +179,12 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
       const body = await response.text().catch(() => "");
       const delay = retryAfterMs(response.headers, transport.now()) ?? retryAfterFromMessage(body) ?? Math.min(60_000, 5_000 * 2 ** (attempt - 1));
       if (attempt >= 3 || delay > 120_000) {
-        throw new MetronBudgetError("Metron rate limit reached. Stopping so the run can resume.");
+        const snap = transport.limiter.snapshot();
+        throw new MetronBudgetError("Metron rate limit reached. Stopping so the run can resume.", {
+          budget: "Metron rate limit",
+          count: snap.count,
+          resumeAt: transport.now() + delay,
+        });
       }
       await writeLog({
         level: "warn",

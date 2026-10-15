@@ -28,6 +28,31 @@ export function budgetDay(date: Date, timeZone = process.env.TZ || "America/Chic
   }).format(date);
 }
 
+/** First millisecond of the next budget day in the shelf timezone. */
+export function nextBudgetDayStart(nowMs: number, timeZone = process.env.TZ || "America/Chicago"): number {
+  const day = budgetDay(new Date(nowMs), timeZone);
+  let lo = nowMs;
+  let hi = nowMs + 36 * 60 * 60 * 1000;
+  while (hi - lo > 1000) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (budgetDay(new Date(mid), timeZone) === day) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}
+
+export function formatResumeTime(ms: number, timeZone = process.env.TZ || "America/Chicago"): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(ms));
+}
+
 type HeaderBag = {
   get(name: string): string | null;
 };
@@ -90,7 +115,11 @@ export class MetronLimiter {
       this.budget.count = 0;
     }
     if (this.budget.count >= METRON_DAILY_LIMIT) {
-      throw new MetronBudgetError("Metron daily limit reached (5000). Run again after the window resets.");
+      throw new MetronBudgetError("Metron daily limit reached (5000). Run again after the window resets.", {
+        budget: "Metron daily",
+        count: this.budget.count,
+        resumeAt: nextBudgetDayStart(this.now()),
+      });
     }
     const wait = this.msUntilNext();
     if (wait > 0) await this.sleep(wait);

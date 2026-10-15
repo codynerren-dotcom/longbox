@@ -1,3 +1,9 @@
+export async function register(): Promise<void> {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { scheduleFacsimileRematch } = await import("@/lib/covers/facsimile-rematch");
+  scheduleFacsimileRematch();
+}
+
 type RequestError = Error & { digest?: string };
 
 export async function onRequestError(

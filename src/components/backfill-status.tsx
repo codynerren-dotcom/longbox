@@ -3,22 +3,50 @@
 import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import type { BackfillStatus } from "@/lib/covers/files";
+import { editionJobText, type EditionJobState } from "@/lib/covers/job-state";
 import { BACKFILL_POLL_MS, backfillPollPlan, backfillProgressLabel, normalizeBackfillStatus } from "@/lib/covers/poll";
 
 type BackfillContextValue = {
   status: BackfillStatus | null;
+  rematch: EditionJobState | null;
   refresh: () => void;
 };
 
-const BackfillContext = createContext<BackfillContextValue>({ status: null, refresh: () => {} });
+const BackfillContext = createContext<BackfillContextValue>({ status: null, rematch: null, refresh: () => {} });
 
 export function useBackfillStatus(): BackfillContextValue {
   return useContext(BackfillContext);
 }
 
-export function BackfillStatusProvider({ initial, children }: { initial: BackfillStatus | null; children: ReactNode }) {
+export function readRematchStatus(value: unknown): EditionJobState | null {
+  if (!value || typeof value !== "object") return null;
+  const row = (value as { rematch?: unknown }).rematch;
+  if (!row || typeof row !== "object") return null;
+  const job = row as Partial<EditionJobState>;
+  if (job.state !== "running" && job.state !== "paused" && job.state !== "finished") return null;
+  return {
+    state: job.state,
+    message: typeof job.message === "string" ? job.message : null,
+    resumeAt: typeof job.resumeAt === "string" ? job.resumeAt : null,
+    metronResumeAt: typeof job.metronResumeAt === "string" ? job.metronResumeAt : null,
+    matched: typeof job.matched === "number" ? job.matched : 0,
+    unmatched: typeof job.unmatched === "number" ? job.unmatched : 0,
+    updatedAt: typeof job.updatedAt === "string" ? job.updatedAt : "",
+  };
+}
+
+export function BackfillStatusProvider({
+  initial,
+  rematch: initialRematch = null,
+  children,
+}: {
+  initial: BackfillStatus | null;
+  rematch?: EditionJobState | null;
+  children: ReactNode;
+}) {
   const pathname = usePathname();
   const [status, setStatus] = useState<BackfillStatus | null>(initial);
+  const [rematch, setRematch] = useState<EditionJobState | null>(initialRematch);
   const running = Boolean(status?.running);
   const refresh = useCallback(() => {
     void fetch("/api/covers/status", { cache: "no-store" })
@@ -30,6 +58,7 @@ export function BackfillStatusProvider({ initial, children }: { initial: Backfil
         }
         const next = normalizeBackfillStatus(body);
         if (next) setStatus(next);
+        setRematch(readRematchStatus(body));
       })
       .catch(() => {});
   }, []);
@@ -42,7 +71,7 @@ export function BackfillStatusProvider({ initial, children }: { initial: Backfil
     return () => window.clearInterval(id);
   }, [pathname, running, refresh]);
 
-  return <BackfillContext.Provider value={{ status, refresh }}>{children}</BackfillContext.Provider>;
+  return <BackfillContext.Provider value={{ status, rematch, refresh }}>{children}</BackfillContext.Provider>;
 }
 
 export function BackfillSidebarNote() {
@@ -67,9 +96,10 @@ function useProgressLabel(): string | null {
 }
 
 export function CoverLiveStatus() {
-  const { status } = useBackfillStatus();
+  const { status, rematch } = useBackfillStatus();
   const running = Boolean(status?.running);
-  const paused = status?.stoppedReason === "Paused.";
+  const paused = status?.stoppedReason === "Paused." || Boolean(status?.stoppedReason?.includes("Resumes at"));
+  const rematchLine = editionJobText(rematch);
   return (
     <>
       <p className="text-sm text-paper">
@@ -77,6 +107,7 @@ export function CoverLiveStatus() {
         {status ? ` · matched ${status.matched} · unmatched ${status.unmatched} · skipped ${status.skipped}` : ""}
       </p>
       {status?.message ? <p className="text-sm text-mist">{status.message}</p> : null}
+      {rematchLine ? <p className="text-sm text-paper">{rematchLine}</p> : null}
     </>
   );
 }

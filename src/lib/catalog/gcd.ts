@@ -1,5 +1,6 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
 import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { readCollectedIssues } from "@/lib/shelf-format";
@@ -109,14 +110,23 @@ export type GcdCatalog = {
 
 const MIN_GAP_MS = 2_000;
 const HOURLY_CAP = 30;
+export const GCD_BARCODE_TIMEOUT_MS = 20_000;
+const GCD_DEFAULT_TIMEOUT_MS = 8_000;
 let nextGcdAt = 0;
 let gcdWindowStarted = 0;
 let gcdWindowCount = 0;
 
 export class GcdBudgetError extends Error {
-  constructor(message: string) {
+  readonly pause: { budget: string; count: number | null; resumeAt: number };
+
+  constructor(message: string, pause?: { budget?: string; count?: number | null; resumeAt?: number }) {
     super(message);
     this.name = "GcdBudgetError";
+    this.pause = {
+      budget: pause?.budget ?? "GCD hourly",
+      count: pause?.count ?? null,
+      resumeAt: pause?.resumeAt ?? 0,
+    };
   }
 }
 
@@ -132,7 +142,11 @@ async function gcdPause(now = Date.now()): Promise<void> {
     gcdWindowCount = 0;
   }
   if (gcdWindowCount >= HOURLY_CAP) {
-    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.");
+    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
+      budget: "GCD hourly",
+      count: gcdWindowCount,
+      resumeAt: gcdWindowStarted + 60 * 60 * 1000,
+    });
   }
   const wait = Math.max(0, nextGcdAt - now);
   nextGcdAt = Math.max(nextGcdAt, now) + MIN_GAP_MS;
@@ -291,7 +305,21 @@ function pageCount(value: unknown): number | null {
   return Math.round(amount);
 }
 
-async function gcdGet(pathAndQuery: string): Promise<unknown> {
+function barcodeMatches(issue: GcdIssueRow, code: string): boolean {
+  const want = code.replace(/\D/g, "");
+  const got = (issue.barcode ?? "").replace(/\D/g, "");
+  if (want.length < 11 || got.length < 11) return false;
+  return got === want || got.startsWith(want) || want.startsWith(got);
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error ? String((error as { name?: unknown }).name) : "";
+  const message = error instanceof Error ? error.message : "";
+  return name === "TimeoutError" || name === "AbortError" || /timeout|aborted/i.test(message);
+}
+
+async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS): Promise<unknown> {
   await gcdPause();
   const url = `${gcdBase()}${pathAndQuery}`;
   const started = Date.now();
@@ -302,7 +330,7 @@ async function gcdGet(pathAndQuery: string): Promise<unknown> {
         Accept: "application/json",
         "User-Agent": "longbox/1.0 (personal comic shelf)",
       },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     await recordFetch({
@@ -315,6 +343,15 @@ async function gcdGet(pathAndQuery: string): Promise<unknown> {
     throw error;
   }
   await recordFetch({ source: "system", url, startedAt: started, status: response.status });
+  if (response.status === 429) {
+    const body = await response.text().catch(() => "");
+    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60 * 60 * 1000;
+    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
+      budget: "GCD rate limit",
+      count: gcdWindowCount,
+      resumeAt: Date.now() + delay,
+    });
+  }
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) {
@@ -323,13 +360,39 @@ async function gcdGet(pathAndQuery: string): Promise<unknown> {
   return response.json();
 }
 
-/**
- * GCD has no barcode search. `/api/issue/?barcode=`, `/api/issues/?barcode=`,
- * and `/api/v2/issues/?barcode=` all 404. Callers verify a barcode by reading
- * it off an issue found through `/api/series/name/`.
- */
-export async function gcdByBarcode(_parsed: ParsedBarcode): Promise<CatalogMatch[]> {
+async function readBarcodeIssues(load: () => Promise<unknown>, code: string): Promise<GcdIssueRow[]> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const body = await load();
+      return asArray(body)
+        .map((item) => parseGcdIssue(item))
+        .filter((issue): issue is GcdIssueRow => issue !== null)
+        .filter((issue) => barcodeMatches(issue, code))
+        .slice(0, 8);
+    } catch (error) {
+      if (error instanceof GcdBudgetError) throw error;
+      last = error;
+      if (!isTimeoutError(error) || attempt === 1) return [];
+    }
+  }
+  void last;
   return [];
+}
+
+/**
+ * Barcode lookup is `/api/v2/issues/?barcode=`. It gets 20 seconds and one retry
+ * after a timeout. A 404 or a second timeout is ignored so series search can continue.
+ * `/api/issue/?barcode=` and `/api/issues/?barcode=` are not called.
+ */
+export async function gcdByBarcode(parsed: ParsedBarcode): Promise<CatalogMatch[]> {
+  const code = parsed.combined.trim();
+  if (!code) return [];
+  const path = `/api/v2/issues/?barcode=${encodeURIComponent(code)}`;
+  const issues = await readBarcodeIssues(() => gcdGet(path, GCD_BARCODE_TIMEOUT_MS), code);
+  return issues
+    .map((issue) => toMatch({ id: issue.id, series_name: issue.seriesName, number: issue.number, barcode: issue.barcode }, code))
+    .filter((match): match is CatalogMatch => match !== null);
 }
 
 export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
@@ -343,13 +406,16 @@ export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
       const body = await gcdFetch(fetchImpl, `/api/issue/${id}/`);
       return parseGcdIssue(body);
     },
-    async issuesByBarcode() {
-      return [];
+    async issuesByBarcode(code) {
+      const trimmed = code.trim();
+      if (!trimmed) return [];
+      const path = `/api/v2/issues/?barcode=${encodeURIComponent(trimmed)}`;
+      return readBarcodeIssues(() => gcdFetch(fetchImpl, path, GCD_BARCODE_TIMEOUT_MS), trimmed);
     },
   };
 }
 
-async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string): Promise<unknown> {
+async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS): Promise<unknown> {
   await gcdPause();
   const url = `${gcdBase()}${pathAndQuery}`;
   const started = Date.now();
@@ -357,7 +423,7 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string): Promise<
   try {
     response = await fetchImpl(url, {
       headers: { Accept: "application/json", "User-Agent": "longbox/1.0 (personal comic shelf; CC BY-SA)" },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     await recordFetch({
@@ -370,7 +436,15 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string): Promise<
     throw error;
   }
   await recordFetch({ source: "gcd", url, startedAt: started, status: response.status });
-  if (response.status === 429) throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.");
+  if (response.status === 429) {
+    const body = await response.text().catch(() => "");
+    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60 * 60 * 1000;
+    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
+      budget: "GCD rate limit",
+      count: gcdWindowCount,
+      resumeAt: Date.now() + delay,
+    });
+  }
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) throw new Error("GCD response was not JSON");

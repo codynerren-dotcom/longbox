@@ -5,6 +5,7 @@ import { PwaRegister } from "@/components/pwa-register";
 import { scheduleFacsimileRematch } from "@/lib/covers/facsimile-rematch";
 import { scheduleShelfFormatBackfill } from "@/lib/shelf-format-backfill";
 import { readBackfillStatus } from "@/lib/covers/files";
+import { readEditionJob } from "@/lib/covers/job-state";
 import { getViewer } from "@/lib/auth";
 import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
@@ -56,7 +57,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en" className={`${display.variable} ${body.variable}`} style={{ "--accent-rgb": ACCENT_RGB[prefs.display.accent] } as React.CSSProperties}>
       <body className="font-sans antialiased">
         <link rel="manifest" href="/manifest.webmanifest" crossOrigin="use-credentials" />
-        <AppShell viewer={viewer} backfill={readBackfillStatus()}>
+        <AppShell viewer={viewer} backfill={readBackfillStatus()} rematch={readEditionJob()}>
           {children}
         </AppShell>
         <PwaRegister />

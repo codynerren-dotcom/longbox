@@ -24,6 +24,8 @@ import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
 import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
+import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
+import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
 import { getPreferences, setCoversPaused } from "@/lib/settings/service";
@@ -216,13 +218,9 @@ export async function applyGcdLink(
     gcdIssueId,
     gcdSeriesId,
     coverStatus: "gcd",
-    coverNote: options?.coverReview || `Linked GCD ${gcdIssueId}, score ${score}. Cover stays on GCD.`,
+    coverNote: options?.coverReview ? needsReviewNote(options.coverReview) : `Linked GCD ${gcdIssueId}, score ${score}. Cover stays on GCD.`,
     coverCheckedAt: new Date(),
   };
-  if (options?.coverReview) {
-    data.coverFile = null;
-    data.coverUrl = null;
-  }
   if (plan && plan.filled.length > 0) Object.assign(data, enrichmentPatch(plan));
   if (detail && current) {
     const collected = collectedText(current, current.fieldSources, detail);
@@ -296,7 +294,7 @@ function matchedCoverPatch(update: {
     coverFile: update.coverFile,
     coverUrl: update.coverUrl,
     coverStatus: saved ? "matched" : null,
-    coverNote: saved ? null : (update.coverNote ?? null),
+    coverNote: update.coverNote !== undefined ? update.coverNote : null,
     coverCheckedAt: new Date(),
   };
 }
@@ -650,7 +648,8 @@ async function runMetronEnrichment(): Promise<void> {
       }
     } catch (error) {
       if (error instanceof MetronBudgetError) {
-        summary.stoppedReason = error.message;
+        const pause = await recordBudgetPause("Metron enrichment", error);
+        summary.stoppedReason = budgetPauseMessage("Metron enrichment", pause);
         break;
       }
       summary.unmatched += 1;

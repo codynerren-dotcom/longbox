@@ -288,7 +288,8 @@ describe("cover backfill", () => {
         unmatched.push(id);
       },
     });
-    expect(summary.stoppedReason).toMatch(/daily limit/);
+    expect(summary.stoppedReason).toMatch(/Metron daily/);
+    expect(summary.stoppedReason).toMatch(/Resumes at/);
     expect(summary.unmatched).toBe(0);
     expect(unmatched).toEqual([]);
   });

@@ -1,9 +1,11 @@
 import { GcdBudgetError } from "@/lib/catalog/gcd";
+import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
 import { crossLinkLine, lookupCrossIssue, type CrossLookup } from "@/lib/covers/cross-link";
 import { detectEdition } from "@/lib/covers/edition";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { coverFileKey } from "@/lib/covers/files";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
+import { keptPrintingCover } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverDecision, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
 
 export type BackfillSummary = {
@@ -61,6 +63,19 @@ export async function backfillCovers(args: {
 
   let gcdOpen = Boolean(args.gcd && args.markGcd);
   let lastGcdReason = "";
+
+  function heldPrintingCover(comic: CoverRecord, metronIssueId: string, note: string | null) {
+    const kept = keptPrintingCover(comic.coverFile, null, note);
+    return { metronIssueId, coverFile: kept.coverFile, coverUrl: kept.coverUrl, coverNote: kept.coverNote, printing: null as number | null };
+  }
+
+  async function stopForBudget(error: unknown): Promise<boolean> {
+    if (!(error instanceof MetronBudgetError || error instanceof GcdBudgetError)) return false;
+    const pause = await recordBudgetPause("Cover backfill", error);
+    summary.stoppedReason = budgetPauseMessage("Cover backfill", pause);
+    args.onProgress?.(summary);
+    return true;
+  }
 
   async function acceptGcd(comic: CoverRecord, issueNo: string): Promise<"matched" | "miss" | "budget" | "closed"> {
     if (!gcdOpen || !args.markGcd) return "closed";
@@ -142,12 +157,7 @@ export async function backfillCovers(args: {
         args.log?.(`${comic.series} #${issueNo} kept manual Metron ${lockedMetronId}.`);
         args.onProgress?.(summary);
       } catch (error) {
-        if (error instanceof MetronBudgetError) {
-          summary.stoppedReason = error.message;
-          args.log?.(summary.stoppedReason);
-          args.onProgress?.(summary);
-          break;
-        }
+        if (await stopForBudget(error)) break;
         const reason = error instanceof Error ? error.message : "Could not download the linked cover.";
         summary.skipped += 1;
         args.log?.(`${comic.series} #${issueNo} kept manual Metron ${lockedMetronId}; ${reason}`);
@@ -174,11 +184,7 @@ export async function backfillCovers(args: {
         );
         if (printing.active) {
           if (!printing.imageUrl) {
-            await args.markMatched(
-              comic.id,
-              { metronIssueId: storedMetronId, coverFile: null, coverUrl: null, coverNote: printing.note, printing: null },
-              detail,
-            );
+            await args.markMatched(comic.id, heldPrintingCover(comic, storedMetronId, printing.note), detail);
             summary.matched += 1;
             args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}. ${printing.note ?? ""}`.trim());
             args.onProgress?.(summary);
@@ -234,12 +240,7 @@ export async function backfillCovers(args: {
         args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}.`);
         args.onProgress?.(summary);
       } catch (error) {
-        if (error instanceof MetronBudgetError) {
-          summary.stoppedReason = error.message;
-          args.log?.(summary.stoppedReason);
-          args.onProgress?.(summary);
-          break;
-        }
+        if (await stopForBudget(error)) break;
         const reason = error instanceof Error ? error.message : "Could not download the linked cover.";
         summary.skipped += 1;
         args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}; ${reason}`);
@@ -330,11 +331,7 @@ export async function backfillCovers(args: {
         const printing = savedPrintingCover(comic, decision.issue, detail?.covers);
         const imageUrl = printing.active ? printing.imageUrl : detail?.imageUrl || decision.issue.imageUrl;
         if (printing.active && !imageUrl) {
-          await args.markMatched(
-            comic.id,
-            { metronIssueId, coverFile: null, coverUrl: null, coverNote: printing.note, printing: null },
-            detail,
-          );
+          await args.markMatched(comic.id, heldPrintingCover(comic, metronIssueId, printing.note), detail);
           summary.matched += 1;
           args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}, score ${decision.score}. ${printing.note ?? ""}`.trim());
           args.onProgress?.(summary);
@@ -347,11 +344,7 @@ export async function backfillCovers(args: {
         } catch (error) {
           if (printing.active) {
             const reason = error instanceof Error ? error.message : "Could not download the printing cover.";
-            await args.markMatched(
-              comic.id,
-              { metronIssueId, coverFile: null, coverUrl: null, coverNote: reason, printing: null },
-              detail,
-            );
+            await args.markMatched(comic.id, heldPrintingCover(comic, metronIssueId, reason), detail);
             summary.matched += 1;
             args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}, score ${decision.score}. ${reason}`);
             args.onProgress?.(summary);
@@ -394,7 +387,8 @@ export async function backfillCovers(args: {
       }
       args.onProgress?.(summary);
     } catch (error) {
-      summary.stoppedReason = error instanceof MetronBudgetError || error instanceof Error ? error.message : "Cover backfill stopped.";
+      if (await stopForBudget(error)) break;
+      summary.stoppedReason = error instanceof Error ? error.message : "Cover backfill stopped.";
       args.log?.(summary.stoppedReason);
       args.onProgress?.(summary);
       break;

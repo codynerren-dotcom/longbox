@@ -1,5 +1,6 @@
 import { LinkedJson, LinkedMessage } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
+import { editionJobText, readEditionJob } from "@/lib/covers/job-state";
 import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
 import { logFiltersFrom, logQueryString, logWhere } from "@/lib/log/query";
@@ -40,12 +41,15 @@ export default async function LogsPage({
   }
   const query = logQueryString(filters);
   const display = dateOptions(prefs, true);
+  const jobLine = editionJobText(readEditionJob());
 
   return (
     <div>
       <PageHeader kicker="Shelf" title="Logs">
         <p className="max-w-sm text-sm text-mist">Events stay for {prefs.logs.retentionDays} days, then they are pruned. Times follow your display settings.</p>
       </PageHeader>
+
+      {jobLine ? <p className="mb-4 text-sm text-paper">{jobLine}</p> : null}
 
       <form method="get" className="grid gap-3 rounded-2xl bg-panel p-4 ring-1 ring-white/5 sm:grid-cols-2 lg:grid-cols-6">
         <label className="block space-y-1 text-sm text-paper">

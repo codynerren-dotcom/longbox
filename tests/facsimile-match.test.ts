@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { GcdBudgetError, createGcdCatalog, gcdByBarcode, parseGcdIssue, parseGcdSeries, resetGcdBudget, type GcdCatalog, type GcdIssueRow } from "@/lib/catalog/gcd";
+import { GcdBudgetError, GCD_BARCODE_TIMEOUT_MS, createGcdCatalog, parseGcdIssue, parseGcdSeries, resetGcdBudget, type GcdCatalog, type GcdIssueRow } from "@/lib/catalog/gcd";
 import { backfillCovers } from "@/lib/covers/backfill";
 import { detectEdition, scoreCandidate, suspectMatchReason } from "@/lib/covers/edition";
 import { fieldCredit, planEnrichment, type MetronDetails } from "@/lib/covers/enrich";
@@ -279,17 +279,45 @@ describe("GCD catalog", () => {
     expect(gcdHit(parsed as GcdIssueRow).covers).toEqual([]);
   });
 
-  it("does not call a GCD barcode search", async () => {
+  it("retries a timed-out /api/v2/issues barcode lookup once", async () => {
     resetGcdBudget();
+    expect(GCD_BARCODE_TIMEOUT_MS).toBe(20_000);
     const urls: string[] = [];
-    const fetchImpl: typeof fetch = async (input) => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
       urls.push(String(input));
+      calls += 1;
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (calls === 1) throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      return Response.json({
+        results: [
+          {
+            id: "2513854",
+            api_url: "https://www.comics.org/api/issue/2513854/?format=json",
+            series_name: "Batman: Vengeance of Bane 1 (Facsimile Edition)",
+            number: "[nn]",
+            barcode: "75960612345600011",
+          },
+        ],
+      });
+    };
+    const issues = await createGcdCatalog(fetchImpl).issuesByBarcode("75960612345600011");
+    expect(issues.map((issue) => issue.id)).toEqual(["2513854"]);
+    expect(calls).toBe(2);
+    expect(urls.every((url) => url.includes("/api/v2/issues/?barcode=75960612345600011"))).toBe(true);
+    expect(urls.some((url) => url.includes("/api/issue/?barcode=") || url.includes("/api/issues/?barcode="))).toBe(false);
+  });
+
+  it("does not retry a GCD barcode 404", async () => {
+    resetGcdBudget();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
       return new Response("missing", { status: 404, headers: { "content-type": "text/html" } });
     };
     const issues = await createGcdCatalog(fetchImpl).issuesByBarcode("75960612345600011");
     expect(issues).toEqual([]);
-    expect(urls).toEqual([]);
-    expect(await gcdByBarcode({ raw: "75960612345600011", digits: "75960612345600011", upc: "759606123456", addon: "00011", combined: "75960612345600011" })).toEqual([]);
+    expect(calls).toBe(1);
   });
 
   it("asks for the facsimile descriptor before the original issue", async () => {

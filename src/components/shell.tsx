@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { BackfillMobileNote, BackfillSidebarNote, BackfillStatusProvider } from "@/components/backfill-status";
 import type { BackfillStatus } from "@/lib/covers/files";
+import type { EditionJobState } from "@/lib/covers/job-state";
 import type { Viewer } from "@/lib/auth";
 
 const desktopNav = [
@@ -27,16 +28,18 @@ function isActive(pathname: string, href: string) {
 export function AppShell({
   viewer,
   backfill,
+  rematch = null,
   children,
 }: {
   viewer: Viewer;
   backfill: BackfillStatus | null;
+  rematch?: EditionJobState | null;
   children: ReactNode;
 }) {
   const pathname = usePathname();
 
   return (
-    <BackfillStatusProvider initial={backfill}>
+    <BackfillStatusProvider initial={backfill} rematch={rematch}>
     <div className="min-h-screen">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-white/5 bg-panel md:flex">
         <div className="px-5 pb-4 pt-6">

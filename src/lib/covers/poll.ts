@@ -21,6 +21,7 @@ export function backfillProgressLabel(
 export function normalizeBackfillStatus(value: unknown): BackfillStatus | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
+  if (typeof row.running !== "boolean") return null;
   return {
     running: row.running === true,
     startedAt: text(row.startedAt),

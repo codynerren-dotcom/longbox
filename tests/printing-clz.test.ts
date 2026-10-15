@@ -326,7 +326,7 @@ describe("later printing review", () => {
 
   it("saves the printing cover and leaves the 1st-print image off when that cover is missing", async () => {
     const saved: string[] = [];
-    const marked: Array<{ coverFile: string | null; coverNote?: string | null; printing?: number | null }> = [];
+    const marked: Array<{ coverFile: string | null; coverUrl?: string | null; coverNote?: string | null; printing?: number | null }> = [];
     const missing = await backfillCovers({
       comics: [record(avengers)],
       lookup: lookup({
@@ -381,6 +381,7 @@ describe("later printing review", () => {
     expect(saved).toEqual([]);
     expect(marked[0]?.coverFile).toBeNull();
     expect(marked[0]?.printing).toBeNull();
+    expect(marked[0]?.coverNote).toMatch(/Needs review/);
     expect(marked[0]?.coverNote).toMatch(/1st-print|printing cover/);
 
     saved.length = 0;
@@ -438,6 +439,62 @@ describe("later printing review", () => {
     expect(found.matched).toBe(1);
     expect(saved).toEqual(["https://static.metron.cloud/second.jpg"]);
     expect(marked[0]).toMatchObject({ coverFile: "metron-second.jpg", printing: 2 });
+
+    marked.length = 0;
+    const kept = await backfillCovers({
+      comics: [record(avengers, { coverFile: "metron-old.jpg" })],
+      lookup: lookup({
+        async issuesByUpc() {
+          return [parentIssue({ covers: [{ label: "Cover", imageUrl: "https://static.metron.cloud/main.jpg" }] })];
+        },
+      }),
+      fileExists: () => false,
+      saveImage: async () => {
+        throw new Error("the 1st-print file should stay");
+      },
+      loadDetail: async () => ({
+        id: "av7",
+        seriesId: "8",
+        seriesName: "Avengers",
+        number: "7",
+        imageUrl: "https://static.metron.cloud/main.jpg",
+        coverDate: null,
+        coverYear: 2018,
+        releaseDate: null,
+        title: null,
+        storyArc: null,
+        plot: null,
+        pageCount: null,
+        coverPrice: null,
+        barcode: null,
+        writer: null,
+        artist: null,
+        coverArtist: null,
+        characters: null,
+        teams: null,
+        imprint: null,
+        seriesYear: 2018,
+        seriesVolume: null,
+        metronIssueUrl: null,
+        metronSeriesUrl: null,
+        comicvineIssueId: null,
+        comicvineSeriesId: null,
+        gcdIssueId: null,
+        gcdSeriesId: null,
+        covers: [{ label: "Cover", imageUrl: "https://static.metron.cloud/main.jpg" }],
+      }),
+      markMatched: async (_id, update) => {
+        marked.push(update);
+      },
+      markUnmatched: async () => {
+        throw new Error("the issue should stay linked");
+      },
+    });
+    expect(kept.matched).toBe(1);
+    expect(marked[0]?.coverFile).toBe("metron-old.jpg");
+    expect(marked[0]?.coverUrl).toBe("/covers/files/metron-old.jpg");
+    expect(marked[0]?.coverNote).toMatch(/Needs review/);
+    expect(marked[0]?.printing).toBeNull();
   });
 });
 

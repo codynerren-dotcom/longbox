@@ -89,9 +89,22 @@ export type CoverRecord = CoverQuery & {
   embeddedMetronIssueId?: string | null;
 };
 
+export type BudgetPause = {
+  budget: string;
+  count: number | null;
+  resumeAt: number;
+};
+
 export class MetronBudgetError extends Error {
-  constructor(message: string) {
+  readonly pause: BudgetPause;
+
+  constructor(message: string, pause?: Partial<BudgetPause>) {
     super(message);
     this.name = "MetronBudgetError";
+    this.pause = {
+      budget: pause?.budget ?? "Metron daily",
+      count: pause?.count ?? null,
+      resumeAt: pause?.resumeAt ?? 0,
+    };
   }
 }
