@@ -106,6 +106,11 @@ export type GcdIssueRow = {
   comicvineIssueId: string | null;
   metronIssueId: string | null;
   collects?: string | null;
+  /**
+   * Scan URL from the issue `cover` field (`https://files1.comics.org/.../w400/...`), or null when that field is blank.
+   * Match rows show it. Automatic backfill still leaves `imageUrl` empty so a pass does not download every scan.
+   */
+  coverUrl?: string | null;
 };
 
 export type GcdCatalog = {
@@ -405,6 +410,20 @@ export async function fetchGcdSeriesRun(
   return parseGcdSeriesRun(body);
 }
 
+/** The issue `cover` field is a scan URL or "". Anything that is not https is dropped. */
+export function gcdCoverScan(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "http:") url.protocol = "https:";
+    if (url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 export function parseGcdIssue(value: unknown, seriesYear: number | null = null): GcdIssueRow | null {
   const row = asRecord(value);
   if (!row) return null;
@@ -440,6 +459,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     comicvineIssueId: foreignDigits(row, ["cv_id", "comicvine_id", "comicvine_issue_id"]),
     metronIssueId: foreignDigits(row, ["metron_id", "metron_issue_id"]),
     collects: readCollectedIssues(row),
+    coverUrl: gcdCoverScan(row.cover),
   };
 }
 

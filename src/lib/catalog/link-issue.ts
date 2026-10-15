@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-plan";
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
-import { manualLinkJson, matchQuery, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
+import { manualLinkJson, matchQuery, readManualLink, shouldSaveCatalogCover, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
 import { hintFromBlocks, type QueueHint } from "@/lib/catalog/search-queue";
@@ -287,9 +287,14 @@ export async function loadIssueCovers(source: CatalogSource, issueId: string): P
   return body ? variantCoversFrom(body) : [];
 }
 
-async function downloadChosenCover(source: Exclude<CatalogSource, "gcd">, issueId: string, imageUrl: string, primaryUrl: string | null) {
-  const prefix = source === "metron" ? "metron" : "cv";
-  const file = await downloadCover(imageUrl, coverFileKey(issueId, imageUrl, primaryUrl), undefined, { force: true, prefix });
+function coverPrefix(source: CatalogSource): "metron" | "cv" | "gcd" {
+  if (source === "gcd") return "gcd";
+  if (source === "comicvine") return "cv";
+  return "metron";
+}
+
+async function downloadChosenCover(source: CatalogSource, issueId: string, imageUrl: string, primaryUrl: string | null) {
+  const file = await downloadCover(imageUrl, coverFileKey(issueId, imageUrl, primaryUrl), undefined, { force: true, prefix: coverPrefix(source) });
   return { file, url: coverPublicPath(file), imageUrl };
 }
 
@@ -300,6 +305,7 @@ export async function linkIssueToCatalog(args: {
   useCover: boolean;
   fillMissing: boolean;
   overwrite?: boolean;
+  replaceExisting?: boolean;
   coverImageUrl: string | null;
 }): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null }> {
   if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish.", notice: null, queue: null };
@@ -311,12 +317,19 @@ export async function linkIssueToCatalog(args: {
   try {
     const loaded = await loadLinkTarget(args.source, args.hit);
     if (!loaded.ok) return { ...loaded, notice: null, queue: null };
-    const covers = loaded.covers.length > 0 ? loaded.covers : args.hit.covers;
+    const covers = loaded.covers.length > 0 ? loaded.covers : loaded.hit.covers;
+    const fromLoaded = covers[0]?.imageUrl ?? loaded.hit.coverUrl;
     const chosen =
-      args.coverImageUrl && (covers.some((cover) => cover.imageUrl === args.coverImageUrl) || args.coverImageUrl === args.hit.coverUrl)
+      args.coverImageUrl && (covers.some((cover) => cover.imageUrl === args.coverImageUrl) || args.coverImageUrl === loaded.hit.coverUrl)
         ? args.coverImageUrl
-        : covers[0]?.imageUrl ?? args.hit.coverUrl;
-    const cover = args.source !== "gcd" && args.useCover && chosen ? await downloadChosenCover(args.source, args.hit.id, chosen, covers[0]?.imageUrl ?? chosen) : null;
+        : fromLoaded;
+    const manual = readManualLink(comic.manualLink);
+    const saveCover = shouldSaveCatalogCover({
+      useCover: args.useCover,
+      userCover: manual.userCover,
+      replaceExisting: args.replaceExisting === true,
+    });
+    const cover = saveCover && chosen ? await downloadChosenCover(args.source, args.hit.id, chosen, covers[0]?.imageUrl ?? chosen) : null;
     const update = linkUpdate({
       source: args.source,
       hit: loaded.hit,
@@ -374,7 +387,16 @@ async function loadLinkTarget(
   if (source === "gcd") {
     const issue = await createGcdCatalog().issue(hit.id);
     const detail = issue ? gcdDetails(issue) : null;
-    return { ok: true, hit: issue ? gcdHit(issue) : hit, detail, covers: [], issueUrl: null, seriesUrl: null, embeddedMetronIssueId: issue?.metronIssueId ?? null };
+    const scan = issue?.coverUrl?.trim() ? issue.coverUrl : null;
+    return {
+      ok: true,
+      hit: issue ? gcdHit(issue) : hit,
+      detail,
+      covers: scan ? [{ label: "Cover", imageUrl: scan }] : [],
+      issueUrl: null,
+      seriesUrl: null,
+      embeddedMetronIssueId: issue?.metronIssueId ?? null,
+    };
   }
   if (source === "metron") {
     if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
@@ -430,13 +452,13 @@ export async function repullLinkedCover(comicId: string): Promise<{ ok: boolean;
 export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; message: string; notice: string | null }> {
   const comic = await prisma.comic.findUnique({
     where: { id: comicId },
-    select: { id: true, series: true, issue: true, issueNo: true, metronIssueId: true, comicvineIssueId: true, manualLink: true },
+    select: { id: true, series: true, issue: true, issueNo: true, metronIssueId: true, comicvineIssueId: true, gcdIssueId: true, manualLink: true },
   });
   if (!comic) return { ok: false, message: "That issue is not on the shelf.", notice: null };
   const label = issueLabel(comic.series, comic.issueNo, comic.issue);
   const link = readManualLink(comic.manualLink);
   try {
-    const chosen = await chosenImage(link, comic.comicvineIssueId);
+    const chosen = await chosenImage(link, comic.comicvineIssueId, comic.gcdIssueId);
     if (!chosen) return { ok: false, message: "Link an issue before re-pulling its cover.", notice: null };
     const saved = await downloadChosenCover(chosen.source, chosen.issueId, chosen.imageUrl, chosen.primaryUrl);
     const next = withoutUserCover(link);
@@ -466,9 +488,10 @@ export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; m
 async function chosenImage(
   link: ReturnType<typeof readManualLink>,
   comicvineIssueId: string | null,
-): Promise<{ source: "metron" | "comicvine"; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
+  gcdIssueId: string | null,
+): Promise<{ source: CatalogSource; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
   if (link.coverImageUrl && link.coverSource) {
-    const issueId = link.coverSource === "metron" ? link.metronIssueId : link.comicvineIssueId;
+    const issueId = link.coverSource === "metron" ? link.metronIssueId : link.coverSource === "comicvine" ? link.comicvineIssueId : link.gcdIssueId;
     if (issueId) return { source: link.coverSource, issueId, imageUrl: link.coverImageUrl, primaryUrl: link.coverImageUrl };
   }
   if (link.metronIssueId) {
@@ -478,11 +501,17 @@ async function chosenImage(
     if (imageUrl) return { source: "metron", issueId: link.metronIssueId, imageUrl, primaryUrl: imageUrl };
   }
   const cvId = link.comicvineIssueId ?? (comicvineIssueId && /^\d+$/.test(comicvineIssueId) ? comicvineIssueId : null);
-  if (!cvId) return null;
-  const settings = await getSettings();
-  if (!settings.comicvine.apiKey) throw new Error("Add a Comic Vine API key in Settings to search.");
-  const body = await comicVineIssue(settings.comicvine.apiKey, cvId);
-  const imageUrl = body ? variantCoversFrom(body)[0]?.imageUrl ?? null : null;
-  if (!imageUrl) return null;
-  return { source: "comicvine", issueId: cvId, imageUrl, primaryUrl: imageUrl };
+  if (cvId) {
+    const settings = await getSettings();
+    if (!settings.comicvine.apiKey) throw new Error("Add a Comic Vine API key in Settings to search.");
+    const body = await comicVineIssue(settings.comicvine.apiKey, cvId);
+    const imageUrl = body ? variantCoversFrom(body)[0]?.imageUrl ?? null : null;
+    if (imageUrl) return { source: "comicvine", issueId: cvId, imageUrl, primaryUrl: imageUrl };
+  }
+  const gcdId = link.gcdIssueId ?? (gcdIssueId && /^\d+$/.test(gcdIssueId) ? gcdIssueId : null);
+  if (!gcdId) return null;
+  const issue = await createGcdCatalog().issue(gcdId);
+  const scan = issue?.coverUrl?.trim() ? issue.coverUrl : null;
+  if (!scan) return null;
+  return { source: "gcd", issueId: gcdId, imageUrl: scan, primaryUrl: scan };
 }

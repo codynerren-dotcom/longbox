@@ -11,6 +11,7 @@ export const RATE_GATES = [
   "reserveGcdRequest",
   "reserveComicVineRequest",
   "reserveCoverDownload",
+  "reserveImageDownload",
   "reserveEbayRequest",
 ] as const;
 

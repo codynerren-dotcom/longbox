@@ -118,10 +118,11 @@ export async function searchGcdMatches(
 }
 
 /**
- * Cover scans are not part of the CC BY-SA data grant, and the issue `cover`
- * field is either a scan URL or "". Rows link to the GCD cover page instead.
+ * The issue `cover` field is that issue's scan (a variant has its own, not the parent's).
+ * An empty string stays a placeholder. `gcdDetails` still leaves imageUrl null so backfill does not download scans.
  */
 export function gcdHit(issue: GcdIssueRow): MatchHit {
+  const coverUrl = issue.coverUrl?.trim() ? issue.coverUrl : null;
   return {
     source: "gcd",
     id: issue.id,
@@ -131,8 +132,8 @@ export function gcdHit(issue: GcdIssueRow): MatchHit {
     variant: issue.variant,
     coverDate: issue.coverDate,
     publisher: issue.publisher,
-    coverUrl: null,
-    covers: [],
+    coverUrl,
+    covers: coverUrl ? [{ label: "Cover", imageUrl: coverUrl }] : [],
     barcode: issue.barcode,
     isbn: issue.isbn ?? null,
     price: issue.price,

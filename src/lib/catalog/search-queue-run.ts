@@ -73,6 +73,7 @@ function requestPayload(input: QueueRequest): QueuePayload {
     useCover: input.useCover,
     fillMissing: input.fillMissing,
     overwrite: input.overwrite,
+    replaceExisting: input.replaceExisting,
     coverImageUrl: input.coverImageUrl,
   };
 }
@@ -212,6 +213,7 @@ async function runRelink(
       useCover: Boolean(payload.useCover),
       fillMissing: payload.fillMissing !== false,
       overwrite: Boolean(payload.overwrite),
+      replaceExisting: payload.replaceExisting === true,
       coverImageUrl: payload.coverImageUrl ?? null,
     });
     if (!result.ok && result.notice) {

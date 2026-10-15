@@ -5,7 +5,7 @@ export type ManualLink = {
   comicvineIssueId: string | null;
   gcdIssueId: string | null;
   coverImageUrl: string | null;
-  coverSource: "metron" | "comicvine" | null;
+  coverSource: "metron" | "comicvine" | "gcd" | null;
   /** True when the cover on the shelf is a photo the user uploaded. Backfill must leave it alone. */
   userCover: boolean;
   /** Original photo, kept beside the resized cover for a later recognition pass. Not served publicly. */
@@ -47,7 +47,7 @@ function httpsUrl(value: unknown): string | null {
 export function readManualLink(value: unknown): ManualLink {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ...EMPTY };
   const row = value as Record<string, unknown>;
-  const coverSource = row.coverSource === "metron" || row.coverSource === "comicvine" ? row.coverSource : null;
+  const coverSource = row.coverSource === "metron" || row.coverSource === "comicvine" || row.coverSource === "gcd" ? row.coverSource : null;
   const coverImageUrl = httpsUrl(row.coverImageUrl);
   const originalFile = typeof row.originalFile === "string" && ORIGINAL_FILE.test(row.originalFile) ? row.originalFile : null;
   return {
@@ -76,12 +76,19 @@ export function withLinkedId(current: unknown, source: CatalogSource, issueId: s
   else if (source === "comicvine") link.comicvineIssueId = id;
   else link.gcdIssueId = id;
   const image = httpsUrl(coverImageUrl);
-  if (image && source !== "gcd") {
+  if (image) {
     link.coverImageUrl = image;
     link.coverSource = source;
     link.userCover = false;
   }
   return link;
+}
+
+/** A catalog cover is saved only when Use this cover is on, and a photo stays unless Replace existing is on. */
+export function shouldSaveCatalogCover(args: { useCover: boolean; userCover: boolean; replaceExisting: boolean }): boolean {
+  if (!args.useCover) return false;
+  if (args.userCover && !args.replaceExisting) return false;
+  return true;
 }
 
 /** Remember that the cover file was uploaded, and where the untouched photo lives. */

@@ -22,6 +22,7 @@ export type QueuePayload = {
   useCover?: boolean;
   fillMissing?: boolean;
   overwrite?: boolean;
+  replaceExisting?: boolean;
   coverImageUrl?: string | null;
 };
 
@@ -64,6 +65,7 @@ export type QueueRequest = {
   useCover?: boolean;
   fillMissing?: boolean;
   overwrite?: boolean;
+  replaceExisting?: boolean;
   coverImageUrl?: string | null;
 };
 
@@ -222,6 +224,7 @@ export function readQueuePayload(value: unknown): QueuePayload {
     useCover: typeof row.useCover === "boolean" ? row.useCover : undefined,
     fillMissing: typeof row.fillMissing === "boolean" ? row.fillMissing : undefined,
     overwrite: typeof row.overwrite === "boolean" ? row.overwrite : undefined,
+    replaceExisting: typeof row.replaceExisting === "boolean" ? row.replaceExisting : undefined,
     coverImageUrl: typeof row.coverImageUrl === "string" || row.coverImageUrl === null ? row.coverImageUrl : undefined,
   };
 }

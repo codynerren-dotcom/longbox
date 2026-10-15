@@ -1,6 +1,7 @@
 import {
   COVER_MIN_GAP_MS,
   EBAY_MIN_GAP_MS,
+  imagePaceName,
   notePacePause,
   pauseLabel,
   planPaceAcquire,
@@ -41,6 +42,21 @@ export async function reserveCoverDownload(now = Date.now()): Promise<void> {
 
 export async function noteCoverPause(resumeAt: number): Promise<void> {
   await rememberPace("covers", resumeAt);
+}
+
+/**
+ * One image download. files1.comics.org and comicvine.gamespot.com each have
+ * their own one-per-second window, separate from the GCD and Comic Vine API budgets.
+ * Other cover hosts stay on the shared cover window.
+ */
+export async function reserveImageDownload(url: URL, now = Date.now()): Promise<void> {
+  const name = imagePaceName(url.hostname);
+  const source = name === "gcd-images" ? "GCD image" : name === "comicvine-images" ? "Comic Vine image" : "Cover download";
+  await reservePace(name, now, COVER_MIN_GAP_MS, source);
+}
+
+export async function noteImagePause(url: URL, resumeAt: number): Promise<void> {
+  await rememberPace(imagePaceName(url.hostname), resumeAt);
 }
 
 /** One eBay token request. Two seconds apart, remembered across restarts. */

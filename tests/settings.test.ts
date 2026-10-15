@@ -147,6 +147,26 @@ describe("settings resolution", () => {
     expect((await migrated.view()).metron.username).toEqual({ kind: "plain", source: "database", value: "legacy-user", mask: null });
   });
 
+  it("stores the GCD password as ciphertext and leaves the username visible", async () => {
+    const repo = memoryRepo();
+    const service = createSettingsService({ repo, key, env: env() });
+    await service.savePlain("gcd.username", "gcd-user");
+    await service.saveSecret("gcd.password", "gcd-secret");
+    const username = repo.rows.find((row) => row.key === "gcd.username");
+    const password = repo.rows.find((row) => row.key === "gcd.password");
+    expect(username).toMatchObject({ secret: null, plain: "gcd-user" });
+    expect(password?.secret?.startsWith("v1.")).toBe(true);
+    expect(password?.secret).not.toContain("gcd-secret");
+    const saved = await service.get();
+    expect(saved.gcd.username).toBe("gcd-user");
+    expect(saved.gcd.password).toBe("gcd-secret");
+    expect(saved.gcd.configured).toBe(true);
+    const view = await service.view();
+    expect(view.gcd.username).toEqual({ kind: "plain", source: "database", value: "gcd-user", mask: null });
+    expect(view.gcd.password).toEqual({ kind: "secret", source: "database", value: null, mask: SECRET_MASK });
+    expect(JSON.stringify(view)).not.toContain("gcd-secret");
+  });
+
   it("stores secrets as ciphertext", async () => {
     const repo = memoryRepo();
     const service = createSettingsService({ repo, key, env: env() });

@@ -134,6 +134,7 @@ export async function linkMatchAction(args: {
   useCover: boolean;
   fillMissing: boolean;
   overwrite?: boolean;
+  replaceExisting?: boolean;
   coverImageUrl: string | null;
 }): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null }> {
   const result = await linkIssueToCatalog(args);

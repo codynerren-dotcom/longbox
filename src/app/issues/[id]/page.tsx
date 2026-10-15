@@ -152,7 +152,8 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           metronIssueUrl={comic.metronIssueUrl}
           comicvineIssueId={comic.comicvineIssueId}
           gcdIssueId={comic.gcdIssueId}
-          canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
+          canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId || link.gcdIssueId || comic.gcdIssueId)}
+          userCover={link.userCover}
         />
 
         <div id="editor">

@@ -23,7 +23,7 @@ export function SettingsForm({ view }: { view: SettingsView }) {
       />
       <CredentialCard
         title="Grand Comics Database"
-        detail="Optional. Anonymous requests stay at 30 per hour. A saved username and password switches that window to 2,000 per day."
+        detail="Optional. Save the username and password here. The password is encrypted. Compose does not pass them. Anonymous requests stay at 30 per hour. A saved pair uses 2,000 per day."
         service="gcd"
         inputs={[
           { name: "gcd.username", label: "Username", field: view.gcd.username },

@@ -28,6 +28,8 @@ type Props = {
   comicvineIssueId: string | null;
   gcdIssueId: string | null;
   canRepull: boolean;
+  /** True when the shelf cover is a photo Cody uploaded. An automatic catalog cover stays false. */
+  userCover: boolean;
 };
 
 export function MatchPanel(props: Props) {
@@ -149,7 +151,8 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
   const [selected, setSelected] = useState<MatchHit | null>(null);
   const [covers, setCovers] = useState<MatchCover[]>([]);
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
-  const [useCover, setUseCover] = useState(true);
+  const [useCover, setUseCover] = useState(!props.userCover);
+  const [replaceExisting, setReplaceExisting] = useState(false);
   const [fillMissing, setFillMissing] = useState(true);
   const [overwrite, setOverwrite] = useState(false);
   const [gcdRef, setGcdRef] = useState("");
@@ -258,11 +261,16 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
     });
   }
 
+  function coverChoice(hit: MatchHit) {
+    setUseCover(!props.userCover && Boolean(hit.coverUrl || hit.covers.length > 0));
+    setReplaceExisting(false);
+  }
+
   function choose(hit: MatchHit) {
     setSelected(hit);
     setCovers(hit.covers);
     setCoverUrl(hit.coverUrl);
-    setUseCover(Boolean(hit.coverUrl || hit.covers.length > 0));
+    coverChoice(hit);
     start(async () => {
       const loaded = await loadMatchCoversAction(hit.source, hit.id);
       if (loaded.length > 0) {
@@ -295,7 +303,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
       setSelected(hit);
       setCovers(hit.covers);
       setCoverUrl(hit.coverUrl);
-      setUseCover(false);
+      coverChoice(hit);
     });
   }
 
@@ -307,18 +315,20 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
         comicId: props.comicId,
         source: selected.source,
         hit: selected,
-        useCover: source === "gcd" ? false : useCover,
+        useCover,
         fillMissing,
         overwrite: source === "gcd" && overwrite,
+        replaceExisting,
         coverImageUrl: useCover ? coverUrl : null,
       });
       props.onNotice(
         result.notice ?? "",
         queued(result.queue, {
           hit: selected,
-          useCover: source === "gcd" ? false : useCover,
+          useCover,
           fillMissing,
           overwrite: source === "gcd" && overwrite,
+          replaceExisting,
           coverImageUrl: useCover ? coverUrl : null,
         }),
       );
@@ -346,7 +356,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
           <Tab active={source === "gcd"} onClick={() => selectSource("gcd")}>GCD</Tab>
         </div>
         {source === "gcd" ? (
-          <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Each row is one issue, including variants. Cover scans stay on the GCD cover page, so this link does not download one.</p>
+          <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Each row is one issue, including variants.</p>
         ) : null}
         {ready ? null : (
           <p className="mt-3 text-sm text-mist">
@@ -435,12 +445,16 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
                 ))}
               </div>
             ) : null}
-            {source === "gcd" ? null : (
-              <label className="mt-3 flex items-center gap-2 text-sm text-paper">
-                <input type="checkbox" checked={useCover} onChange={(event) => setUseCover(event.target.checked)} />
-                Use this cover
+            <label className="mt-3 flex items-center gap-2 text-sm text-paper">
+              <input type="checkbox" checked={useCover} onChange={(event) => setUseCover(event.target.checked)} />
+              Use this cover
+            </label>
+            {props.userCover ? (
+              <label className="mt-2 flex items-center gap-2 text-sm text-paper">
+                <input type="checkbox" checked={replaceExisting} onChange={(event) => setReplaceExisting(event.target.checked)} />
+                Replace existing
               </label>
-            )}
+            ) : null}
             <label className="mt-2 flex items-center gap-2 text-sm text-paper">
               <input type="checkbox" checked={fillMissing} onChange={(event) => setFillMissing(event.target.checked)} />
               Fill missing details
@@ -475,23 +489,15 @@ function gcdFactLine(hit: MatchHit): string {
 }
 
 function CoverMark({ hit }: { hit: MatchHit }) {
-  if (hit.coverUrl) return <Thumb src={hit.coverUrl} alt="" />;
-  if (hit.coverPageUrl) {
-    return (
-      <a href={hit.coverPageUrl} target="_blank" rel="noreferrer" className="flex h-16 w-11 shrink-0 items-center justify-center rounded-md bg-panel2 px-1 text-center text-[10px] font-semibold leading-tight text-comic">
-        Cover on GCD
-      </a>
-    );
-  }
-  return <Thumb src={null} alt="" />;
+  return <Thumb src={hit.coverUrl} alt="" />;
 }
 
 function Thumb({ src, alt }: { src: string | null; alt: string }) {
   return src ? (
-    // Catalog thumbs are remote https images.
+    // Catalog thumbs are remote https images. Lazy so a long variant list does not fetch every scan at once.
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={src} alt={alt} className="h-16 w-11 rounded-md object-cover" />
+    <img src={src} alt={alt} loading="lazy" decoding="async" className="h-16 w-11 rounded-md object-cover" />
   ) : (
-    <span className="block h-16 w-11 rounded-md bg-panel2" />
+    <span aria-label="No cover" className="block h-16 w-11 rounded-md bg-panel2" />
   );
 }

@@ -5,19 +5,19 @@ import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "no
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
-import { noteCoverPause, reserveCoverDownload } from "@/lib/catalog/rate-gate";
+import { noteImagePause, reserveImageDownload } from "@/lib/catalog/rate-gate";
 import { normalizeMetronBudget, pauseLabel } from "@/lib/catalog/rate-limit";
 import { emptyBudget, retryAfterFromMessage, retryAfterMs, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
 const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
-const CATALOG_FILE = "(?:metron|cv)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
+const CATALOG_FILE = "(?:metron|cv|gcd)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
 const USER_FILE = "user-[a-z0-9]{20,32}\\.webp";
 const USER_ORIGINAL = "user-[a-z0-9]{20,32}-original\\.(?:jpg|png|webp|heic|heif)";
 const PUBLIC_COVER = new RegExp(`^(?:${CATALOG_FILE}|${USER_FILE})$`);
 const STORED_COVER = new RegExp(`^(?:${CATALOG_FILE}|${USER_FILE}|${USER_ORIGINAL})$`);
 const COMIC_ID = /^[a-z0-9]{20,32}$/;
 const ORIGINAL_EXT = /^(?:jpg|png|webp|heic|heif)$/;
-export type CoverPrefix = "metron" | "cv";
+export type CoverPrefix = "metron" | "cv" | "gcd";
 const EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif"] as const;
 const LOCK_NAME = "backfill.lock";
 const BUDGET_NAME = "metron-budget.json";
@@ -202,7 +202,7 @@ export async function downloadCover(
   if (parsed.protocol === "http:") parsed.protocol = "https:";
   if (parsed.protocol !== "https:") throw new Error("Cover image URL is not https.");
 
-  await reserveCoverDownload();
+  await reserveImageDownload(parsed);
   const started = Date.now();
   let response: Response;
   try {
@@ -222,7 +222,7 @@ export async function downloadCover(
     const body = await response.text().catch(() => "");
     const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60_000;
     const resumeAt = Date.now() + delay;
-    await noteCoverPause(resumeAt);
+    await noteImagePause(parsed, resumeAt);
     throw new Error(pauseLabel("Cover download", resumeAt));
   }
   if (!response.ok) throw new Error(`Cover image returned ${response.status}.`);

@@ -246,7 +246,7 @@ describe("suspect matches", () => {
 });
 
 describe("GCD catalog", () => {
-  it("parses an issue and never uses the cover scan url", () => {
+  it("keeps the cover scan on the match row and off automatic backfill", () => {
     const parsed = parseGcdIssue(
       {
         api_url: "https://www.comics.org/api/issue/256114/",
@@ -271,12 +271,15 @@ describe("GCD catalog", () => {
     );
     expect(parsed?.seriesName).toBe("The Amazing Spider-Man Facsimile Edition");
     expect(parsed && "cover" in parsed).toBe(false);
+    expect(parsed?.coverUrl).toBe("https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg");
     const details = gcdDetails(parsed as GcdIssueRow);
     expect(details.imageUrl).toBeNull();
     expect(details.writer).toBe("Stan Lee");
     expect(details.releaseDate?.toISOString()).toBe("2022-03-09T12:00:00.000Z");
-    expect(gcdHit(parsed as GcdIssueRow).coverUrl).toBeNull();
-    expect(gcdHit(parsed as GcdIssueRow).covers).toEqual([]);
+    expect(gcdHit(parsed as GcdIssueRow).coverUrl).toBe("https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg");
+    expect(gcdHit(parsed as GcdIssueRow).covers).toEqual([
+      { label: "Cover", imageUrl: "https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg" },
+    ]);
   });
 
   it("does not call a GCD barcode URL", async () => {

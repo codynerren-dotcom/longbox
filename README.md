@@ -43,7 +43,7 @@ See `.env.example`. Nothing secret is committed.
 | `METRON_API_BASE` | Default `https://metron.cloud/api`. |
 | `COVERS_DIR` | Where downloaded covers are stored. Compose uses `/data/covers` on the `longbox_covers` volume. Unset on the host, the app uses `./data/covers`. |
 | `GCD_API_BASE` | Default `https://www.comics.org`. |
-| `GCD_USERNAME` / `GCD_PASSWORD` | Optional GCD basic auth. Blank stays anonymous (30 per hour). A saved pair uses 2,000 per day. |
+| `GCD_USERNAME` / `GCD_PASSWORD` | Host fallback only. Compose does not pass them. Save the pair in Settings (the password is encrypted). Blank stays anonymous (30 per hour). A saved pair uses 2,000 per day. |
 | `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | Reserved for the eBay price stub. Unused in v1. |
 | `LONGBOX_LOG` | Set to `off` to stop writing Logs. Unset, logging stays on. |
 | `LONGBOX_COMMIT` | Shown on Settings → About. Compose passes the git commit when it is set. |
@@ -78,7 +78,7 @@ Issues start without cover art. The backfill asks Metron for each one that does 
 
 A Comic Vine id with no Metron id is looked up on Metron with `/api/issue/?cv_id=`. A GCD id uses `/api/issue/?gcd_id=`. One exact issue is linked, and its cover and blank fields follow the usual backfill rules. A hand-picked Metron id and an uploaded cover stay as they are. A Metron match stores the Comic Vine id and GCD id from that Metron issue when those fields are empty. The same pass runs at the start of cover backfill for copies that already have a Comic Vine or GCD id.
 
-When Metron has no confident match, the Grand Comics Database (`GCD_API_BASE`, default `https://www.comics.org`) is the fallback. GCD calls stay at least two seconds apart and stop after 30 in an hour. Issue data is CC BY-SA: enriched fields show “Data from GCD”. Cover scans are not downloaded or hotlinked. The issue page links to “View on GCD” and the GCD cover page. The Match panel has a GCD tab.
+When Metron has no confident match, the Grand Comics Database (`GCD_API_BASE`, default `https://www.comics.org`) is the fallback. GCD calls stay at least two seconds apart and stop after 30 in an hour. Issue data is CC BY-SA: enriched fields show “Data from GCD”. The Match panel GCD tab shows each issue's cover scan (`files1.comics.org`, the `w400` URL from the API) and a placeholder when that field is blank. Linking a GCD issue or variant, or a Comic Vine issue, with Use this cover downloads that image into the covers volume and stores the source and URL. A variant link saves that variant's scan. Use this cover starts checked when the copy has no cover or only an automatic one. An uploaded or photographed cover stays until Replace existing is checked. The issue page still links to “View on GCD”.
 
 A linked copy whose release year and cover year differ by more than two years, or that looks like a facsimile or other reprint edition, shows up under **Review suspect matches** on Cover backfill (also linked from Settings). Unlink and Re-match are explicit. A hand-picked Metron, Comic Vine, or GCD link is left in place until you unlink it.
 
@@ -105,6 +105,7 @@ Catalog calls to Metron, the Grand Comics Database, and Comic Vine share one lim
 - **Metron.** Read `X-RateLimit-Burst-*` and `X-RateLimit-Sustained-*` on every response. Before the first response the fallback is 20 per minute and 5,000 per day. Stop while one request is still remaining. Space the burst (about one request every 3 seconds at 20 per minute). A `429` waits out `Retry-After`.
 - **GCD.** Anonymous calls use 30 per sliding hour. Saved basic auth in Settings uses 2,000 per day. `Retry-After` is waited out in full.
 - **Comic Vine.** 200 requests per resource (issues, volumes, search, and the other endpoint types) per hour, at most one per second. HTTP 420, HTTP 429, and JSON status 107 pause that resource.
+- **Cover images.** Downloads from `files1.comics.org` and `comicvine.gamespot.com` use their own persisted gaps of at most one per second. They do not spend the GCD or Comic Vine API budgets. GCD has not published an image cap and asks tools not to bulk-download scans. Comic Vine's 200 per resource per hour applies to API resources, not image files.
 
 Background jobs pause with a reason and a resume time, then continue from a saved cursor. Match-panel searches use the same budget and keep a small slice so the shelf can still search while a job runs. When a source is paused, the UI says so, for example `Metron paused until 2:14 PM`. Settings → API usage shows used, limit, reset, and that pause for each source.
 
