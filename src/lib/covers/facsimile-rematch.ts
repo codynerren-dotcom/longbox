@@ -10,7 +10,7 @@ import { coversDir, downloadCover } from "@/lib/covers/files";
 import { resolveGcdCover } from "@/lib/covers/gcd-match";
 import { readEditionJob, writeEditionJob } from "@/lib/covers/job-state";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
-import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport } from "@/lib/covers/metron-client";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport } from "@/lib/covers/metron-client";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
@@ -304,21 +304,22 @@ export async function rematchShelfCopy(
             }
           }
           const keep = keepPrintingCover && !filename;
+          const yearReview = !printing.active && decision.coverReview ? needsReviewNote(decision.coverReview) : null;
           await clearAutomaticLink(comicId, "Re-matching.", { keepCover: keep });
           await applyEnrichment(comicId, detail, {
             metronIssueId: decision.issue.id,
             metronSeriesId: decision.issue.seriesId,
             ...(filename
-              ? { coverFile: filename, coverUrl: coverPublicPath(filename), coverStatus: "matched", coverNote: null }
+              ? { coverFile: filename, coverUrl: coverPublicPath(filename), coverStatus: "matched", coverNote: yearReview }
               : keep
                 ? { coverNote: needsReviewNote(note), coverStatus: comic.coverFile ? comic.coverStatus : null }
-                : { coverFile: null, coverUrl: null, coverStatus: null, coverNote: note }),
+                : { coverFile: null, coverUrl: null, coverStatus: null, coverNote: yearReview ?? note }),
             coverCheckedAt: new Date(),
           });
           const year = catalogYear(decision.issue) ?? (detail?.releaseDate ? detail.releaseDate.getUTCFullYear() : null);
           await writeCatalogYear(comicId, year);
           if (printing.active) await writePrintingCover(comicId, filename ? printing.printing : null);
-          const review = filename ? "" : note ? ` ${needsReviewNote(note)}` : "";
+          const review = yearReview ? ` ${yearReview}` : filename ? "" : note ? ` ${needsReviewNote(note)}` : "";
           const message = `Matched Metron ${decision.issue.id} (${decision.issue.seriesName} #${decision.issue.number}), score ${decision.score}.${review}`;
           await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, metronIssueId: decision.issue.id, score: decision.score } });
           return finish(message);
@@ -377,6 +378,15 @@ const linkedSelect = {
 } as const;
 
 export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string }> {
+  armMetronJobBudget();
+  try {
+    return await rematchAllSuspectCopiesBody();
+  } finally {
+    clearMetronJobBudget();
+  }
+}
+
+async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: string }> {
   const [comics, years, printings] = await Promise.all([
     prisma.comic.findMany({
       where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
@@ -427,6 +437,15 @@ export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message:
 
 async function runStoredFacsimileRematch(): Promise<boolean> {
   if (!(await metronBasicAuth())) return false;
+  armMetronJobBudget();
+  try {
+    return await runStoredFacsimileRematchBody();
+  } finally {
+    clearMetronJobBudget();
+  }
+}
+
+async function runStoredFacsimileRematchBody(): Promise<boolean> {
   const existing = readEditionJob();
   writeEditionJob({
     state: "running",

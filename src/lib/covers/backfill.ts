@@ -5,7 +5,7 @@ import { detectEdition } from "@/lib/covers/edition";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { coverFileKey } from "@/lib/covers/files";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
-import { keptPrintingCover } from "@/lib/covers/printing-cover";
+import { keptPrintingCover, needsReviewNote } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverDecision, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
 
 export type BackfillSummary = {
@@ -14,6 +14,8 @@ export type BackfillSummary = {
   unmatched: number;
   skipped: number;
   stoppedReason: string | null;
+  /** Set when a light Metron job budget asked the run to continue later. */
+  resumeAt?: number | null;
 };
 
 export function coverPublicPath(filename: string): string {
@@ -59,6 +61,7 @@ export async function backfillCovers(args: {
     unmatched: 0,
     skipped: 0,
     stoppedReason: null,
+    resumeAt: null,
   };
 
   let gcdClosedUntil = 0;
@@ -73,6 +76,7 @@ export async function backfillCovers(args: {
     if (!(error instanceof MetronBudgetError)) return false;
     const pause = await recordBudgetPause("Cover backfill", error);
     summary.stoppedReason = budgetPauseMessage("Cover backfill", pause);
+    if (pause.budget === "Metron job") summary.resumeAt = pause.resumeAt;
     args.onProgress?.(summary);
     return true;
   }
@@ -369,6 +373,7 @@ export async function backfillCovers(args: {
           args.onProgress?.(summary);
           continue;
         }
+        const review = printing.active ? null : decision.coverReview;
         await args.markMatched(
           comic.id,
           {
@@ -376,6 +381,7 @@ export async function backfillCovers(args: {
             coverFile: filename,
             coverUrl: coverPublicPath(filename),
             ...(printing.active ? { coverNote: null, printing: printing.printing } : {}),
+            ...(review ? { coverNote: needsReviewNote(review) } : {}),
           },
           detail,
         );

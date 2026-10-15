@@ -1,10 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { groupSeries, seriesCardCountLabel, type ShelfComic } from "@/lib/collection";
 import { backfillCovers, needsCover } from "@/lib/covers/backfill";
+import { scoreCandidate } from "@/lib/covers/edition";
 import { emptyBudget, METRON_DAILY_LIMIT, METRON_MIN_INTERVAL_MS, MetronLimiter, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 import { chooseIssue, narrowSeries, resolveCover } from "@/lib/covers/match";
-import { basicAuthHeader, createMetronCoverLookup, mapIssue, mapSeries, type MetronTransport } from "@/lib/covers/metron-client";
+import {
+  armMetronJobBudget,
+  basicAuthHeader,
+  clearMetronJobBudget,
+  createMetronCoverLookup,
+  mapIssue,
+  mapSeries,
+  METRON_JOB_LIMIT,
+  type MetronTransport,
+} from "@/lib/covers/metron-client";
 import { MetronBudgetError, type CoverLookup, type CoverQuery, type CoverRecord, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
+import * as logWrite from "@/lib/log/write";
 import { safeImageUrl } from "@/lib/url";
 
 const image = "https://static.metron.cloud/media/issue/saga-1.jpg";
@@ -325,6 +336,132 @@ describe("Metron cover matching", () => {
     ).toMatchObject({ status: "matched", issue: { id: "b2a", imageUrl: image } });
   });
 
+  it("breaks a shared series on the issue number when every detail UPC is null", () => {
+    const shared = (id: string, number: string, coverYear: number) =>
+      issue({
+        id,
+        seriesId: "8",
+        seriesName: "Spawn",
+        number,
+        coverYear,
+        seriesYear: 1992,
+        publisher: "Image",
+        upc: null,
+        upcs: [],
+        detailFetched: true,
+      });
+    expect(
+      chooseIssue(
+        [shared("101", "1", 1992), shared("122", "22", 1994), shared("123", "23", 1994)],
+        query({ series: "Spawn", issueNo: "1", coverYear: 1992, publisher: "Image", barcode: "70985300001100111" }),
+        "1",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "101" } });
+
+    expect(
+      chooseIssue(
+        [
+          issue({ id: "b2", seriesId: "4", seriesName: "BRZRKR", number: "2", coverYear: 2021, publisher: "Boom", upc: null, upcs: [] }),
+          issue({ id: "b4", seriesId: "4", seriesName: "BRZRKR", number: "4", coverYear: 2021, publisher: "Boom", upc: null, upcs: [] }),
+        ],
+        query({ series: "BRZRKR", issueNo: "2A", issue: "2A", coverYear: 2021, publisher: "Boom", barcode: "79394500001100121" }),
+        "2A",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "b2" } });
+
+    const yearGap = chooseIssue(
+      [
+        issue({ id: "old", seriesId: "1", seriesName: "Spawn", number: "1", coverYear: 1960, seriesYear: 1960, publisher: "Image", upc: null }),
+        issue({ id: "other", seriesId: "9", seriesName: "King Spawn", number: "9", coverYear: 2021, seriesYear: 2021, publisher: "Image", upc: null }),
+      ],
+      query({ series: "Spawn", issueNo: "1", coverYear: 1992, publisher: "Image", barcode: "70985300001100111" }),
+      "1",
+      "barcode",
+    );
+    expect(yearGap.status).toBe("unmatched");
+    if (yearGap.status === "unmatched") expect(yearGap.reason).toMatch(/years apart/);
+  });
+
+  it("keeps Ewoks when the cover date is missing and only the series year disagrees", () => {
+    const shelf = query({ series: "Ewoks", issueNo: "1", coverYear: 1985, publisher: "Marvel", barcode: null });
+    const exact = chooseIssue(
+      [issue({ id: "ew", seriesName: "Ewoks", number: "1", coverYear: null, seriesYear: 2024, publisher: "Marvel" })],
+      shelf,
+      "1",
+      "series",
+    );
+    expect(exact).toMatchObject({ status: "matched", issue: { id: "ew" } });
+    if (exact.status === "matched") expect(exact.coverReview).toBeUndefined();
+
+    const suffix = chooseIssue(
+      [issue({ id: "sw", seriesName: "Star Wars: Ewoks", number: "1", coverYear: null, seriesYear: 2024, publisher: "Marvel" })],
+      shelf,
+      "1",
+      "series",
+    );
+    expect(suffix).toMatchObject({ status: "matched", issue: { id: "sw" } });
+    if (suffix.status === "matched") expect(suffix.coverReview).toBeUndefined();
+
+    const weaker = chooseIssue(
+      [issue({ id: "adv", seriesName: "Ewoks Adventures", number: "1", coverYear: null, seriesYear: 2024, publisher: "Marvel" })],
+      shelf,
+      "1",
+      "series",
+    );
+    expect(weaker).toMatchObject({ status: "matched", issue: { id: "adv" } });
+    if (weaker.status === "matched") expect(weaker.coverReview).toMatch(/cover date is missing/i);
+  });
+
+  it("scores a one-issue Special above the match line", async () => {
+    const copy = query({ series: "Doom Force", issueNo: "1", coverYear: 1992, publisher: "DC", barcode: null });
+    const candidate = {
+      seriesName: "Doom Force Special",
+      issueNo: "1",
+      variant: null,
+      coverYear: 1992,
+      releaseYear: null,
+      seriesYear: 1992,
+      upc: null,
+      publisher: "DC",
+    };
+    const plain = scoreCandidate(copy, candidate);
+    expect(plain.score).toBe(69);
+    expect(plain.auto).toBe(false);
+    const boosted = scoreCandidate(copy, { ...candidate, oneIssue: true });
+    expect(boosted.score).toBeGreaterThanOrEqual(75);
+    expect(boosted.auto).toBe(true);
+
+    const matched = await resolveCover(
+      copy,
+      lookup({
+        async searchSeries(name) {
+          if (name !== "Doom Force") return [];
+          return [series({ id: "s", name: "Doom Force Special", yearBegan: 1992, publisher: "DC", issueCount: 1 })];
+        },
+        async issuesForSeries() {
+          return [issue({ id: "df1", seriesId: "s", seriesName: "Doom Force Special", number: "1", coverYear: 1992, seriesYear: 1992, publisher: "DC" })];
+        },
+      }),
+    );
+    expect(matched).toMatchObject({ status: "matched", issue: { id: "df1" } });
+    if (matched.status === "matched") expect(matched.score).toBeGreaterThanOrEqual(75);
+
+    const longer = await resolveCover(
+      copy,
+      lookup({
+        async searchSeries() {
+          return [series({ id: "o", name: "Doom Force Special", yearBegan: 1992, publisher: "DC", issueCount: 12 })];
+        },
+        async issuesForSeries() {
+          throw new Error("a longer series is not opened");
+        },
+      }),
+    );
+    expect(longer.status).toBe("unmatched");
+  });
+
   it("matches Ewoks on the series year when the catalog store date is decades off, and logs both years when it still refuses", () => {
     const ewoks = issue({
       id: "ew",
@@ -549,6 +686,11 @@ describe("cover backfill", () => {
 });
 
 describe("Metron rate limit", () => {
+  afterEach(() => {
+    clearMetronJobBudget();
+    vi.restoreAllMocks();
+  });
+
   it("spaces requests about 20 per minute and stops at 5000 per day", async () => {
     let time = 0;
     const waits: number[] = [];
@@ -572,6 +714,10 @@ describe("Metron rate limit", () => {
   });
 
   it("backs off on 429 and sends basic auth", async () => {
+    const logs: string[] = [];
+    vi.spyOn(logWrite, "writeLog").mockImplementation(async (input) => {
+      logs.push(input.message);
+    });
     let time = 1_000_000;
     const waits: number[] = [];
     const { store } = memoryStore();
@@ -630,6 +776,7 @@ describe("Metron rate limit", () => {
     expect(urls[0]).toBe("https://metron.cloud/api/issue/?upc=07596060000100001");
     expect(waits).toContain(30_000);
     expect(calls).toBe(2);
+    expect(logs).toContain("Metron rate limit, backing off 30000ms.");
   });
 
   it("reads the detail UPC when a shared-prefix list leaves it off", async () => {
@@ -694,6 +841,69 @@ describe("Metron rate limit", () => {
       }),
     );
     expect(prefixOnly).toMatchObject({ status: "matched", issue: { id: "b2" } });
+  });
+
+  it("logs a Spawn #1 tie-break when detail UPCs are null and uses the issue number", async () => {
+    const logs: string[] = [];
+    vi.spyOn(logWrite, "writeLog").mockImplementation(async (input) => {
+      logs.push(input.message);
+    });
+    const cover = "https://static.metron.cloud/media/issue/spawn-1.jpg";
+    const list = (id: number, number: string, coverDate: string) => ({
+      id,
+      series: { id: 8, name: "Spawn", volume: 1, year_began: 1992 },
+      number,
+      issue: `Spawn (1992) #${number}`,
+      cover_date: coverDate,
+      image: cover,
+    });
+    const detail = (id: number, number: string, coverDate: string) => ({
+      ...list(id, number, coverDate),
+      upc: null,
+      sku: "SEP920001",
+      publisher: { name: "Image" },
+      variants: [{ name: "Cover A", image: cover, sku: "SEP920001", upc: null }],
+    });
+    const urls: string[] = [];
+    const { store } = memoryStore();
+    const transport: MetronTransport = {
+      limiter: new MetronLimiter(store, () => 0, async () => undefined, () => "2026-10-15"),
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => 0,
+      fetch: async (url) => {
+        const path = String(url);
+        urls.push(path);
+        if (path.includes("/issue/?upc=70985300001100111")) return Response.json({ results: [] });
+        if (path.includes("upc_starts_with=")) {
+          return Response.json({
+            results: [list(101, "1", "1992-05-01"), list(122, "22", "1994-08-01"), list(123, "23", "1994-09-01")],
+          });
+        }
+        if (path.endsWith("/issue/101/")) return Response.json(detail(101, "1", "1992-05-01"));
+        if (path.endsWith("/issue/122/")) return Response.json(detail(122, "22", "1994-08-01"));
+        if (path.endsWith("/issue/123/")) return Response.json(detail(123, "23", "1994-09-01"));
+        return Response.json({ results: [] });
+      },
+    };
+    const decision = await resolveCover(
+      query({ series: "Spawn", issueNo: "1", coverYear: 1992, publisher: "Image", barcode: "70985300001100111" }),
+      createMetronCoverLookup(transport),
+    );
+    expect(decision).toMatchObject({ status: "matched", via: "barcode", issue: { id: "101" } });
+    expect(urls.filter((url) => url.endsWith("/issue/101/") || url.endsWith("/issue/122/") || url.endsWith("/issue/123/"))).toHaveLength(3);
+    const line = logs.find((message) => message.includes("detail fetches 3"));
+    expect(line).toBeTruthy();
+    expect(line).toMatch(/tried 709853000011\./);
+    expect(line).toMatch(/candidates 101, 122, 123/);
+    expect(line).toMatch(/101 number=1 upc=null variantUpcs=null/);
+    expect(line).toMatch(/122 number=22 upc=null variantUpcs=null/);
+    expect(line).toMatch(/123 number=23 upc=null variantUpcs=null/);
+    expect(line).toMatch(/decision matched 101/);
+    const mapped = mapIssue(detail(101, "1", "1992-05-01"));
+    expect(mapped?.upc).toBeNull();
+    expect(mapped?.upcs).toEqual([]);
   });
 
   it("reads Expected available in N seconds when Retry-After is missing", async () => {
@@ -796,6 +1006,38 @@ describe("Metron rate limit", () => {
     };
     await createMetronCoverLookup(transport).searchSeries("Ghost Rider", { volume: 2, yearBegan: 1990 });
     expect(urls).toEqual(["https://metron.cloud/api/series/?name=Ghost+Rider&volume=2&year_began=1990"]);
+  });
+
+  it("yields a background job after 60 Metron requests and stays open when nothing armed it", async () => {
+    const logs: string[] = [];
+    vi.spyOn(logWrite, "writeLog").mockImplementation(async (input) => {
+      logs.push(input.message);
+    });
+    let time = 0;
+    const transport = (): MetronTransport => ({
+      limiter: new MetronLimiter(
+        memoryStore().store,
+        () => time,
+        async (ms) => {
+          time += ms;
+        },
+        () => "2026-10-15",
+      ),
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => time,
+      fetch: async () => Response.json({ results: [] }),
+    });
+
+    const open = createMetronCoverLookup(transport());
+    for (let n = 0; n < METRON_JOB_LIMIT + 1; n += 1) await open.issuesByUpc(String(n));
+
+    armMetronJobBudget();
+    const limited = createMetronCoverLookup(transport());
+    for (let n = 0; n < METRON_JOB_LIMIT; n += 1) await limited.issuesByUpc(String(n));
+    await expect(limited.issuesByUpc("over")).rejects.toMatchObject({ pause: { budget: "Metron job", count: METRON_JOB_LIMIT } });
+    expect(logs.some((message) => message.startsWith("Metron job budget reached after 60 requests. Yielding. Resumes at "))).toBe(true);
   });
 });
 

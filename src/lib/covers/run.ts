@@ -23,7 +23,7 @@ import {
 import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
-import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
@@ -299,19 +299,42 @@ function matchedCoverPatch(update: {
   };
 }
 
+let backfillResume: ReturnType<typeof setTimeout> | null = null;
+let enrichResume: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleJobResume(slot: "backfill" | "enrich", resumeAt: number, start: () => Promise<unknown>): void {
+  const current = slot === "backfill" ? backfillResume : enrichResume;
+  if (current) clearTimeout(current);
+  const wait = Math.max(1_000, resumeAt - Date.now());
+  const timer = setTimeout(() => {
+    if (slot === "backfill") backfillResume = null;
+    else enrichResume = null;
+    void start();
+  }, wait);
+  if (slot === "backfill") backfillResume = timer;
+  else enrichResume = timer;
+}
+
 export async function runCoverBackfill(log: (line: string) => void = console.log): Promise<BackfillSummary> {
   const startedAt = new Date().toISOString();
   const emit = (line: string) => {
     log(line);
     void writeLog({ level: coverLineLevel(line), source: "covers/backfill", message: line });
   };
+  armMetronJobBudget();
   try {
-    return await runCoverBackfillBody(emit, startedAt);
+    const summary = await runCoverBackfillBody(emit, startedAt);
+    if (summary.resumeAt && summary.resumeAt > Date.now() && summary.stoppedReason?.includes("Metron job")) {
+      scheduleJobResume("backfill", summary.resumeAt, () => startCoverBackfillInBackground({ resume: true }));
+    }
+    return summary;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Cover backfill failed.";
     log(message);
     await writeLog({ level: "error", source: "covers/backfill", message });
     throw error;
+  } finally {
+    clearMetronJobBudget();
   }
 }
 
@@ -392,10 +415,11 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
   return summary;
 }
 
-export async function startCoverBackfillInBackground(): Promise<"started" | "busy" | "unconfigured"> {
+export async function startCoverBackfillInBackground(options?: { resume?: boolean }): Promise<"started" | "busy" | "unconfigured"> {
   if (!(await metronBasicAuth())) return "unconfigured";
+  if (options?.resume && (await getPreferences()).covers.paused) return "busy";
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) return "busy";
-  await setCoversPaused(false);
+  if (!options?.resume) await setCoversPaused(false);
   if (!acquireBackfillLock()) return "busy";
   globalBackfill.longboxCoverBackfill = runCoverBackfill()
     .catch((error: unknown) => {
@@ -577,11 +601,12 @@ export async function refetchOneCover(comicId: string): Promise<string> {
   }
 }
 
-export async function startMetronEnrichmentInBackground(): Promise<"started" | "busy" | "unconfigured" | "disabled"> {
+export async function startMetronEnrichmentInBackground(options?: { resume?: boolean }): Promise<"started" | "busy" | "unconfigured" | "disabled"> {
   if (!(await metronBasicAuth())) return "unconfigured";
   if (!(await getPreferences()).covers.fillMissing) return "disabled";
+  if (options?.resume && (await getPreferences()).covers.paused) return "busy";
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) return "busy";
-  await setCoversPaused(false);
+  if (!options?.resume) await setCoversPaused(false);
   if (!acquireBackfillLock()) return "busy";
   globalBackfill.longboxCoverBackfill = runMetronEnrichment()
     .catch(async (error: unknown) => {
@@ -609,6 +634,15 @@ export async function startMetronEnrichmentInBackground(): Promise<"started" | "
 
 async function runMetronEnrichment(): Promise<void> {
   const startedAt = new Date().toISOString();
+  armMetronJobBudget();
+  try {
+    await runMetronEnrichmentBody(startedAt);
+  } finally {
+    clearMetronJobBudget();
+  }
+}
+
+async function runMetronEnrichmentBody(startedAt: string): Promise<void> {
   const comics = await prisma.comic.findMany({
     where: { metronIssueId: { not: null } },
     orderBy: [{ seriesSort: "asc" }, { issueSort: "asc" }],
@@ -650,6 +684,9 @@ async function runMetronEnrichment(): Promise<void> {
       if (error instanceof MetronBudgetError) {
         const pause = await recordBudgetPause("Metron enrichment", error);
         summary.stoppedReason = budgetPauseMessage("Metron enrichment", pause);
+        if (pause.budget === "Metron job") {
+          scheduleJobResume("enrich", pause.resumeAt, () => startMetronEnrichmentInBackground({ resume: true }));
+        }
         break;
       }
       summary.unmatched += 1;

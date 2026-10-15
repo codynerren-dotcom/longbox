@@ -12,6 +12,7 @@ import {
   type MatchCandidate,
 } from "@/lib/covers/edition";
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit, MetronSeriesQuery } from "@/lib/covers/types";
+import { writeLog } from "@/lib/log/write";
 import {
   catalogNameQueries,
   isbnDigits,
@@ -138,6 +139,7 @@ function candidateFrom(hit: MetronIssueHit): MatchCandidate {
     upc: hit.upc ?? null,
     publisher: hit.publisher ?? null,
     storeDate: hit.storeDate ?? null,
+    oneIssue: hit.oneIssue,
   };
 }
 
@@ -293,6 +295,30 @@ async function resolveFacsimileCover(comic: CoverQuery, edition: EditionProfile,
   return best;
 }
 
+function matchedDecision(
+  via: "barcode" | "series" | "gcd",
+  issue: MetronIssueHit,
+  score: number,
+  review: string | null | undefined,
+): CoverDecision {
+  return { status: "matched", via, issue, score, ...(review ? { coverReview: review } : {}) };
+}
+
+/** Every hit is the same series, so the shelf issue number can break a shared barcode. */
+function sharedSeries(hits: MetronIssueHit[]): boolean {
+  if (hits.length < 2) return false;
+  const ids = hits.map((hit) => hit.seriesId).filter((id): id is string => Boolean(id));
+  if (ids.length === hits.length && new Set(ids).size === 1) return true;
+  const names = hits.map((hit) => normName(hit.seriesName)).filter(Boolean);
+  return names.length === hits.length && new Set(names).size === 1;
+}
+
+function hitIssueNumber(hit: MetronIssueHit): string {
+  if (hit.number.trim()) return hit.number;
+  const labeled = hit.label?.match(/#\s*(\d+[A-Za-z]?)/);
+  return labeled?.[1] ?? "";
+}
+
 export function chooseIssue(
   hits: MetronIssueHit[],
   comic: CoverQuery,
@@ -310,25 +336,37 @@ export function chooseIssue(
       const chosen = coverForFullBarcode(comic.barcode, full[0]);
       const scored = scoreCandidate({ ...comic, issueNo: chosen.number || issueNo }, candidateFrom(chosen));
       if (!scored.blocked) {
-        return { status: "matched", via, issue: chosen, score: scored.score };
+        return matchedDecision(via, chosen, scored.score, scored.review);
+      }
+    }
+    if (issueNo && sharedSeries(hits)) {
+      const numbered = hits.filter((hit) => sameIssueNumber(hitIssueNumber(hit), issueNo));
+      if (numbered.length === 1 && numbered[0]) {
+        const chosen = coverForFullBarcode(comic.barcode, numbered[0]);
+        const scored = scoreCandidate({ ...comic, issueNo: chosen.number || issueNo }, candidateFrom(chosen));
+        if (!scored.blocked || /years apart/i.test(scored.blocked)) {
+          return matchedDecision(via, chosen, scored.score, scored.review);
+        }
       }
     }
     if (issueNo) {
-      const numbered = hits.filter((hit) => sameIssueNumber(hit.number, issueNo));
+      const numbered = hits.filter((hit) => sameIssueNumber(hitIssueNumber(hit), issueNo));
       if (numbered.length === 1 && numbered[0]?.imageUrl) {
         const scored = scoreCandidate({ ...comic, issueNo: numbered[0].number || issueNo }, candidateFrom(numbered[0]));
         if (!scored.blocked) {
-          return { status: "matched", via, issue: numbered[0], score: scored.score };
+          return matchedDecision(via, numbered[0], scored.score, scored.review);
         }
-        const why = scored.blocked ?? `score ${scored.score} is below the match line`;
-        return { status: "unmatched", reason: `${name}: ${why}.`, score: scored.score };
+        if (!sharedSeries(hits)) {
+          const why = scored.blocked ?? `score ${scored.score} is below the match line`;
+          return { status: "unmatched", reason: `${name}: ${why}.`, score: scored.score };
+        }
       }
     }
   }
 
   let rows = hits;
   if (issueNo) {
-    const numbered = rows.filter((hit) => sameIssueNumber(hit.number, issueNo));
+    const numbered = rows.filter((hit) => sameIssueNumber(hitIssueNumber(hit), issueNo));
     if (numbered.length > 0) rows = numbered;
     else if (via === "series") return { status: "unmatched", reason: `No Metron issue for ${name}.`, score: 0 };
   }
@@ -343,7 +381,7 @@ export function chooseIssue(
     if (!best.issue.imageUrl && via !== "gcd") {
       return { status: "unmatched", reason: `Metron issue ${best.issue.id} has no cover image.`, score: best.scored.score };
     }
-    return { status: "matched", via, issue: best.issue, score: best.scored.score };
+    return matchedDecision(via, best.issue, best.scored.score, best.scored.review);
   }
   if (via === "barcode" && rows.length > 1 && ranked.filter((row) => row.scored.auto).length !== 1) {
     return { status: "unmatched", reason: `Several Metron issues share this barcode (${rows.map((hit) => hit.id).join(", ")}).`, score: best.scored.score };
@@ -557,6 +595,7 @@ async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, loo
         ...issue,
         seriesYear: issue.seriesYear ?? candidate.yearBegan,
         publisher: issue.publisher ?? candidate.publisher,
+        oneIssue: candidate.issueCount === 1,
       })),
       scored,
       issueNo,
@@ -572,6 +611,33 @@ async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, loo
   return best;
 }
 
+function barcodeHitLine(hit: MetronIssueHit): string {
+  const variantUpcs = [...(hit.upcs ?? []), ...(hit.covers ?? []).map((cover) => cover.upc)].filter(
+    (code): code is string => Boolean(code && code !== hit.upc),
+  );
+  return `${hit.id} number=${hit.number || "none"} upc=${hit.upc || "null"} variantUpcs=${variantUpcs.join(",") || "null"}`;
+}
+
+function decisionText(decision: CoverDecision | null): string {
+  if (!decision) return "no issue chosen";
+  if (decision.status === "matched") {
+    const review = decision.coverReview ? ` review ${decision.coverReview}` : "";
+    return `matched ${decision.issue.id} score ${decision.score}${review}`;
+  }
+  return `unmatched ${decision.reason}`;
+}
+
+async function logBarcodeStep(label: string, code: string, hits: MetronIssueHit[], decision: CoverDecision | null): Promise<void> {
+  const fetched = hits.filter((hit) => hit.detailFetched).length;
+  const ids = hits.map((hit) => hit.id).join(", ") || "none";
+  const rows = hits.map(barcodeHitLine).join("; ") || "none";
+  await writeLog({
+    level: "debug",
+    source: "covers/backfill",
+    message: `Barcode ${label}: tried ${code}. candidates ${ids}. detail fetches ${fetched}. ${rows}. decision ${decisionText(decision)}.`,
+  });
+}
+
 export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Promise<CoverDecision> {
   const shelf = resolveShelfFormat(comic);
   if (isCollected(shelf)) return resolveCollectedCover(comic, shelf, lookup);
@@ -582,14 +648,18 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
   const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
 
   if (barcode) {
+    const label = `${comic.series} #${issueNo || "?"}`;
     let hits = await lookup.issuesByUpc(barcode.combined);
+    let decision = hits.length > 0 ? chooseIssue(hits, comic, issueNo, "barcode") : null;
+    await logBarcodeStep(label, barcode.combined, hits, decision);
     if (hits.length === 0 && barcode.upc && barcode.upc !== barcode.combined) {
       hits = await lookup.issuesByUpcPrefix(barcode.upc);
+      decision = hits.length > 0 ? chooseIssue(hits, comic, issueNo, "barcode") : null;
+      await logBarcodeStep(label, barcode.upc, hits, decision);
     }
-    if (hits.length > 0) {
-      const decision = chooseIssue(hits, comic, issueNo, "barcode");
-      if (decision.status === "matched") return decision;
-      if (hits.length > 1 && decision.reason.includes("Several Metron issues share this barcode")) return decision;
+    if (decision?.status === "matched") return decision;
+    if (hits.length > 1 && decision?.status === "unmatched" && decision.reason.includes("Several Metron issues share this barcode")) {
+      return decision;
     }
   }
 
@@ -626,6 +696,7 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
           ...issue,
           seriesYear: issue.seriesYear ?? candidate.yearBegan,
           publisher: issue.publisher ?? candidate.publisher,
+          oneIssue: candidate.issueCount === 1,
         })),
         comic,
         issueNo,

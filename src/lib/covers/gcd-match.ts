@@ -157,7 +157,8 @@ export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): P
         const issue = await catalog.issue(id);
         if (!issue) continue;
         issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-        const decision = chooseGcd([issue], scoringCopy(comic, series), scoredIssueNo(issueNo, issue.number, comic.coverYear));
+        const oneIssue = knownIssueCount(series) === 1 && seriesSoloTitle(comic.series, series.name);
+        const decision = chooseGcd([issue], scoringCopy(comic, series), scoredIssueNo(issueNo, issue.number, comic.coverYear), oneIssue);
         if (decision.status === "matched") return decision;
         if (decision.score > best.score) best = decision;
       }
@@ -408,8 +409,8 @@ export async function collectGcdFacsimileIssues(comic: CoverQuery, catalog: GcdC
   return fallback;
 }
 
-function chooseGcd(issues: GcdIssueRow[], comic: CoverQuery, issueNo: string): CoverDecision {
-  const hits = issues.map(toHit);
+function chooseGcd(issues: GcdIssueRow[], comic: CoverQuery, issueNo: string, oneIssue = false): CoverDecision {
+  const hits = issues.map((issue) => ({ ...toHit(issue), oneIssue }));
   if (hits.length === 0) return { status: "unmatched", reason: "No GCD issue for that search.", score: 0 };
   const ranked = hits
     .map((issue) => ({ issue, scored: scoreCandidate({ ...comic, issueNo: issueNo || comic.issueNo }, candidateFrom(issue)) }))
@@ -452,6 +453,7 @@ function candidateFrom(issue: MetronIssueHit): MatchCandidate {
     upc: issue.upc ?? null,
     publisher: issue.publisher ?? null,
     storeDate: issue.storeDate ?? null,
+    oneIssue: issue.oneIssue,
   };
 }
 
@@ -597,6 +599,7 @@ function publisherAgrees(wanted: string, found: string): boolean {
 
 function knownIssueCount(series: GcdSeriesRow): number | null {
   if (series.issueCount != null) return series.issueCount;
+  if (/one[\s-]?shot/i.test(series.format ?? "")) return 1;
   return series.issues.length > 0 ? series.issues.length : null;
 }
 

@@ -18,6 +18,10 @@ export type MetronIssueHit = {
   /** ISO day from the catalog store or on-sale date. */
   storeDate?: string | null;
   covers?: Array<{ label: string; imageUrl: string; upc?: string | null }>;
+  /** True when this hit was loaded from `/api/issue/{id}/` during a barcode tie-break. */
+  detailFetched?: boolean;
+  /** Series `issue_count` when the search that found this issue knows it. */
+  oneIssue?: boolean;
 };
 
 export type MetronSeriesHit = {

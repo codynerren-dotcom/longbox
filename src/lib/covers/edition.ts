@@ -1,5 +1,5 @@
 import { parseComicBarcode } from "@/lib/barcode";
-import { seriesTitleFits } from "@/lib/shelf-format";
+import { seriesNamesMatch, seriesSoloTitle, seriesTitleFits } from "@/lib/shelf-format";
 
 export const AUTO_LINK_SCORE = 75;
 export const DECADE_YEARS = 10;
@@ -70,12 +70,16 @@ export type MatchCandidate = {
   upc: string | null;
   publisher: string | null;
   storeDate?: string | null;
+  /** True when the catalog series is a single issue. A Special or One-Shot can then score as the shelf name. */
+  oneIssue?: boolean;
 };
 
 export type MatchScore = {
   score: number;
   auto: boolean;
   blocked: string | null;
+  /** Set when a missing issue cover date should link and be reviewed instead of rejected. */
+  review: string | null;
   kind: EditionKind;
   candidateKind: EditionKind;
 };
@@ -258,6 +262,7 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
   if (edition.kind !== "regular" && candidateKind === edition.kind) seriesPoints = 30;
   const printingOnSameIssue = edition.kind === "printing" && (candidateKind === "regular" || candidateKind === "printing");
   if (edition.kind !== candidateKind && !printingOnSameIssue) seriesPoints = Math.min(seriesPoints, 8);
+  if (candidate.oneIssue && edition.kind === candidateKind && seriesSoloTitle(copy.series, candidate.seriesName)) seriesPoints = 30;
   if (edition.kind === "printing") {
     const volumeFree = normName(facsimileSeriesBase(copy.series));
     if (volumeFree && candidateBase && volumeFree === candidateBase) seriesPoints = 30;
@@ -284,10 +289,19 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
   const catalogYears = catalogPublicationYears(candidate);
   const gap = closestYearGap(shelfYears, catalogYears);
   let yearPoints = shelfYears.length === 0 || catalogYears.length === 0 ? 8 : 0;
+  let review: string | null = null;
+  const coverMissing = yearOf(candidate.coverYear) == null;
+  const seriesYear = yearOf(candidate.seriesYear);
+  const nameTrusted = seriesNamesMatch(copy.series, candidate.seriesName) || seriesTitleFits(copy.series, candidate.seriesName);
   if (gap != null) {
     if (gap <= 1) yearPoints = 20;
     else if (gap === 2) yearPoints = 10;
-    else {
+    else if (coverMissing && seriesYear != null && issuePoints === 25 && nameTrusted) {
+      yearPoints = 20;
+    } else if (coverMissing && seriesYear != null && issuePoints === 25 && seriesPoints > 0) {
+      yearPoints = 20;
+      review = `Issue cover date is missing. Catalog series year ${seriesYear} is ${gap} years from the shelf (${yearGapDetail(copy, candidate)}).`;
+    } else {
       yearPoints = 0;
       blocked = blocked ?? `Release years are ${gap} years apart (${yearGapDetail(copy, candidate)}).`;
     }
@@ -329,8 +343,9 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
   const score = Math.min(100, seriesPoints + issuePoints + yearPoints + variantPoints + upcPoints + publisherPoints);
   return {
     score,
-    auto: blocked == null && score >= AUTO_LINK_SCORE && issuePoints === 25,
+    auto: blocked == null && issuePoints === 25 && (score >= AUTO_LINK_SCORE || review != null),
     blocked,
+    review,
     kind: edition.kind,
     candidateKind,
   };
@@ -544,8 +559,12 @@ function issueNumberKey(value: string): string {
   const trimmed = value.trim().toLowerCase().replace(/^#\s*/, "");
   if (!trimmed) return "";
   const match = trimmed.match(/^(\d+)(?:\.0+)?[a-z]*$/);
-  if (!match?.[1]) return trimmed;
-  return String(Number(match[1]));
+  if (match?.[1]) return String(Number(match[1]));
+  const leading = trimmed.match(/^(\d+)\b/);
+  if (leading?.[1]) return String(Number(leading[1]));
+  const labeled = trimmed.match(/#\s*(\d+)/);
+  if (labeled?.[1]) return String(Number(labeled[1]));
+  return trimmed;
 }
 
 function digitsOnly(value: string | null): string {

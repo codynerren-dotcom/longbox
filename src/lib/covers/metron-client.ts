@@ -2,7 +2,7 @@ import { variantCoversFrom } from "@/lib/catalog/match-hits";
 import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
-import { budgetDay, retryAfterFromMessage, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
+import { budgetDay, formatResumeTime, retryAfterFromMessage, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit, type MetronSeriesQuery } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
@@ -35,6 +35,23 @@ export async function metronBaseUrl(): Promise<string> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Background runs stop after this many Metron requests and resume later. */
+export const METRON_JOB_LIMIT = 60;
+const METRON_JOB_PAUSE_MS = 60_000;
+let jobDepth = 0;
+let jobUsed = 0;
+
+/** Count Metron requests for a background run. Nested jobs share one counter. */
+export function armMetronJobBudget(): void {
+  if (jobDepth === 0) jobUsed = 0;
+  jobDepth += 1;
+}
+
+export function clearMetronJobBudget(): void {
+  jobDepth = Math.max(0, jobDepth - 1);
+  if (jobDepth === 0) jobUsed = 0;
 }
 
 let sharedLimiter: MetronLimiter | null = null;
@@ -99,12 +116,12 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
   const seriesName = text(series?.name) ?? text(series?.series) ?? (typeof row.series === "string" ? text(row.series) : null);
   const variant = text(row.variant) ?? text(record(row.variant)?.name);
   const covers = coversWithUpc(row);
-  const upcs = uniqueCodes([text(row.upc), ...covers.map((cover) => cover.upc)]);
+  const upcs = listedUpcs(row);
   return {
     id: String(row.id),
     seriesId: series?.id != null ? String(series.id) : null,
     seriesName: seriesName ?? "",
-    number: text(row.number) ?? "",
+    number: issueNumberText(row),
     coverYear: coverYearOf(text(row.cover_date)),
     imageUrl: httpsUrl(text(row.image)),
     label: text(row.issue) ?? variant,
@@ -112,13 +129,45 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     seriesYear: whole(series?.year_began),
     upc: text(row.upc),
     upcs,
-    publisher: text(record(series?.publisher)?.name) ?? (typeof series?.publisher === "string" ? text(series.publisher) : null),
+    publisher:
+      text(record(series?.publisher)?.name) ??
+      (typeof series?.publisher === "string" ? text(series.publisher) : null) ??
+      text(record(row.publisher)?.name) ??
+      (typeof row.publisher === "string" ? text(row.publisher) : null),
     variant,
     cvId: externalDigits(row.cv_id),
     gcdId: externalDigits(row.gcd_id),
     storeDate: isoDay(text(row.store_date)),
     covers,
   };
+}
+
+/** Issue `number`, then a leading number in `alt_number` or the display label. */
+function issueNumberText(row: Record<string, unknown>): string {
+  const direct = text(row.number);
+  if (direct) return direct;
+  const alt = text(row.alt_number);
+  if (alt && /^\d/.test(alt)) return alt;
+  const label = text(row.issue) ?? text(row.name) ?? text(row.title);
+  const match = label?.match(/#\s*(\d+[A-Za-z]?)/);
+  return match?.[1] ?? "";
+}
+
+/**
+ * Detail `upc` is a top-level field and also `variants[].upc`. Both are nullable.
+ * `sku` is a distributor code, not a barcode, so it stays out of this list.
+ */
+function listedUpcs(row: Record<string, unknown>): string[] {
+  const codes: Array<string | null> = [text(row.upc)];
+  for (const list of [row.variants, row.variant_covers, row.alt_covers]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      const entry = record(item);
+      if (!entry) continue;
+      codes.push(text(entry.upc));
+    }
+  }
+  return uniqueCodes(codes);
 }
 
 function uniqueCodes(values: Array<string | null | undefined>): string[] {
@@ -176,9 +225,28 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
   };
 }
 
+async function takeJobSlot(now: number): Promise<void> {
+  if (jobDepth === 0) return;
+  jobUsed += 1;
+  if (jobUsed <= METRON_JOB_LIMIT) return;
+  const resumeAt = now + METRON_JOB_PAUSE_MS;
+  await writeLog({
+    level: "info",
+    source: "metron",
+    message: `Metron job budget reached after ${METRON_JOB_LIMIT} requests. Yielding. Resumes at ${formatResumeTime(resumeAt)}.`,
+    details: { count: METRON_JOB_LIMIT, resumeAt: new Date(resumeAt).toISOString() },
+  });
+  throw new MetronBudgetError("Metron request budget reached. Yielding so the run can resume.", {
+    budget: "Metron job",
+    count: METRON_JOB_LIMIT,
+    resumeAt,
+  });
+}
+
 async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<MetronPage> {
   let attempt = 0;
   while (true) {
+    await takeJobSlot(transport.now());
     await transport.limiter.acquire();
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
     const started = transport.now();
@@ -264,7 +332,7 @@ async function hydrateBarcodeHits(transport: MetronTransport, hits: MetronIssueH
     const body = await fetchMetronIssueBody(transport, hit.id);
     const mapped = body ? mapIssue(body) : null;
     if (!mapped) {
-      detailed.push(hit);
+      detailed.push({ ...hit, detailFetched: true });
       continue;
     }
     detailed.push({
@@ -275,6 +343,7 @@ async function hydrateBarcodeHits(transport: MetronTransport, hits: MetronIssueH
       seriesYear: mapped.seriesYear ?? hit.seriesYear,
       publisher: mapped.publisher ?? hit.publisher,
       number: mapped.number || hit.number,
+      detailFetched: true,
     });
   }
   return detailed;
