@@ -84,6 +84,45 @@ function volumeToken(value: string | null | undefined): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * CLZ puts the volume and the year range on the series title. Metron stores those
+ * on `volume` and `year_began`, and its name search requires every word.
+ */
+export function parseShelfSeries(series: string | null | undefined): {
+  name: string;
+  volume: number | null;
+  yearBegan: number | null;
+  yearEnd: number | null;
+} {
+  let name = (series ?? "").replace(/\s+/g, " ").trim();
+  let volume: number | null = null;
+  let yearBegan: number | null = null;
+  let yearEnd: number | null = null;
+  for (let pass = 0; pass < 4 && name; pass += 1) {
+    const range = name.match(/^(.*?)(?:,)?\s+\(((?:18|19|20)\d{2})\s*[-–—]\s*((?:18|19|20)\d{2})\)\s*$/);
+    if (range?.[1]?.trim()) {
+      yearBegan = yearBegan ?? Number(range[2]);
+      yearEnd = yearEnd ?? Number(range[3]);
+      name = range[1].trim().replace(/,\s*$/, "");
+      continue;
+    }
+    const single = name.match(/^(.*?)(?:,)?\s+\(((?:18|19|20)\d{2})(?:\s+series)?\)\s*$/);
+    if (single?.[1]?.trim()) {
+      yearBegan = yearBegan ?? Number(single[2]);
+      name = single[1].trim().replace(/,\s*$/, "");
+      continue;
+    }
+    const vol = name.match(/^(.*?)(?:,|\s)\s*vol(?:ume)?\.?\s*(\d+)\s*$/i);
+    if (vol?.[1]?.trim()) {
+      volume = volume ?? Number(vol[2]);
+      name = vol[1].trim().replace(/,\s*$/, "");
+      continue;
+    }
+    break;
+  }
+  return { name, volume, yearBegan, yearEnd };
+}
+
 /** Token-set match. A shared volume number has to agree when both titles carry one. */
 export function seriesNamesMatch(wanted: string | null | undefined, found: string | null | undefined): boolean {
   const leftVol = volumeToken(wanted);
@@ -100,6 +139,20 @@ export function seriesNamesMatch(wanted: string | null | undefined, found: strin
   if (want.size >= 4 && missing === 0 && extra <= 2) return true;
   if (want.size >= 5 && missing <= 1 && extra <= 1) return (want.size - missing) / want.size >= 0.8;
   return false;
+}
+
+/**
+ * A one-word shelf name cannot fuzzy-match. A catalog title that ends with it
+ * still counts ("Ewoks" and "Star Wars: Ewoks"). A title that only starts with
+ * the name ("Saga" and "Saga of the Swamp Thing") does not.
+ */
+export function seriesTitleFits(wanted: string | null | undefined, found: string | null | undefined): boolean {
+  if (seriesNamesMatch(wanted, found)) return true;
+  const want = normalizeSeriesName(wanted);
+  const got = normalizeSeriesName(found);
+  if (!want || !got || want.length < 4) return false;
+  if (want.split(" ").filter(Boolean).length >= 4) return false;
+  return got.endsWith(` ${want}`);
 }
 
 /** Queries to send a catalog. Punctuation variants first, then a short prefix for long trade titles. */

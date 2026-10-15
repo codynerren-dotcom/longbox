@@ -4,7 +4,7 @@ import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
 import { budgetDay, retryAfterFromMessage, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
-import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
+import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit, type MetronSeriesQuery } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
 import { getSettings } from "@/lib/settings/service";
@@ -138,9 +138,10 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
   const publisher = record(row.publisher);
   return {
     id: String(row.id),
-    name: rawName.replace(/\s+\((?:18|19|20)\d{2}\)\s*$/, "").trim(),
+    name: rawName.replace(/\s+\((?:18|19|20)\d{2}(?:\s*[-–—]\s*(?:18|19|20)\d{2})?\)\s*$/, "").trim(),
     yearBegan: whole(row.year_began),
     yearEnd: whole(row.year_end),
+    volume: whole(row.volume),
     publisher: text(publisher?.name) ?? (typeof row.publisher === "string" ? text(row.publisher) : null),
   };
 }
@@ -225,8 +226,10 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
       const hits = await collect(transport, `/issue/?upc_starts_with=${encodeURIComponent(upc)}`, mapIssue);
       return hits as MetronIssueHit[];
     },
-    async searchSeries(name) {
+    async searchSeries(name, query?: MetronSeriesQuery) {
       const params = new URLSearchParams({ name });
+      if (query?.volume != null) params.set("volume", String(query.volume));
+      if (query?.yearBegan != null) params.set("year_began", String(query.yearBegan));
       const hits = await collect(transport, `/series/?${params.toString()}`, mapSeries);
       return hits as MetronSeriesHit[];
     },

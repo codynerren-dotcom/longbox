@@ -155,9 +155,174 @@ describe("Metron cover matching", () => {
     const decision = await resolveCover(query({ barcode: null, series: "Planet Slammer" }), lookup());
     expect(decision).toEqual({ status: "unmatched", reason: "No Metron series named Planet Slammer.", score: 0 });
   });
+
+  it("searches the name without the volume and year, then filters on those fields", async () => {
+    const asked: Array<{ name: string; volume?: number | null; yearBegan?: number | null }> = [];
+    const client = lookup({
+      async searchSeries(name, filters) {
+        asked.push({ name, volume: filters?.volume, yearBegan: filters?.yearBegan });
+        if (name === "Action Comics") {
+          return [
+            series({ id: "ac1", name: "Action Comics", yearBegan: 1938, yearEnd: 2011, publisher: "DC", volume: 1 }),
+            series({ id: "ac2", name: "Action Comics", yearBegan: 2011, publisher: "DC", volume: 2 }),
+          ];
+        }
+        if (name === "Ghost Rider") {
+          return [
+            series({ id: "gr1", name: "Ghost Rider", yearBegan: 1990, yearEnd: null, publisher: "Marvel", volume: 1 }),
+            series({ id: "gr2", name: "Ghost Rider", yearBegan: 1990, yearEnd: 1998, publisher: "Marvel", volume: 2 }),
+          ];
+        }
+        return [];
+      },
+      async issuesForSeries(seriesId) {
+        const ghost = seriesId.startsWith("gr");
+        return [
+          issue({
+            id: seriesId,
+            seriesName: ghost ? "Ghost Rider" : "Action Comics",
+            coverYear: seriesId === "gr2" ? 1992 : 1986,
+            publisher: ghost ? "Marvel" : "DC",
+          }),
+        ];
+      },
+    });
+    const action = await resolveCover(
+      query({ series: "Action Comics, Vol. 1", issueNo: "1", coverYear: 1986, publisher: "DC", barcode: null }),
+      client,
+    );
+    expect(action).toMatchObject({ status: "matched", via: "series", issue: { id: "ac1" } });
+    expect(asked[0]).toEqual({ name: "Action Comics", volume: 1, yearBegan: null });
+    expect(asked.some((row) => /vol/i.test(row.name))).toBe(false);
+
+    const ghost = await resolveCover(
+      query({ series: "Ghost Rider, Vol. 2 (1990-1998)", issueNo: "1", coverYear: 1992, publisher: "Marvel", barcode: null }),
+      client,
+    );
+    expect(ghost).toMatchObject({ status: "matched", via: "series", issue: { id: "gr2" } });
+    expect(asked).toContainEqual({ name: "Ghost Rider", volume: 2, yearBegan: 1990 });
+  });
+
+  it("keeps Ewoks when the catalog title is longer, and tries The Ewoks when the short name misses", async () => {
+    const longer = lookup({
+      async searchSeries(name) {
+        longer.calls.push(name);
+        if (name === "Ewoks") return [series({ id: "long", name: "Star Wars: Ewoks", yearBegan: 1985, publisher: "Marvel" })];
+        return [];
+      },
+      async issuesForSeries() {
+        return [issue({ id: "ew1", seriesName: "Star Wars: Ewoks", coverYear: 1985, publisher: "Marvel" })];
+      },
+    });
+    const fromSuffix = await resolveCover(query({ series: "Ewoks", publisher: "Marvel", coverYear: 1985, barcode: null }), longer);
+    expect(fromSuffix).toMatchObject({ status: "matched", issue: { id: "ew1" } });
+    expect(longer.calls).toEqual(["Ewoks"]);
+    expect(
+      narrowSeries(
+        [
+          series({ id: "exact", name: "The Ewoks", yearBegan: 1985, publisher: "Marvel" }),
+          series({ id: "long", name: "Star Wars: Ewoks", yearBegan: 1985, publisher: "Marvel" }),
+          series({ id: "saga", name: "Saga of the Swamp Thing", yearBegan: 1982, publisher: "DC" }),
+        ],
+        query({ series: "Ewoks", publisher: "Marvel", coverYear: 1985 }),
+      ).map((hit) => hit.id),
+    ).toEqual(["exact"]);
+
+    const titled = lookup({
+      async searchSeries(name) {
+        titled.calls.push(name);
+        if (name === "The Ewoks") return [series({ id: "the", name: "The Ewoks", yearBegan: 1985, publisher: "Marvel" })];
+        return [];
+      },
+      async issuesForSeries() {
+        return [issue({ id: "ew2", seriesName: "The Ewoks", coverYear: 1985, publisher: "Marvel" })];
+      },
+    });
+    const fromThe = await resolveCover(query({ series: "Ewoks", publisher: "Marvel", coverYear: 1985, barcode: null }), titled);
+    expect(fromThe).toMatchObject({ status: "matched", issue: { id: "ew2" } });
+    expect(titled.calls).toEqual(["Ewoks", "The Ewoks"]);
+  });
+
+  it("breaks a shared barcode prefix with the full UPC and then the issue number", () => {
+    const barcode = "70985300001100111";
+    const comic = query({ series: "Spawn", issueNo: "1", coverYear: 1992, publisher: "Image", barcode });
+    const full = (number: string) => `709853000011${number.padStart(3, "0")}11`;
+    const hits = [
+      issue({ id: "s1", seriesName: "Spawn", number: "1", coverYear: 1992, publisher: "Image", upc: full("1") }),
+      issue({ id: "s22", seriesName: "Spawn", number: "22", coverYear: 1994, publisher: "Image", upc: full("22") }),
+      issue({ id: "s23", seriesName: "Spawn", number: "23", coverYear: 1994, publisher: "Image", upc: full("23") }),
+    ];
+    expect(chooseIssue(hits, comic, "1", "barcode")).toMatchObject({ status: "matched", via: "barcode", issue: { id: "s1" } });
+
+    const prefix = hits.map((hit) => ({ ...hit, upc: "709853000011" }));
+    expect(chooseIssue(prefix, comic, "1", "barcode")).toMatchObject({ status: "matched", issue: { id: "s1" } });
+    expect(
+      chooseIssue(
+        [
+          issue({ id: "b1", seriesName: "BRZRKR", number: "1", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+          issue({ id: "b6", seriesName: "BRZRKR", number: "6", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+        ],
+        query({ series: "BRZRKR", issueNo: "1", coverYear: 2021, publisher: "Boom", barcode: "79394500001100111" }),
+        "1",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "b1" } });
+    expect(
+      chooseIssue(
+        [
+          issue({ id: "m1", seriesName: "The Maxx", number: "1", coverYear: 1993, publisher: "Image", upc: "709853000028" }),
+          issue({ id: "m28", seriesName: "The Maxx", number: "28", coverYear: 1996, publisher: "Image", upc: "709853000028" }),
+        ],
+        query({ series: "The Maxx", issueNo: "1", coverYear: 1993, publisher: "Image", barcode: "70985300002800111" }),
+        "1",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "m1" } });
+
+    expect(
+      chooseIssue(
+        [
+          issue({ id: "a", seriesName: "Spawn", number: "1", coverYear: 1992, publisher: "Image", upc: barcode }),
+          issue({ id: "b", seriesName: "Spawn", number: "1", coverYear: 1992, publisher: "Image", upc: "709853000011" }),
+        ],
+        comic,
+        "1",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "a" } });
+  });
 });
 
 describe("cover backfill", () => {
+  it("keeps a hand-picked Metron id when the barcode would match a different issue", async () => {
+    const saved: string[] = [];
+    const client = lookup({
+      async issuesByUpc() {
+        throw new Error("a hand-picked link is not searched");
+      },
+      async searchSeries() {
+        throw new Error("a hand-picked link is not searched");
+      },
+    });
+    await backfillCovers({
+      comics: [record({ manualMetronIssueId: "88", manualCoverImageUrl: image, barcode: "70985300001100111" })],
+      lookup: client,
+      fileExists: () => false,
+      saveImage: async (hit) => {
+        saved.push(hit.id);
+        return "metron-88.jpg";
+      },
+      markMatched: async (_id, update) => {
+        expect(update.metronIssueId).toBe("88");
+      },
+      markUnmatched: async () => {
+        throw new Error("a hand-picked link is not replaced");
+      },
+    });
+    expect(saved).toEqual(["88"]);
+    expect(client.calls).toEqual([]);
+  });
+
   it("downloads a matched cover once and skips it on the next run", async () => {
     const files = new Set<string>();
     const saved: string[] = [];
@@ -462,11 +627,38 @@ describe("Metron rate limit", () => {
       name: "Amazing Spider-Man",
       yearBegan: 1963,
       yearEnd: null,
+      volume: null,
+      publisher: "Marvel",
+    });
+    expect(mapSeries({ id: 2, series: "Ghost Rider (1990-1998)", year_began: 1990, year_end: 1998, volume: 2, publisher: "Marvel" })).toEqual({
+      id: "2",
+      name: "Ghost Rider",
+      yearBegan: 1990,
+      yearEnd: 1998,
+      volume: 2,
       publisher: "Marvel",
     });
     expect(mapIssue({ id: 50, number: "1", cover_date: "2012-03-01", image: "http://static.metron.cloud/a.jpg", series: { id: 15, name: "Saga" } })?.imageUrl).toBe(
       "https://static.metron.cloud/a.jpg",
     );
+  });
+
+  it("sends volume and year_began with the series name", async () => {
+    const urls: string[] = [];
+    const { store } = memoryStore();
+    const transport: MetronTransport = {
+      limiter: new MetronLimiter(store, () => 0, async () => undefined, () => "2026-10-13"),
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => 0,
+      fetch: async (url) => {
+        urls.push(String(url));
+        return Response.json({ results: [] });
+      },
+    };
+    await createMetronCoverLookup(transport).searchSeries("Ghost Rider", { volume: 2, yearBegan: 1990 });
+    expect(urls).toEqual(["https://metron.cloud/api/series/?name=Ghost+Rider&volume=2&year_began=1990"]);
   });
 });
 

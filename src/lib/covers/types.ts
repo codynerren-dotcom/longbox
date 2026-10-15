@@ -23,13 +23,20 @@ export type MetronSeriesHit = {
   name: string;
   yearBegan: number | null;
   yearEnd: number | null;
+  /** Metron series volume. Absent on older payloads. */
+  volume?: number | null;
   publisher: string | null;
+};
+
+export type MetronSeriesQuery = {
+  volume?: number | null;
+  yearBegan?: number | null;
 };
 
 export type CoverLookup = {
   issuesByUpc: (upc: string) => Promise<MetronIssueHit[]>;
   issuesByUpcPrefix: (upc: string) => Promise<MetronIssueHit[]>;
-  searchSeries: (name: string) => Promise<MetronSeriesHit[]>;
+  searchSeries: (name: string, query?: MetronSeriesQuery) => Promise<MetronSeriesHit[]>;
   issuesForSeries: (seriesId: string, number: string, coverYear: number | null) => Promise<MetronIssueHit[]>;
   /** ISBN-13 lookup. Optional so older test lookups still typecheck. */
   issuesByIsbn?: (isbn: string) => Promise<MetronIssueHit[]>;

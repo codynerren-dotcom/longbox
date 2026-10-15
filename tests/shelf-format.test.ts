@@ -17,6 +17,7 @@ import {
   readCollectedIssues,
   resolveShelfFormat,
   seriesHeaderFormat,
+  parseShelfSeries,
   seriesNamesMatch,
   tradeSearchSeries,
   volumeLabel,
@@ -266,6 +267,10 @@ describe("Rite of Spring trade paperback", () => {
     expect(seriesNamesMatch(clzSeries, "Beneath the Trees Where Nobody Sees")).toBe(false);
     expect(seriesNamesMatch("Amazing Spider-Man, Vol. 1", "Amazing Spider-Man, Vol. 2")).toBe(false);
     expect(seriesNamesMatch("Saga", "Saga (2012)")).toBe(true);
+    expect(parseShelfSeries("Action Comics, Vol. 1")).toEqual({ name: "Action Comics", volume: 1, yearBegan: null, yearEnd: null });
+    expect(parseShelfSeries("Ghost Rider, Vol. 2 (1990-1998)")).toEqual({ name: "Ghost Rider", volume: 2, yearBegan: 1990, yearEnd: 1998 });
+    expect(parseShelfSeries("Ewoks")).toEqual({ name: "Ewoks", volume: null, yearBegan: null, yearEnd: null });
+    expect(parseShelfSeries("Amazing Spider-Man (1963)")).toEqual({ name: "Amazing Spider-Man", volume: null, yearBegan: 1963, yearEnd: null });
     expect(catalogNameQueries(clzSeries, { broad: true })).toContain("Beneath the Trees");
     expect(issue?.id).toBe("2853617");
     expect(issue?.isbn).toBe("979-8-88724-384-9");
