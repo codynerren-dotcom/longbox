@@ -1,5 +1,6 @@
 import type { CollectionSort } from "@/lib/settings/preferences";
 import { seriesRouteId, type SeriesIdentity } from "@/lib/series";
+import { copyGroupKey, copyQuantity } from "@/lib/series-view";
 
 export type ShelfComic = SeriesIdentity & {
   id: string;
@@ -10,6 +11,7 @@ export type ShelfComic = SeriesIdentity & {
   rawOrSlabbed: string | null;
   coverUrl: string | null;
   variant: string | null;
+  variantDescription?: string | null;
   grade: string | null;
   storageBox: string | null;
   read: boolean;
@@ -28,8 +30,15 @@ export type SeriesCardModel = {
   sampleIssue: string | null;
 };
 
+export function seriesCardCountLabel(card: Pick<SeriesCardModel, "count" | "copies">): string {
+  const comics = card.count === 1 ? "1 comic" : `${card.count} comics`;
+  if (card.copies === card.count) return comics;
+  const copies = card.copies === 1 ? "1 copy" : `${card.copies} copies`;
+  return `${comics} · ${copies}`;
+}
+
 export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
-  const map = new Map<string, SeriesCardModel & { issueSort: number; coverSort: number }>();
+  const map = new Map<string, SeriesCardModel & { issueSort: number; coverSort: number; seen: Set<string>; keyed: Set<string> }>();
   for (const comic of comics) {
     const id = seriesRouteId(comic);
     const sort = comic.issueSort ?? Number.MAX_SAFE_INTEGER;
@@ -48,13 +57,28 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
         sampleIssue: comic.issueNo,
         issueSort: sort,
         coverSort: comic.coverUrl ? sort : Number.MAX_SAFE_INTEGER,
+        seen: new Set<string>(),
+        keyed: new Set<string>(),
       };
       map.set(id, card);
     }
-    card.count += 1;
-    card.copies += comic.quantity;
+    const identity = copyGroupKey({
+      series: comic.series,
+      issueNo: comic.issueNo,
+      variant: comic.variant,
+      variantDescription: comic.variantDescription,
+      quantity: comic.quantity,
+    });
+    if (!card.seen.has(identity)) {
+      card.seen.add(identity);
+      card.count += 1;
+    }
+    card.copies += copyQuantity(comic);
     if (comic.keyLevel === "Major" || comic.keyLevel === "Minor") {
-      card.keys += 1;
+      if (!card.keyed.has(identity)) {
+        card.keyed.add(identity);
+        card.keys += 1;
+      }
       if (comic.keyLevel === "Major" || card.keyLevel !== "Major") card.keyLevel = comic.keyLevel;
     }
     if (comic.rawOrSlabbed === "Slabbed") card.slabs += 1;

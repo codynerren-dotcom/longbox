@@ -1,16 +1,20 @@
 "use server";
 
+import { unlink } from "node:fs/promises";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { linkIssueToCatalog, loadIssueCovers, repullLinkedCover, searchIssueCatalog, unlinkIssueCatalog } from "@/lib/catalog/link-issue";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 import { refreshIssueFromMetron } from "@/lib/covers/run";
 import { readCrop } from "@/lib/covers/photo";
 import { previewUserPhoto, revertToMetronCover, saveUserCover } from "@/lib/covers/user-cover";
+import { coverFilePath, coversDir } from "@/lib/covers/files";
 import { prisma } from "@/lib/db";
 import { choiceList, issueLabel, RAW_CHOICES, KEY_LEVELS } from "@/lib/issue-fields";
 import { planIssueEdit } from "@/lib/issue-edit";
-import { logIssueEdited } from "@/lib/log/events";
+import { logCopyRemoved, logIssueEdited } from "@/lib/log/events";
+import { copiesOf } from "@/lib/shelf-copies";
 import { setReadState } from "@/lib/mutations";
 import { seriesRouteId } from "@/lib/series";
 import { getPreferences } from "@/lib/settings/service";
@@ -149,6 +153,43 @@ export async function previewCoverAction(formData: FormData): Promise<{ ok: true
     return { ok: true, dataUrl: `data:image/jpeg;base64,${jpeg.toString("base64")}` };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Could not read that photo." };
+  }
+}
+
+/** Deletes one shelf row. Sibling copies of the same comic stay. */
+export async function removeCopyAction(formData: FormData): Promise<void> {
+  const id = String(formData.get("id") ?? "").trim();
+  if (!id) return;
+  const comic = await prisma.comic.findUnique({ where: { id } });
+  if (!comic) return;
+  const siblings = await copiesOf(comic);
+  const nextId = siblings.find((copy) => copy.id !== id)?.id ?? null;
+  const coverFile = comic.coverFile;
+  await prisma.comic.delete({ where: { id } });
+  await releaseCoverFile(coverFile);
+  await logCopyRemoved(issueLabel(comic.series, comic.issueNo), id);
+  revalidatePath("/");
+  revalidatePath("/collection");
+  revalidatePath("/keys");
+  revalidatePath("/series");
+  revalidatePath("/boxes", "layout");
+  revalidatePath("/logs");
+  revalidatePath(`/series/${encodeURIComponent(seriesRouteId(comic))}`);
+  revalidatePath(`/issues/${id}`);
+  if (nextId) revalidatePath(`/issues/${nextId}`);
+  redirect(nextId ? `/issues/${nextId}` : `/series/${encodeURIComponent(seriesRouteId(comic))}`);
+}
+
+async function releaseCoverFile(coverFile: string | null) {
+  if (!coverFile) return;
+  const stillUsed = await prisma.comic.count({ where: { coverFile } });
+  if (stillUsed > 0) return;
+  const file = coverFilePath(coversDir(), coverFile);
+  if (!file) return;
+  try {
+    await unlink(file);
+  } catch {
+    // The file may already be gone.
   }
 }
 

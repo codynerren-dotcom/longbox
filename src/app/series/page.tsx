@@ -20,6 +20,7 @@ export default async function SeriesIndexPage() {
       rawOrSlabbed: true,
       coverUrl: true,
       variant: true,
+      variantDescription: true,
       grade: true,
       storageBox: true,
       read: true,
@@ -43,7 +44,11 @@ export default async function SeriesIndexPage() {
                 </span>
                 <span className="text-right text-sm text-mist">
                   <span className="block font-display text-3xl leading-none text-paper">{card.copies}</span>
-                  {card.keys > 0 ? <span className="text-comic">{card.keys} keys</span> : <span>{card.count} issues</span>}
+                  {card.keys > 0 ? (
+                    <span className="text-comic">{card.keys === 1 ? "1 key" : `${card.keys} keys`}</span>
+                  ) : (
+                    <span>{card.count === 1 ? "1 comic" : `${card.count} comics`}</span>
+                  )}
                 </span>
               </Link>
             </li>

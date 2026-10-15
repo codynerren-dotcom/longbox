@@ -3,9 +3,10 @@ import type { Prisma } from "@prisma/client";
 import { CoverTile } from "@/components/cover-tile";
 import { FilterBar } from "@/components/filter-bar";
 import { PageHeader } from "@/components/page-header";
-import { groupSeries, orderSeriesCards, seriesOrderHints } from "@/lib/collection";
+import { groupSeries, orderSeriesCards, seriesCardCountLabel, seriesOrderHints } from "@/lib/collection";
 import { prisma } from "@/lib/db";
 import { one } from "@/lib/format";
+import { copyCountLabel } from "@/lib/series-view";
 import { collectionGridClass } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
 
@@ -64,6 +65,7 @@ export default async function CollectionPage({
         rawOrSlabbed: true,
         coverUrl: true,
         variant: true,
+        variantDescription: true,
         grade: true,
         storageBox: true,
         read: true,
@@ -91,7 +93,7 @@ export default async function CollectionPage({
     <div>
       <PageHeader kicker="Library" title="Collection">
         <p className="text-sm text-mist">
-          {series.length} series · {comics.length} issues
+          {series.length === 1 ? "1 series" : `${series.length} series`} · {copyCountLabel(comics)}
         </p>
       </PageHeader>
       <FilterBar
@@ -126,7 +128,7 @@ export default async function CollectionPage({
                   {card.series}
                 </Link>
                 <p className="mt-1 text-xs text-mist">
-                  {card.publisher ?? "Unknown publisher"} · {card.count} issues · {card.copies} copies
+                  {card.publisher ?? "Unknown publisher"} · {seriesCardCountLabel(card)}
                 </p>
               </div>
             </li>

@@ -28,7 +28,10 @@ export function SeriesList({ series, rows }: { series: string; rows: DisplayRow[
             <DesktopFacts facts={row.facts} />
             <span className="flex shrink-0 items-center gap-2">
               <span className="flex flex-col items-end">
-                <IssueBadge badge={row.badge} />
+                <span className="flex items-center gap-1">
+                  <IssueBadge badge={row.badge} />
+                  {row.quantity > 1 ? <QuantityBadge quantity={row.quantity} /> : null}
+                </span>
                 {row.date ? <span className="mt-1 text-[11px] text-mist">{row.date}</span> : null}
               </span>
               <OwnedMark read={row.comic.read} />
@@ -51,9 +54,13 @@ export function SeriesGrid({ series, rows }: { series: string; rows: DisplayRow[
             issue={row.badge.replace(/^#/, "")}
             coverUrl={row.comic.coverUrl}
             keyLevel={row.comic.keyLevel}
-            slab={row.comic.rawOrSlabbed === "Slabbed"}
+            slab={row.copies.every((copy) => copy.rawOrSlabbed === "Slabbed")}
+            quantity={row.quantity}
           />
-          <p className="mt-1 truncate text-xs font-semibold text-paper">{row.badge}</p>
+          <p className="mt-1 flex items-center gap-1 truncate text-xs font-semibold text-paper">
+            <span className="truncate">{row.badge}</span>
+            {row.quantity > 1 ? <QuantityBadge quantity={row.quantity} /> : null}
+          </p>
           <p className="truncate text-[11px] text-mist" title={row.description ?? undefined}>
             {row.description || (row.letter ? `Cover ${row.letter}` : "\u00a0")}
           </p>
@@ -65,7 +72,7 @@ export function SeriesGrid({ series, rows }: { series: string; rows: DisplayRow[
 
 function MobileFacts({ facts }: { facts: RowFacts }) {
   const story = [facts.story, facts.creators].filter(Boolean).join(" · ");
-  const meta = [facts.condition && !facts.condition.slab ? facts.condition.text : null, facts.copies, facts.box, facts.paid, facts.value, facts.signed]
+  const meta = [facts.condition && !facts.condition.slab ? facts.condition.text : null, facts.box, facts.paid, facts.basis, facts.value, facts.signed]
     .filter(Boolean)
     .join(" · ");
   if (!story && !meta && !facts.condition?.slab) return null;
@@ -83,7 +90,7 @@ function MobileFacts({ facts }: { facts: RowFacts }) {
 }
 
 function DesktopFacts({ facts }: { facts: RowFacts }) {
-  const pieces = [facts.story, facts.creators, facts.copies, facts.box, facts.paid, facts.value, facts.signed].filter(Boolean);
+  const pieces = [facts.story, facts.creators, facts.box, facts.paid, facts.basis, facts.value, facts.signed].filter(Boolean);
   if (pieces.length === 0 && !facts.condition) return null;
   return (
     <span className="hidden min-w-0 items-center justify-end gap-x-3 text-xs md:flex">
@@ -91,9 +98,9 @@ function DesktopFacts({ facts }: { facts: RowFacts }) {
       {facts.creators ? <span className="max-w-[14rem] truncate text-mist" title={facts.creators}>{facts.creators}</span> : null}
       {facts.condition?.slab ? <SlabBadge text={facts.condition.text} /> : null}
       {facts.condition && !facts.condition.slab ? <span className="shrink-0 text-mist">{facts.condition.text}</span> : null}
-      {facts.copies ? <span className="shrink-0 text-paper">{facts.copies}</span> : null}
       {facts.box ? <span className="max-w-[7rem] truncate text-mist" title={facts.box}>{facts.box}</span> : null}
       {facts.paid ? <span className="shrink-0 text-mist">{facts.paid}</span> : null}
+      {facts.basis ? <span className="shrink-0 text-paper">{facts.basis}</span> : null}
       {facts.value ? <span className="shrink-0 text-paper">{facts.value}</span> : null}
       {facts.signed ? <span className="max-w-[8rem] truncate text-comic" title={facts.signed}>{facts.signed}</span> : null}
     </span>
@@ -116,6 +123,10 @@ function Thumb({ title, image }: { title: string; image: string | null }) {
       )}
     </span>
   );
+}
+
+function QuantityBadge({ quantity }: { quantity: number }) {
+  return <span className="rounded-md bg-comic px-1.5 py-0.5 text-[11px] font-bold text-ink">×{quantity}</span>;
 }
 
 function IssueBadge({ badge }: { badge: string }) {

@@ -2,7 +2,8 @@ import Link from "next/link";
 import { CoverTile } from "@/components/cover-tile";
 import { PageHeader } from "@/components/page-header";
 import { prisma } from "@/lib/db";
-import { formatIssue, one } from "@/lib/format";
+import { copyCountLabel, groupCopies, groupQuantity, issueBadge, variantLetter } from "@/lib/series-view";
+import { one } from "@/lib/format";
 
 export const metadata = { title: "Key issues" };
 
@@ -20,39 +21,52 @@ export default async function KeysPage({
     where,
     orderBy: [{ keyLevel: "asc" }, { seriesSort: "asc" }, { issueSort: "asc" }],
   });
+  const groups = groupCopies(comics);
 
   return (
     <div>
       <PageHeader kicker="The good stuff" title="Key issues">
-        <div className="flex gap-2">
-          <FilterLink href="/keys" active={!level} label="All" />
-          <FilterLink href="/keys?level=Major" active={level === "Major"} label="Major" />
-          <FilterLink href="/keys?level=Minor" active={level === "Minor"} label="Minor" />
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-2">
+            <FilterLink href="/keys" active={!level} label="All" />
+            <FilterLink href="/keys?level=Major" active={level === "Major"} label="Major" />
+            <FilterLink href="/keys?level=Minor" active={level === "Minor"} label="Minor" />
+          </div>
+          {comics.length > 0 ? <p className="text-sm text-mist">{copyCountLabel(comics)}</p> : null}
         </div>
       </PageHeader>
-      {comics.length === 0 ? (
+      {groups.length === 0 ? (
         <p className="text-mist">No key issues on the shelf.</p>
       ) : (
         <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {comics.map((comic) => (
-            <li key={comic.id}>
-              <CoverTile
-                href={`/issues/${comic.id}`}
-                title={comic.series}
-                issue={comic.issueNo}
-                coverUrl={comic.coverUrl}
-                keyLevel={comic.keyLevel}
-                slab={comic.rawOrSlabbed === "Slabbed"}
-                variant={comic.variant}
-              />
-              <p className="mt-2 font-medium">
-                <Link href={`/issues/${comic.id}`} className="hover:text-comic">
-                  {comic.series} {formatIssue(comic.issueNo)}
-                </Link>
-              </p>
-              <p className="text-sm text-mist">{comic.keyReason || comic.keyCategory || comic.keyLevel}</p>
-            </li>
-          ))}
+          {groups.map((copies) => {
+            const comic = copies.find((copy) => copy.coverUrl) ?? copies[0];
+            if (!comic) return null;
+            const quantity = groupQuantity(copies);
+            const keyLevel = copies.some((copy) => copy.keyLevel === "Major") ? "Major" : comic.keyLevel;
+            const reason = copies.map((copy) => copy.keyReason || copy.keyCategory).find((text) => text?.trim()) || keyLevel;
+            const letter = variantLetter(comic.variant, comic.variantDescription);
+            return (
+              <li key={comic.id}>
+                <CoverTile
+                  href={`/issues/${comic.id}`}
+                  title={comic.series}
+                  issue={comic.issueNo}
+                  coverUrl={comic.coverUrl}
+                  keyLevel={keyLevel}
+                  slab={copies.every((copy) => copy.rawOrSlabbed === "Slabbed")}
+                  variant={comic.variant}
+                  quantity={quantity}
+                />
+                <p className="mt-2 font-medium">
+                  <Link href={`/issues/${comic.id}`} className="hover:text-comic">
+                    {comic.series} {issueBadge(comic.issueNo, letter)}
+                  </Link>
+                </p>
+                <p className="text-sm text-mist">{reason}</p>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

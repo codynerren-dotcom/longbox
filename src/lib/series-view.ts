@@ -36,11 +36,15 @@ export type SeriesCopy = {
 
 export type OwnedSeriesRow = {
   kind: "owned";
+  /** Display copy. The shelf records stay in `copies`. */
   comic: SeriesCopy;
+  copies: SeriesCopy[];
   badge: string;
   letter: string;
   description: string | null;
   key: boolean;
+  /** Sum of each record's quantity. */
+  quantity: number;
 };
 
 export type SeriesRow = OwnedSeriesRow;
@@ -70,7 +74,7 @@ export function issueBadge(issueNo: string | null | undefined, letter: string): 
   return `#${issue}${mark}`;
 }
 
-export function variantDescriptionText(comic: Pick<SeriesCopy, "variant" | "variantDescription">): string | null {
+export function variantDescriptionText(comic: { variant: string | null; variantDescription?: string | null }): string | null {
   const description = comic.variantDescription?.trim();
   if (description) return description;
   const variant = comic.variant?.trim() ?? "";
@@ -84,13 +88,62 @@ export function isKeyIssue(keyLevel: string | null | undefined): boolean {
   return true;
 }
 
-function copyQuantity(comic: SeriesCopy): number {
+export function copyQuantity(comic: { quantity: number }): number {
   return Number.isInteger(comic.quantity) && comic.quantity > 0 ? comic.quantity : 1;
 }
 
-export function copyCountLabel(comics: SeriesCopy[]): string {
-  const copies = comics.reduce((sum, comic) => sum + copyQuantity(comic), 0);
-  return copies === 1 ? "1 comic" : `${copies} comics`;
+export type CopyIdentity = {
+  series: string;
+  issueNo: string | null;
+  variant: string | null;
+  variantDescription?: string | null;
+  quantity: number;
+};
+
+/** Series, issue number, variant letter, and variant description. `1A` and issue 1 + variant A match. */
+export function copyGroupKey(comic: CopyIdentity): string {
+  const series = comic.series.trim().toLowerCase();
+  const { issue, letter } = issueAndLetter(comic);
+  const description = (variantDescriptionText(comic) ?? "").trim().toLowerCase();
+  return `${series}|${issue}|${letter}|${description}`;
+}
+
+function issueAndLetter(comic: Pick<CopyIdentity, "issueNo" | "variant" | "variantDescription">): { issue: string; letter: string } {
+  const fromFields = variantLetter(comic.variant, comic.variantDescription);
+  const raw = (comic.issueNo ?? "").trim();
+  const numeric = issueNumberValue(raw);
+  if (numeric != null) return { issue: String(numeric), letter: fromFields };
+  const trailing = raw.match(/^(\d+)([A-Za-z])$/);
+  if (trailing) {
+    const onIssue = trailing[2].toUpperCase();
+    if (!fromFields || fromFields === onIssue) return { issue: String(Number(trailing[1])), letter: onIssue };
+  }
+  return { issue: raw.toLowerCase(), letter: fromFields };
+}
+
+/** Keep records in order and collapse rows that are the same series, issue, and variant. */
+export function groupCopies<T extends CopyIdentity>(items: T[]): T[][] {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = copyGroupKey(item);
+    const list = groups.get(key);
+    if (list) list.push(item);
+    else groups.set(key, [item]);
+  }
+  return [...groups.values()];
+}
+
+export function groupQuantity(items: Array<{ quantity: number }>): number {
+  return items.reduce((sum, item) => sum + copyQuantity(item), 0);
+}
+
+export function copyCountLabel(comics: CopyIdentity[]): string {
+  const comicsCount = groupCopies(comics).length;
+  const copies = groupQuantity(comics);
+  const comicLabel = comicsCount === 1 ? "1 comic" : `${comicsCount} comics`;
+  if (copies === comicsCount) return comicLabel;
+  const copyLabel = copies === 1 ? "1 copy" : `${copies} copies`;
+  return `${comicLabel} · ${copyLabel}`;
 }
 
 /** Owned numeric span, `Have: 1-12`, or `Have: 5` when only one number is on the shelf. */
@@ -391,21 +444,32 @@ function compareCopies(a: SeriesCopy, b: SeriesCopy): number {
   return a.id.localeCompare(b.id);
 }
 
-function ownedRow(comic: SeriesCopy): OwnedSeriesRow {
-  const letter = variantLetter(comic.variant, comic.variantDescription);
+function strongestKey(copies: SeriesCopy[]): string | null {
+  if (copies.some((copy) => /^major$/i.test(copy.keyLevel ?? ""))) return "Major";
+  if (copies.some((copy) => /^minor$/i.test(copy.keyLevel ?? ""))) return "Minor";
+  const other = copies.find((copy) => isKeyIssue(copy.keyLevel));
+  return other?.keyLevel ?? copies[0]?.keyLevel ?? null;
+}
+
+function groupedRow(copies: SeriesCopy[]): OwnedSeriesRow {
+  const lead = copies.find((copy) => copy.coverUrl) ?? copies[0];
+  const { letter } = issueAndLetter(lead);
+  const keyLevel = strongestKey(copies);
   return {
     kind: "owned",
-    comic,
-    badge: issueBadge(comic.issueNo, letter),
+    comic: { ...lead, keyLevel, read: copies.every((copy) => copy.read) },
+    copies,
+    badge: issueBadge(lead.issueNo, letter),
     letter,
-    description: variantDescriptionText(comic),
-    key: isKeyIssue(comic.keyLevel),
+    description: variantDescriptionText(lead),
+    key: isKeyIssue(keyLevel),
+    quantity: groupQuantity(copies),
   };
 }
 
-/** One owned copy per row, sorted by issue number then variant letter. Gaps are not included. */
+/** One row per series, issue, and variant. Duplicate records stay in `copies`. */
 export function buildSeriesRows(comics: SeriesCopy[]): SeriesRow[] {
-  return comics.slice().sort(compareCopies).map(ownedRow);
+  return groupCopies(comics.slice().sort(compareCopies)).map(groupedRow);
 }
 
 export type RowCondition = { text: string; slab: boolean };
@@ -419,6 +483,8 @@ export type RowFacts = {
   copies: string | null;
   box: string | null;
   paid: string | null;
+  /** Total purchase price times quantity. Shown when the row is more than one copy. */
+  basis: string | null;
   value: string | null;
   signed: string | null;
 };
@@ -468,12 +534,6 @@ function conditionOf(comic: SeriesCopy): RowCondition | null {
   return { text: grade ?? raw ?? "", slab: false };
 }
 
-function moneyText(amount: { toString(): string } | string | null | undefined, currency: string): string | null {
-  if (amount == null || amount === "") return null;
-  const formatted = formatMoney(amount, currency);
-  return formatted === "—" ? null : formatted;
-}
-
 function signedLabel(signedBy: string | null | undefined): string | null {
   const name = filled(signedBy);
   if (!name) return null;
@@ -482,21 +542,109 @@ function signedLabel(signedBy: string | null | undefined): string | null {
 }
 
 export function seriesRowFacts(comic: SeriesCopy, currency = "USD"): RowFacts {
-  const quoteCurrency = filled(comic.priceQuote?.currency) ?? currency;
-  const quoted = comic.priceQuote ? moneyText(comic.priceQuote.amount, quoteCurrency) : null;
-  const storedValue = moneyText(comic.value, currency) ?? moneyText(comic.myValue, currency);
-  const current = quoted ?? storedValue;
-  const paid = moneyText(comic.purchasePrice, currency);
-  const copies = copyQuantity(comic);
+  return groupRowFacts([comic], currency);
+}
+
+/** Paid is the per-copy price when every copy matches, otherwise a range. Cost is the total. */
+export function groupRowFacts(copies: SeriesCopy[], currency = "USD"): RowFacts {
+  const lead = copies[0];
+  const story = copies.map((copy) => storyLine(copy.series, copy.title, copy.storyArc)).find((line) => line) ?? null;
+  const keyReason = copies.map((copy) => (isKeyIssue(copy.keyLevel) ? filled(copy.keyReason) : null)).find((line) => line) ?? null;
+  const creators = copies.map((copy) => creatorsLine(copy.writer, copy.coverArtist)).find((line) => line) ?? null;
+  const signed = sharedSigned(copies);
+  const money = aggregateMoney(copies, currency);
   return {
-    story: storyLine(comic.series, comic.title, comic.storyArc),
-    keyReason: isKeyIssue(comic.keyLevel) ? filled(comic.keyReason) : null,
-    creators: creatorsLine(comic.writer, comic.coverArtist),
-    condition: conditionOf(comic),
-    copies: copies > 1 ? `${copies} copies` : null,
-    box: filled(comic.storageBox),
-    paid: paid ? `Paid ${paid}` : null,
-    value: current ? `Value ${current}` : null,
-    signed: signedLabel(comic.signedBy),
+    story,
+    keyReason,
+    creators,
+    condition: aggregateCondition(copies),
+    copies: null,
+    box: aggregateBoxes(copies),
+    paid: money.paid,
+    basis: lead && groupQuantity(copies) > 1 ? money.basis : null,
+    value: money.value,
+    signed,
   };
+}
+
+function aggregateCondition(copies: SeriesCopy[]): RowCondition | null {
+  const conditions = copies.map(conditionOf);
+  const present = conditions.filter((condition): condition is RowCondition => condition != null);
+  if (present.length === 0) return null;
+  const first = present[0];
+  const same = present.length === copies.length && present.every((condition) => condition.text === first.text && condition.slab === first.slab);
+  if (same) return first;
+  return { text: "mixed", slab: false };
+}
+
+function aggregateBoxes(copies: SeriesCopy[]): string | null {
+  const boxes: string[] = [];
+  for (const copy of copies) {
+    const box = filled(copy.storageBox);
+    if (!box || boxes.some((name) => name.toLowerCase() === box.toLowerCase())) continue;
+    boxes.push(box);
+  }
+  return boxes.length > 0 ? boxes.join(", ") : null;
+}
+
+function sharedSigned(copies: SeriesCopy[]): string | null {
+  const labels = copies.map((copy) => signedLabel(copy.signedBy));
+  const present = labels.filter((label): label is string => label != null);
+  if (present.length === 0) return null;
+  if (present.length === copies.length && present.every((label) => label === present[0])) return present[0];
+  return null;
+}
+
+function unitCents(price: { toString(): string } | string | null | undefined): number | null {
+  const line = costBasis(price, 1);
+  if (!line) return null;
+  const negative = line.startsWith("-");
+  const digits = Number((negative ? line.slice(1) : line).replace(".", ""));
+  return negative ? -digits : digits;
+}
+
+function moneyFromCents(cents: number, currency: string): string {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  return formatMoney(`${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`, currency);
+}
+
+function aggregateMoney(copies: SeriesCopy[], currency: string): { paid: string | null; basis: string | null; value: string | null } {
+  const prices = copies.map((copy) => unitCents(copy.purchasePrice));
+  const known = prices.filter((cents): cents is number => cents != null);
+  let paid: string | null = null;
+  if (known.length > 0 && known.length === copies.length) {
+    const low = Math.min(...known);
+    const high = Math.max(...known);
+    paid = low === high ? `Paid ${moneyFromCents(low, currency)}` : `Paid ${moneyFromCents(low, currency)}-${moneyFromCents(high, currency)}`;
+  } else if (known.length > 0) {
+    paid = "Paid mixed";
+  }
+  let basisCents = 0;
+  let anyBasis = false;
+  for (const copy of copies) {
+    const line = costBasis(copy.purchasePrice, copy.quantity);
+    if (!line) continue;
+    anyBasis = true;
+    const negative = line.startsWith("-");
+    const digits = Number((negative ? line.slice(1) : line).replace(".", ""));
+    basisCents += negative ? -digits : digits;
+  }
+  const values = copies.map((copy) => valueCents(copy)).filter((cents): cents is number => cents != null);
+  let value: string | null = null;
+  if (values.length === copies.length && values.length > 0) {
+    const low = Math.min(...values);
+    const high = Math.max(...values);
+    value = low === high ? `Value ${moneyFromCents(low, currency)}` : `Value ${moneyFromCents(low, currency)}-${moneyFromCents(high, currency)}`;
+  }
+  return {
+    paid,
+    basis: anyBasis ? `Cost ${moneyFromCents(basisCents, currency)}` : null,
+    value,
+  };
+}
+
+function valueCents(comic: SeriesCopy): number | null {
+  if (comic.priceQuote) return unitCents(comic.priceQuote.amount);
+  return unitCents(comic.value) ?? unitCents(comic.myValue);
 }

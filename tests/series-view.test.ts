@@ -14,6 +14,7 @@ import {
   ownedIssueCount,
   seriesHeaderSummary,
   seriesMissing,
+  groupRowFacts,
   seriesRowFacts,
   seriesSpend,
   truncateMissingParts,
@@ -117,7 +118,7 @@ describe("series rows", () => {
       copy({ id: "c", issueNo: "1", variant: "A", seriesYear: 1800, publisher: "Image" }),
       copy({ id: "annual", issueNo: "Annual 1", publisher: "Other" }),
     ];
-    expect(copyCountLabel(comics)).toBe("5 comics");
+    expect(copyCountLabel(comics)).toBe("4 comics · 5 copies");
     expect(copyCountLabel([copy({ id: "only" })])).toBe("1 comic");
     expect(haveRange(comics)).toBe("Have: 1-12");
     expect(haveRange([copy({ id: "only", issueNo: "5" })])).toBe("Have: 5");
@@ -212,6 +213,7 @@ describe("series rows", () => {
       copies: null,
       box: null,
       paid: null,
+      basis: null,
       value: null,
       signed: null,
     });
@@ -242,7 +244,8 @@ describe("series rows", () => {
     expect(full.keyReason).toBe("1st appearance of Hazel");
     expect(full.creators).toBe("Writer Brian K. Vaughan · Cover Fiona Staples");
     expect(full.condition).toEqual({ text: "CGC 9.8", slab: true });
-    expect(full.copies).toBe("2 copies");
+    expect(full.copies).toBeNull();
+    expect(full.basis).toBe("Cost $19.98");
     expect(full.box).toBe("Longbox A");
     expect(full.paid).toBe("Paid $9.99");
     expect(full.value).toBe("Value $55.00");
@@ -269,6 +272,94 @@ describe("series rows", () => {
     expect(raw.paid).toBeNull();
     expect(raw.value).toBe("Value $12.00");
     expect(raw.signed).toBeNull();
+    expect(raw.basis).toBeNull();
+  });
+
+  it("collapses duplicate copies of the same series, issue, and variant", () => {
+    const rows = buildSeriesRows([
+      copy({
+        id: "a",
+        series: "Alien",
+        issueNo: "1",
+        variant: "A",
+        variantDescription: "Cover A",
+        grade: "9.8",
+        rawOrSlabbed: "Raw",
+        storageBox: "Box 1",
+        purchasePrice: "4.99",
+      }),
+      copy({
+        id: "b",
+        series: "Alien",
+        issueNo: "1A",
+        variant: null,
+        variantDescription: "Cover A",
+        grade: "9.6",
+        gradingCompany: "CGC",
+        rawOrSlabbed: "Slabbed",
+        storageBox: "Box 2",
+        purchasePrice: "9.99",
+      }),
+      copy({
+        id: "other",
+        series: "Alien",
+        issueNo: "1",
+        variant: "A",
+        variantDescription: "Second printing",
+        purchasePrice: "3.00",
+      }),
+    ]);
+    expect(rows.map((row) => row.badge)).toEqual(["#1A", "#1A"]);
+    expect(rows.map((row) => row.quantity)).toEqual([2, 1]);
+    const grouped = rows[0];
+    expect(grouped?.copies.map((item) => item.id).sort()).toEqual(["a", "b"]);
+    expect(grouped?.copies.find((item) => item.id === "a")?.grade).toBe("9.8");
+    expect(grouped?.copies.find((item) => item.id === "b")?.grade).toBe("9.6");
+    const facts = groupRowFacts(grouped?.copies ?? []);
+    expect(facts.paid).toBe("Paid $4.99-$9.99");
+    expect(facts.basis).toBe("Cost $14.98");
+    expect(facts.condition).toEqual({ text: "mixed", slab: false });
+    expect(facts.box).toBe("Box 1, Box 2");
+    expect(facts.copies).toBeNull();
+
+    const matched = groupRowFacts([
+      copy({ id: "p1", purchasePrice: "4.99", grade: "NM", rawOrSlabbed: "Raw", storageBox: "Longbox A", signedBy: "Stan Lee" }),
+      copy({ id: "p2", purchasePrice: "4.99", grade: "NM", rawOrSlabbed: "Raw", storageBox: "longbox a", signedBy: "Stan Lee" }),
+    ]);
+    expect(matched.paid).toBe("Paid $4.99");
+    expect(matched.basis).toBe("Cost $9.98");
+    expect(matched.condition).toEqual({ text: "Raw NM", slab: false });
+    expect(matched.box).toBe("Longbox A");
+    expect(matched.signed).toBe("Signed Stan Lee");
+
+    const partial = groupRowFacts([
+      copy({ id: "m1", purchasePrice: "4.99", signedBy: "Stan Lee" }),
+      copy({ id: "m2", purchasePrice: null, signedBy: "Jack Kirby" }),
+    ]);
+    expect(partial.paid).toBe("Paid mixed");
+    expect(partial.signed).toBeNull();
+
+    const header = Array.from({ length: 14 }, (_, index) => copy({ id: `c${index}`, issueNo: String(index + 1) }));
+    header.push(copy({ id: "dup", issueNo: "1" }));
+    expect(copyCountLabel(header)).toBe("14 comics · 15 copies");
+    expect(copyCountLabel([copy({ id: "pair", quantity: 2 })])).toBe("1 comic · 2 copies");
+  });
+
+  it("keeps grouped rows as separate records on the issue page", () => {
+    const page = readFileSync("src/app/issues/[id]/page.tsx", "utf8");
+    const action = readFileSync("src/app/issues/actions.ts", "utf8");
+    const keys = readFileSync("src/app/keys/page.tsx", "utf8");
+    const collection = readFileSync("src/app/collection/page.tsx", "utf8");
+    expect(page).toMatch(/Copies/);
+    expect(page).toMatch(/RemoveCopyButton/);
+    expect(page).toMatch(/id="editor"/);
+    expect(page).not.toMatch(/\u2014/);
+    expect(action).toMatch(/comic\.delete/);
+    expect(action).not.toMatch(/deleteMany/);
+    expect(keys).toMatch(/groupCopies/);
+    expect(keys).toMatch(/quantity=\{quantity\}/);
+    expect(collection).toMatch(/copyCountLabel/);
+    expect(collection).toMatch(/variantDescription: true/);
   });
 
   it("does not group copies under one tile on the series page", () => {

@@ -15,7 +15,7 @@ import {
   majorityPublisher,
   ownedIssueCount,
   seriesMissing,
-  seriesRowFacts,
+  groupRowFacts,
   seriesSpend,
   yearSpan,
   type SeriesCopy,
@@ -46,7 +46,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
       ...row,
       date: release && release !== "—" ? release : row.comic.coverDate?.trim() || "",
       image: safeImageUrl(row.comic.coverUrl),
-      facts: seriesRowFacts(row.comic, prefs.pricing.currency),
+      facts: groupRowFacts(row.copies, prefs.pricing.currency),
     };
   });
   const backdrop = rows.find((row) => row.kind === "owned" && row.image)?.image ?? null;

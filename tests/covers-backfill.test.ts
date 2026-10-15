@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupSeries, type ShelfComic } from "@/lib/collection";
+import { groupSeries, seriesCardCountLabel, type ShelfComic } from "@/lib/collection";
 import { backfillCovers, needsCover } from "@/lib/covers/backfill";
 import { emptyBudget, METRON_DAILY_LIMIT, METRON_MIN_INTERVAL_MS, MetronLimiter, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 import { chooseIssue, narrowSeries, resolveCover } from "@/lib/covers/match";
@@ -484,6 +484,17 @@ describe("local covers", () => {
     ]);
     expect(cards[0]?.coverUrl).toBe("/covers/files/metron-50.jpg");
     expect(cards[0]?.sampleIssue).toBe("2");
+  });
+
+  it("counts duplicate copies as one comic and summed copies", () => {
+    const cards = groupSeries([
+      shelf({ id: "a", issueNo: "1", variant: "A", variantDescription: "Cover A", quantity: 1, keyLevel: "Major" }),
+      shelf({ id: "b", issueNo: "1A", variantDescription: "Cover A", quantity: 2, keyLevel: "Major" }),
+      shelf({ id: "c", issueNo: "1", variant: "A", variantDescription: "Second printing", keyLevel: "Minor" }),
+    ]);
+    expect(cards[0]).toMatchObject({ count: 2, copies: 4, keys: 2, keyLevel: "Major" });
+    expect(seriesCardCountLabel({ count: 2, copies: 4 })).toBe("2 comics · 4 copies");
+    expect(seriesCardCountLabel({ count: 1, copies: 1 })).toBe("1 comic");
   });
 });
 

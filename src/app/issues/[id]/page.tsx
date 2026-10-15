@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { CoverControls } from "@/app/issues/cover-controls";
 import { IssueEditor } from "@/app/issues/edit-form";
 import { MatchPanel } from "@/app/issues/match-panel";
+import { RemoveCopyButton } from "@/app/issues/remove-copy";
 import { CatalogIdLink } from "@/components/catalog-id-link";
 import { IssueCatalogLinks } from "@/components/catalog-links";
 import { CoverTile } from "@/components/cover-tile";
@@ -16,10 +17,12 @@ import { prisma } from "@/lib/db";
 import { isEmptyDisplay, showSlabSection } from "@/lib/issue-view";
 import { toIssueDraft } from "@/lib/issue-fields";
 import { costBasis } from "@/lib/clz/parse";
-import { formatDate, formatIssue, formatMoney } from "@/lib/format";
+import { formatDate, formatIssue, formatMoney, type DateDisplay } from "@/lib/format";
 import { dateOptions } from "@/lib/settings/preferences";
 import { getPreferences, getSettings } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
+import { copiesOf, type ShelfCopy } from "@/lib/shelf-copies";
+import { groupQuantity } from "@/lib/series-view";
 import { safeImageUrl } from "@/lib/url";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
@@ -43,6 +46,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
     }),
   ]);
   if (!comic) notFound();
+  const copies = await copiesOf(comic);
   const when = dateOptions(prefs);
   const money = prefs.pricing.currency;
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
@@ -112,7 +116,11 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         {comic.variantDescription || comic.variant ? (
           <p className="mt-1 text-mist">{comic.variantDescription || comic.variant}</p>
         ) : null}
-        {comic.quantity > 1 ? <p className="mt-2 text-sm text-paper">{comic.quantity} copies</p> : null}
+        {copies.length > 1 ? (
+          <CopyList copies={copies} currentId={comic.id} currency={money} when={when} />
+        ) : comic.quantity > 1 ? (
+          <p className="mt-2 text-sm text-paper">{comic.quantity} copies</p>
+        ) : null}
         <IssueCatalogLinks comic={comic} />
         <MatchPanel
           comicId={comic.id}
@@ -131,6 +139,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
         />
 
+        <div id="editor">
         <IssueEditor
           draft={toIssueDraft(comic)}
           metronIssueUrl={comic.metronIssueUrl}
@@ -233,9 +242,85 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
             </section>
           ) : null}
         </IssueEditor>
+        </div>
       </div>
     </div>
   );
+}
+
+function CopyList({
+  copies,
+  currentId,
+  currency,
+  when,
+}: {
+  copies: ShelfCopy[];
+  currentId: string;
+  currency: string;
+  when: DateDisplay;
+}) {
+  return (
+    <section className="mt-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+      <h2 className="font-display text-3xl tracking-wide">Copies</h2>
+      <p className="mt-1 text-sm text-mist">{groupQuantity(copies)} copies. Each record stays separate.</p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {copies.map((copy) => {
+          const current = copy.id === currentId;
+          const detail = copyDetail(copy, currency, when);
+          return (
+            <li key={copy.id} className={`rounded-xl px-3 py-3 ring-1 ${current ? "bg-ink/40 ring-comic/60" : "bg-panel2 ring-white/5"}`}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 text-sm">
+                  <p className="font-medium text-paper">
+                    {detail.condition}
+                    {copy.quantity > 1 ? <span className="ml-2 text-comic">×{copy.quantity}</span> : null}
+                    {current ? <span className="ml-2 text-xs font-semibold uppercase tracking-wide text-comic">This copy</span> : null}
+                  </p>
+                  {detail.slab ? <p className="mt-1 text-mist">{detail.slab}</p> : null}
+                  <p className="mt-1 text-mist">
+                    {copy.storageBox ? (
+                      <Link href={`/boxes/${encodeURIComponent(copy.storageBox)}`} className="text-comic">
+                        {copy.storageBox}
+                      </Link>
+                    ) : (
+                      "No box"
+                    )}
+                    {" · "}
+                    {detail.price}
+                    {detail.basis ? ` · Cost ${detail.basis}` : ""}
+                    {" · "}
+                    {detail.date}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <Link href={current ? "#editor" : `/issues/${copy.id}#editor`} className="text-sm font-semibold text-comic">
+                    Edit
+                  </Link>
+                  <RemoveCopyButton id={copy.id} />
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function copyDetail(copy: ShelfCopy, currency: string, when: DateDisplay) {
+  const grade = copy.grade?.trim() || "";
+  const company = copy.gradingCompany?.trim() || "";
+  const raw = copy.rawOrSlabbed?.trim() || "";
+  const slabbed = /^slab/i.test(raw);
+  const condition = slabbed ? [company || "Slab", grade].filter(Boolean).join(" ") : [raw, grade].filter(Boolean).join(" ") || "No grade";
+  const slabBits = slabbed
+    ? [copy.labelType?.trim(), copy.slabCertNumber?.trim() ? `Cert ${copy.slabCertNumber.trim()}` : "", copy.pageQuality?.trim()].filter(Boolean)
+    : [];
+  const price = copy.purchasePrice != null ? `${formatMoney(copy.purchasePrice, currency)} each` : "No price";
+  const spent = costBasis(copy.purchasePrice, copy.quantity);
+  const basis = copy.quantity > 1 && spent ? formatMoney(spent, currency) : null;
+  const date = copy.purchaseDate ? formatDate(copy.purchaseDate, when) : "No date";
+  return { condition, slab: slabBits.join(" · "), price, basis, date };
 }
 
 function fact(label: string, value: ReactNode, credit?: string | null) {

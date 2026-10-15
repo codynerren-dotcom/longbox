@@ -175,6 +175,15 @@ export async function logIssueEdited(label: string, comicId: string, fields: str
   });
 }
 
+export async function logCopyRemoved(label: string, comicId: string): Promise<void> {
+  await writeLog({
+    level: "info",
+    source: "system",
+    message: `Removed a copy of ${label}.`,
+    details: { comicId },
+  });
+}
+
 export async function logScanAdd(args: { requested: number; created: number; existing: number }): Promise<void> {
   await writeLog({
     level: "info",

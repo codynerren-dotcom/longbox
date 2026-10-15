@@ -10,11 +10,12 @@ type CoverTileProps = {
   keyLevel?: string | null;
   slab?: boolean;
   variant?: string | null;
+  quantity?: number | null;
   href?: string;
   className?: string;
 };
 
-export function CoverTile({ title, issue, coverUrl, keyLevel, slab, variant, href, className }: CoverTileProps) {
+export function CoverTile({ title, issue, coverUrl, keyLevel, slab, variant, quantity, href, className }: CoverTileProps) {
   const image = safeImageUrl(coverUrl);
   const [from, to] = paletteFor(title);
   const inner = (
@@ -45,6 +46,9 @@ export function CoverTile({ title, issue, coverUrl, keyLevel, slab, variant, hre
         ) : null}
       </div>
       <KeyBadge level={keyLevel} className="absolute left-2.5 top-2.5" />
+      {quantity != null && quantity > 1 ? (
+        <span className="absolute right-2 top-2 rounded-md bg-comic px-1.5 py-0.5 text-xs font-bold text-ink">×{quantity}</span>
+      ) : null}
     </div>
   );
 
