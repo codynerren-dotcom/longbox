@@ -1,5 +1,9 @@
+import Link from "next/link";
 import { LinkedJson, LinkedMessage } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
+import { formatPauseClock } from "@/lib/catalog/rate-limit";
+import { queuedLogHref, queueSourceLabel } from "@/lib/catalog/search-queue";
+import { CancelQueuedSearch } from "@/app/logs/queued-searches";
 import { editionJobText, readEditionJob } from "@/lib/covers/job-state";
 import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
@@ -42,6 +46,15 @@ export default async function LogsPage({
   const query = logQueryString(filters);
   const display = dateOptions(prefs, true);
   const jobLine = editionJobText(readEditionJob());
+  let queued: { id: string; label: string; source: string; resumeAt: Date }[] = [];
+  try {
+    queued = await prisma.searchQueue.findMany({
+      orderBy: [{ resumeAt: "asc" }, { createdAt: "asc" }],
+      select: { id: true, label: true, source: true, resumeAt: true },
+    });
+  } catch (caught) {
+    error = error ?? (caught instanceof Error ? caught.message : "Queued searches could not be read.");
+  }
 
   return (
     <div>
@@ -50,6 +63,24 @@ export default async function LogsPage({
       </PageHeader>
 
       {jobLine ? <p className="mb-4 text-sm text-paper">{jobLine}</p> : null}
+
+      <section className="mb-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
+        <h2 className="font-display text-3xl tracking-wide">Queued searches</h2>
+        {queued.length === 0 ? (
+          <p className="mt-2 text-sm text-mist">None queued.</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {queued.map((item) => (
+              <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                <p className="text-paper">
+                  {item.label} <span className="text-mist">on {queueSourceLabel(item.source)}. Runs at {formatPauseClock(item.resumeAt.getTime())}.</span>
+                </p>
+                <CancelQueuedSearch id={item.id} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <form method="get" className="grid gap-3 rounded-2xl bg-panel p-4 ring-1 ring-white/5 sm:grid-cols-2 lg:grid-cols-6">
         <label className="block space-y-1 text-sm text-paper">
@@ -116,7 +147,9 @@ export default async function LogsPage({
         <p className="mt-6 rounded-2xl bg-panel px-4 py-8 text-sm text-mist ring-1 ring-white/5">No log events match these filters.</p>
       ) : (
         <ol className="mt-4 space-y-2">
-          {rows.map((row) => (
+          {rows.map((row) => {
+            const comicHref = queuedLogHref(row.details);
+            return (
             <li key={row.id} className="rounded-2xl bg-panel px-4 py-3 ring-1 ring-white/5">
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <time className="text-xs text-mist" dateTime={row.createdAt.toISOString()}>
@@ -128,6 +161,11 @@ export default async function LogsPage({
               <p className="mt-1 text-sm text-paper">
                 <LinkedMessage text={row.message} />
               </p>
+              {comicHref ? (
+                <Link href={comicHref} className="mt-1 inline-block text-sm font-medium text-comic">
+                  Open the comic
+                </Link>
+              ) : null}
               {row.details != null ? (
                 <details className="mt-2">
                   <summary className="cursor-pointer text-xs text-mist">Details</summary>
@@ -137,7 +175,8 @@ export default async function LogsPage({
                 </details>
               ) : null}
             </li>
-          ))}
+            );
+          })}
         </ol>
       )}
     </div>

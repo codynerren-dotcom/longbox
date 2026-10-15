@@ -313,7 +313,7 @@ export async function resumePausedCatalogJobs(): Promise<void> {
     const cursor = readJobWindow(job);
     if (!cursor?.resumeAt) continue;
     const start = job === "backfill" ? () => startCoverBackfillInBackground({ resume: true }) : () => startMetronEnrichmentInBackground({ resume: true });
-    if (cursor.resumeAt <= Date.now()) void start();
+    if (cursor.resumeAt <= Date.now()) void startAfterQueue(start);
     else scheduleJobResume(job, cursor.resumeAt, () => start());
   }
 }
@@ -325,7 +325,7 @@ function scheduleJobResume(slot: "backfill" | "enrich", resumeAt: number, start:
   const timer = setTimeout(() => {
     if (slot === "backfill") backfillResume = null;
     else enrichResume = null;
-    void start();
+    void startAfterQueue(start);
   }, wait);
   if (slot === "backfill") backfillResume = timer;
   else enrichResume = timer;
@@ -335,7 +335,15 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
   return runInLane("background", () => runCoverBackfillLane(log));
 }
 
+async function startAfterQueue(start: () => Promise<unknown>): Promise<void> {
+  const { drainDueSearches } = await import("@/lib/catalog/search-queue-run");
+  await drainDueSearches();
+  await start();
+}
+
 async function runCoverBackfillLane(log: (line: string) => void): Promise<BackfillSummary> {
+  const { drainDueSearches } = await import("@/lib/catalog/search-queue-run");
+  await drainDueSearches();
   const startedAt = new Date().toISOString();
   const emit = (line: string) => {
     log(line);
@@ -668,6 +676,8 @@ export async function startMetronEnrichmentInBackground(options?: { resume?: boo
 
 async function runMetronEnrichment(): Promise<void> {
   return runInLane("background", async () => {
+  const { drainDueSearches } = await import("@/lib/catalog/search-queue-run");
+  await drainDueSearches();
   const startedAt = new Date().toISOString();
   armMetronJobBudget();
   try {

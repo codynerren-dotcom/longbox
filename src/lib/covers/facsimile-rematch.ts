@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSyn
 import path from "node:path";
 import { createGcdCatalog, GcdBudgetError } from "@/lib/catalog/gcd";
 import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
+import { hintFromBlocks, type QueueSeed } from "@/lib/catalog/search-queue";
 import { runInLane } from "@/lib/catalog/rate-lane";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { coverPublicPath } from "@/lib/covers/backfill";
@@ -506,7 +507,7 @@ const linkedSelect = {
   manualLink: true,
 } as const;
 
-export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string; notice: string | null }> {
+export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   armMetronJobBudget();
   try {
     return await rematchAllSuspectCopiesBody();
@@ -515,7 +516,13 @@ export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message:
   }
 }
 
-async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: string; notice: string | null }> {
+function queueSeed(comicId: string, blocks: LimitBlock[]): QueueSeed | null {
+  const hint = hintFromBlocks("metron", blocks, "relink");
+  if (!hint) return null;
+  return { comicId, source: hint.source, resumeAt: hint.resumeAt, kind: hint.kind };
+}
+
+async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   const [comics, years, printings] = await Promise.all([
     prisma.comic.findMany({
       where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
@@ -530,6 +537,7 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
   let metron = metronClosedUntil <= Date.now();
   const limitBlocks: LimitBlock[] = [];
   const searchedSources: string[] = [];
+  const queueItems: QueueSeed[] = [];
   for (const comic of comics) {
     const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
     if (!reason) continue;
@@ -542,6 +550,10 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
       const result = await rematchShelfCopy(comic.id, { metron });
       limitBlocks.push(...result.limitBlocks);
       searchedSources.push(...result.searchedSources);
+      if (result.outcome !== "matched" && result.outcome !== "skipped") {
+        const seed = queueSeed(comic.id, result.limitBlocks);
+        if (seed) queueItems.push(seed);
+      }
       if (result.outcome === "deferred" || result.outcome === "metron-budget") {
         metron = false;
         unmatched += 1;
@@ -553,13 +565,21 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
     } catch (error) {
       if (error instanceof MetronBudgetError) {
         const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
-        if (block) limitBlocks.push(block);
+        if (block) {
+          limitBlocks.push(block);
+          const seed = queueSeed(comic.id, [block]);
+          if (seed) queueItems.push(seed);
+        }
         metron = false;
         continue;
       }
       if (error instanceof GcdBudgetError) {
         const block = limitBlockFromError(error);
-        if (block) limitBlocks.push(block);
+        if (block) {
+          limitBlocks.push(block);
+          const seed = queueSeed(comic.id, [block]);
+          if (seed) queueItems.push(seed);
+        }
         await noteGcdPause(error);
         unmatched += 1;
         continue;
@@ -570,7 +590,7 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
   const message = `Re-matched ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`;
   const notice = limitNotices(limitBlocks, searchedSources) || null;
   await writeLog({ level: "info", source: "covers/backfill", message: notice ? `${message} ${notice}` : message, details: { matched, unmatched, skipped } });
-  return { ok: true, message, notice };
+  return { ok: true, message, notice, queueItems };
 }
 
 async function rematchAlreadyDone(): Promise<boolean> {

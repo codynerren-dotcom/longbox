@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { limitBlockFromError, limitNotices } from "@/lib/catalog/limit-notice";
+import { hintFromBlocks, type QueueHint, type QueueSeed } from "@/lib/catalog/search-queue";
 import { pausedLimitNotice } from "@/lib/catalog/limit-status";
 import { unlinkIssueCatalog } from "@/lib/catalog/link-issue";
 import { rematchAllSuspectCopies, rematchShelfCopy } from "@/lib/covers/facsimile-rematch";
@@ -66,20 +67,24 @@ export async function unlinkSuspectAction(comicId: string): Promise<{ ok: boolea
   return { ok: true, message: "Unlinked. The cover file was left in place." };
 }
 
-export async function rematchSuspectAction(comicId: string): Promise<{ ok: boolean; message: string; notice: string | null }> {
+export async function rematchSuspectAction(comicId: string): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null }> {
   try {
     const result = await rematchShelfCopy(comicId);
     revalidatePath("/covers");
     revalidatePath(`/issues/${comicId}`);
     revalidatePath("/", "layout");
-    return { ok: result.ok, message: result.message, notice: result.notice };
+    const queue =
+      result.notice && result.outcome !== "matched" && result.outcome !== "skipped"
+        ? hintFromBlocks("metron", result.limitBlocks, "relink")
+        : null;
+    return { ok: result.ok, message: result.message, notice: result.notice, queue };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not re-match that issue.";
-    return { ok: false, message, notice: null };
+    return { ok: false, message, notice: null, queue: null };
   }
 }
 
-export async function rematchAllSuspectsAction(): Promise<{ ok: boolean; message: string; notice: string | null }> {
+export async function rematchAllSuspectsAction(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   try {
     const result = await rematchAllSuspectCopies();
     revalidatePath("/covers");
@@ -87,6 +92,6 @@ export async function rematchAllSuspectsAction(): Promise<{ ok: boolean; message
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not re-match suspect links.";
-    return { ok: false, message, notice: null };
+    return { ok: false, message, notice: null, queueItems: [] };
   }
 }

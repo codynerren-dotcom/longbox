@@ -5,6 +5,8 @@ export async function register(): Promise<void> {
     const { ensureRateHydrated } = await import("@/lib/catalog/rate-store");
     const { resumePausedCatalogJobs } = await import("@/lib/covers/run");
     await ensureRateHydrated();
+    const { armSearchQueue } = await import("@/lib/catalog/search-queue-run");
+    await armSearchQueue();
     await resumePausedCatalogJobs();
   }
   scheduleFacsimileRematch();

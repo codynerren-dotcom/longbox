@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { linkMatchAction, loadGcdMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
+import { queueSearchAction } from "@/app/logs/queue-actions";
 import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
 import { LimitToast } from "@/components/limit-toast";
 import { matchPanelNote } from "@/lib/catalog/limit-notice";
+import type { QueueHint, QueueRequest } from "@/lib/catalog/search-queue";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
@@ -33,6 +35,7 @@ export function MatchPanel(props: Props) {
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [toast, setToast] = useState("");
+  const [offer, setOffer] = useState<QueueRequest | null>(null);
   const [ok, setOk] = useState(true);
   const [pending, start] = useTransition();
 
@@ -42,6 +45,7 @@ export function MatchPanel(props: Props) {
       setOk(result.ok);
       setMessage(result.notice ?? result.message);
       setToast(result.notice ?? "");
+      setOffer(null);
       if (result.ok) router.refresh();
     });
   }
@@ -103,21 +107,41 @@ export function MatchPanel(props: Props) {
         <MatchSheet
           {...props}
           onClose={() => setOpen(false)}
-          onNotice={setToast}
+          onNotice={(message, next) => {
+            setToast(message);
+            setOffer(message ? next : null);
+          }}
           onLinked={(text, notice) => {
             setOk(true);
             setMessage(notice ?? text);
             setToast(notice ?? "");
+            setOffer(null);
             router.refresh();
           }}
         />
       ) : null}
-      <LimitToast message={toast} onDismiss={() => setToast("")} />
+      <LimitToast
+        message={toast}
+        onDismiss={() => {
+          setToast("");
+          setOffer(null);
+        }}
+        onQueue={
+          offer
+            ? async () => {
+                const result = await queueSearchAction(offer);
+                if (result.ok) setOffer(null);
+                setToast(result.message);
+                return result.message;
+              }
+            : undefined
+        }
+      />
     </section>
   );
 }
 
-function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: string) => void; onLinked: (message: string, notice: string | null) => void }) {
+function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: string, offer: QueueRequest | null) => void; onLinked: (message: string, notice: string | null) => void }) {
   const [source, setSource] = useState<CatalogSource>("metron");
   const [query, setQuery] = useState(props.query);
   const [barcode, setBarcode] = useState(props.barcode);
@@ -150,6 +174,22 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
     setNote(next === "metron" && metronMissed && followGcd ? metronEmptyNote : "");
   }
 
+  function queued(queue: QueueHint | null | undefined, extra: Partial<QueueRequest> = {}): QueueRequest | null {
+    if (!queue) return null;
+    return {
+      comicId: props.comicId,
+      source: queue.source,
+      kind: queue.kind,
+      resumeAt: queue.resumeAt,
+      query,
+      barcode,
+      shelfFormat: props.shelfFormat ?? null,
+      shelfSeries: props.shelfSeries ?? null,
+      facsimile: props.facsimile,
+      ...extra,
+    };
+  }
+
   function search(mode: "query" | "barcode") {
     setError("");
     setNote("");
@@ -165,7 +205,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
         facsimile: props.facsimile,
         comicId: props.comicId,
       });
-      props.onNotice(result.notice ?? "");
+      props.onNotice(result.notice ?? "", queued(result.queue, { mode }));
       if (!result.ok) {
         setHits([]);
         setError(result.notice ? "" : result.message);
@@ -194,7 +234,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
           facsimile: props.facsimile,
           comicId: props.comicId,
         });
-        props.onNotice(gcd.notice ?? "");
+        props.onNotice(gcd.notice ?? "", queued(gcd.queue, { mode }));
         if (!gcd.ok) {
           setError(gcd.notice ? "" : gcd.message);
           setNote(gcd.notice ?? "");
@@ -238,7 +278,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
     setSelected(null);
     start(async () => {
       const result = await loadGcdMatchAction(gcdRef);
-      props.onNotice(result.notice ?? "");
+      props.onNotice(result.notice ?? "", queued(result.queue, { gcdRef, mode: "query" }));
       if (!result.ok) {
         setHits([]);
         setError(result.notice ? "" : result.message);
@@ -272,7 +312,16 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
         overwrite: source === "gcd" && overwrite,
         coverImageUrl: useCover ? coverUrl : null,
       });
-      props.onNotice(result.notice ?? "");
+      props.onNotice(
+        result.notice ?? "",
+        queued(result.queue, {
+          hit: selected,
+          useCover: source === "gcd" ? false : useCover,
+          fillMissing,
+          overwrite: source === "gcd" && overwrite,
+          coverImageUrl: useCover ? coverUrl : null,
+        }),
+      );
       if (!result.ok) {
         setError(result.notice ? "" : result.message);
         setNote(result.notice ?? "");

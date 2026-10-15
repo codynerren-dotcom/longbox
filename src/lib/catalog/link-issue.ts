@@ -4,6 +4,7 @@ import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchC
 import { manualLinkJson, matchQuery, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
+import { hintFromBlocks, type QueueHint } from "@/lib/catalog/search-queue";
 import { linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
 import { gcdDetails, gcdHit, searchGcdMatches } from "@/lib/covers/gcd-match";
@@ -16,8 +17,8 @@ import { writeLog } from "@/lib/log/write";
 import { getSettings } from "@/lib/settings/service";
 
 export type MatchSearchResult =
-  | { ok: true; hits: MatchHit[]; notice: string | null }
-  | { ok: false; message: string; notice: string | null };
+  | { ok: true; hits: MatchHit[]; notice: string | null; queue: QueueHint | null }
+  | { ok: false; message: string; notice: string | null; queue: QueueHint | null };
 
 function limitBlocks(error: unknown): LimitBlock | null {
   return limitBlockFromError(error, sharedMetronLimiter().snapshot());
@@ -126,7 +127,7 @@ export async function searchIssueCatalog(args: {
   comicId?: string | null;
 }): Promise<MatchSearchResult> {
   const needle = args.mode === "barcode" ? args.barcode.trim() : args.query.trim();
-  if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue.", notice: null };
+  if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue.", notice: null, queue: null };
   const stored = await storedShelf(args);
   const shelfSeries = mergeShelfSeries(args.shelfSeries, stored?.series);
   const query =
@@ -136,20 +137,20 @@ export async function searchIssueCatalog(args: {
   const request = { ...args, query, shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null, shelfSeries };
   try {
     const hits = await searchOne(args.source, request);
-    if ("ok" in hits) return { ...hits, notice: null };
+    if ("ok" in hits) return { ...hits, notice: null, queue: null };
     await writeLog({
       level: "info",
       source: logSource(args.source),
       message: `Match search on ${catalogName(args.source)} returned ${hits.length}.`,
       details: { mode: args.mode, count: hits.length },
     });
-    return { ok: true, hits, notice: null };
+    return { ok: true, hits, notice: null, queue: null };
   } catch (error) {
     const block = limitBlocks(error);
     if (!block) {
       const message = error instanceof Error ? error.message : "Search failed.";
       await writeLog({ level: "warn", source: logSource(args.source), message, details: { mode: args.mode } });
-      return { ok: false, message, notice: null };
+      return { ok: false, message, notice: null, queue: null };
     }
     const blocks = [block];
     const searched: string[] = [];
@@ -167,14 +168,44 @@ export async function searchIssueCatalog(args: {
       }
     }
     const notice = noticeText(blocks, searched);
+    const queue = hintFromBlocks(args.source, blocks, "search");
     await writeLog({
       level: "warn",
       source: logSource(args.source),
       message: notice ?? "Search paused.",
       details: { mode: args.mode, count: hits.length },
     });
-    return { ok: true, hits, notice };
+    return { ok: true, hits, notice, queue };
   }
+}
+
+/** One catalog, no fallback. The queued search uses this so a paused neighbor is not reported as a match. */
+export async function searchCatalogSource(args: {
+  source: CatalogSource;
+  query: string;
+  barcode: string;
+  mode: "query" | "barcode";
+  shelfFormat?: string | null;
+  shelfSeries?: string | null;
+  facsimile?: boolean;
+  comicId?: string | null;
+}): Promise<MatchHit[]> {
+  const stored = await storedShelf(args);
+  const shelfSeries = mergeShelfSeries(args.shelfSeries, stored?.series);
+  const query =
+    args.mode === "barcode" && !args.query.trim() && shelfSeries
+      ? matchQuery({ series: shelfSeries, issueNo: stored?.issueNo, year: null })
+      : args.query;
+  const found = await searchOne(args.source, {
+    query,
+    barcode: args.barcode,
+    mode: args.mode,
+    shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null,
+    shelfSeries,
+    facsimile: args.facsimile,
+  });
+  if ("ok" in found) throw new Error(found.message);
+  return found;
 }
 
 function otherSources(source: CatalogSource): CatalogSource[] {
@@ -270,16 +301,16 @@ export async function linkIssueToCatalog(args: {
   fillMissing: boolean;
   overwrite?: boolean;
   coverImageUrl: string | null;
-}): Promise<{ ok: boolean; message: string; notice: string | null }> {
-  if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish.", notice: null };
+}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null }> {
+  if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish.", notice: null, queue: null };
   const comic = await comicForLink(args.comicId);
-  if (!comic) return { ok: false, message: "That issue is not on the shelf.", notice: null };
-  if (!/^\d+$/.test(args.hit.id) || args.hit.source !== args.source) return { ok: false, message: "Pick a result from that catalog.", notice: null };
+  if (!comic) return { ok: false, message: "That issue is not on the shelf.", notice: null, queue: null };
+  if (!/^\d+$/.test(args.hit.id) || args.hit.source !== args.source) return { ok: false, message: "Pick a result from that catalog.", notice: null, queue: null };
   const label = issueLabel(comic.series, comic.issueNo, comic.issue);
   let crossNotice: string | null = null;
   try {
     const loaded = await loadLinkTarget(args.source, args.hit);
-    if (!loaded.ok) return { ...loaded, notice: null };
+    if (!loaded.ok) return { ...loaded, notice: null, queue: null };
     const covers = loaded.covers.length > 0 ? loaded.covers : args.hit.covers;
     const chosen =
       args.coverImageUrl && (covers.some((cover) => cover.imageUrl === args.coverImageUrl) || args.coverImageUrl === args.hit.coverUrl)
@@ -322,13 +353,14 @@ export async function linkIssueToCatalog(args: {
       message,
       details: { comicId: comic.id, externalId: args.hit.id, useCover: args.useCover, fillMissing: args.fillMissing, filled: update.filled },
     });
-    return { ok: true, message, notice: crossNotice };
+    return { ok: true, message, notice: crossNotice, queue: null };
   } catch (error) {
     const block = limitBlocks(error);
     const notice = block ? noticeText([block], []) : null;
+    const queue = block ? hintFromBlocks(args.source, [block], "relink") : null;
     const message = notice ?? (error instanceof Error ? error.message : "Could not link this issue.");
     await writeLog({ level: "error", source: logSource(args.source), message, details: { comicId: args.comicId } });
-    return { ok: false, message, notice };
+    return { ok: false, message, notice, queue };
   }
 }
 
