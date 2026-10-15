@@ -377,10 +377,75 @@ describe("Metron rate limit", () => {
       },
     };
     const hits = await createMetronCoverLookup(transport).issuesByUpc("07596060000100001");
-    expect(hits).toEqual([issue({ publisher: null, releaseYear: null, seriesYear: 2012, upc: null, variant: null, cvId: null, gcdId: null })]);
+    expect(hits).toEqual([
+      issue({
+        publisher: null,
+        releaseYear: null,
+        seriesYear: 2012,
+        upc: null,
+        variant: null,
+        cvId: null,
+        gcdId: null,
+        storeDate: null,
+        covers: [{ label: "Cover", imageUrl: image }],
+      }),
+    ]);
     expect(urls[0]).toBe("https://metron.cloud/api/issue/?upc=07596060000100001");
     expect(waits).toContain(30_000);
     expect(calls).toBe(2);
+  });
+
+  it("reads Expected available in N seconds when Retry-After is missing", async () => {
+    let time = 0;
+    const waits: number[] = [];
+    const { store } = memoryStore();
+    const limiter = new MetronLimiter(
+      store,
+      () => time,
+      async (ms) => {
+        waits.push(ms);
+        time += ms;
+      },
+      () => "2026-10-13",
+    );
+    let calls = 0;
+    const transport: MetronTransport = {
+      limiter,
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => time,
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) return new Response("Expected available in 15 seconds", { status: 429 });
+        return Response.json({ results: [] });
+      },
+    };
+    await createMetronCoverLookup(transport).issuesByUpc("75960620687200111");
+    expect(waits).toContain(15_000);
+    expect(calls).toBe(2);
+  });
+
+  it("shares one budget file across limiters", async () => {
+    let time = 0;
+    const waits: number[] = [];
+    let disk: MetronBudget = { day: "", count: 0, lastRequestAt: null };
+    const store: BudgetStore = {
+      read: () => ({ ...disk }),
+      write: (next) => {
+        disk = { ...next };
+      },
+    };
+    const sleep = async (ms: number) => {
+      waits.push(ms);
+      time += ms;
+    };
+    const first = new MetronLimiter(store, () => time, sleep, () => "2026-10-13");
+    const second = new MetronLimiter(store, () => time, sleep, () => "2026-10-13");
+    await first.acquire();
+    await second.acquire();
+    expect(waits).toEqual([METRON_MIN_INTERVAL_MS]);
+    expect(disk.count).toBe(2);
   });
 
   it("reads the sustained remaining header as an exhausted daily window", () => {

@@ -42,8 +42,18 @@ export function retryAfterMs(headers: HeaderBag, now: number): number | null {
   return Math.max(0, dated - now);
 }
 
+/** Metron's 429 body says "Expected available in N seconds" when Retry-After is absent. */
+export function retryAfterFromMessage(body: string): number | null {
+  const match = body.match(/expected available in\s+(\d+(?:\.\d+)?)\s+seconds?/i);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return seconds * 1000;
+}
+
 export class MetronLimiter {
   private budget: MetronBudget;
+  private pending: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly store: BudgetStore,
@@ -59,6 +69,21 @@ export class MetronLimiter {
   }
 
   async acquire(): Promise<void> {
+    const previous = this.pending;
+    let release: () => void = () => undefined;
+    this.pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      await this.acquireTurn();
+    } finally {
+      release();
+    }
+  }
+
+  private async acquireTurn(): Promise<void> {
+    this.syncFromStore();
     const day = this.day();
     if (this.budget.day !== day) {
       this.budget.day = day;
@@ -72,6 +97,20 @@ export class MetronLimiter {
     this.budget.count += 1;
     this.budget.lastRequestAt = this.now();
     this.store.write(this.budget);
+  }
+
+  /** Pick up waits and counts written by another limiter that shares this store. */
+  private syncFromStore(): void {
+    const disk = this.store.read();
+    if (!disk.day) return;
+    if (disk.day !== this.budget.day) {
+      if (disk.day > this.budget.day) this.budget = { ...disk };
+      return;
+    }
+    if (disk.count > this.budget.count) this.budget.count = disk.count;
+    if (disk.lastRequestAt != null && (this.budget.lastRequestAt == null || disk.lastRequestAt > this.budget.lastRequestAt)) {
+      this.budget.lastRequestAt = disk.lastRequestAt;
+    }
   }
 
   defer(ms: number): void {

@@ -1,5 +1,6 @@
 import { GcdBudgetError } from "@/lib/catalog/gcd";
 import { crossLinkLine, lookupCrossIssue, type CrossLookup } from "@/lib/covers/cross-link";
+import { detectEdition } from "@/lib/covers/edition";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { coverFileKey } from "@/lib/covers/files";
 import { resolveCover } from "@/lib/covers/match";
@@ -165,7 +166,7 @@ export async function backfillCovers(args: {
       continue;
     }
     try {
-      if (args.crossLookup && (comic.comicvineIssueId || comic.gcdIssueId || comic.embeddedMetronIssueId)) {
+      if (args.crossLookup && detectEdition(comic).kind !== "facsimile" && (comic.comicvineIssueId || comic.gcdIssueId || comic.embeddedMetronIssueId)) {
         const cross = await lookupCrossIssue(
           {
             id: comic.id,

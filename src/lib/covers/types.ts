@@ -13,6 +13,9 @@ export type MetronIssueHit = {
   variant?: string | null;
   cvId?: string | null;
   gcdId?: string | null;
+  /** ISO day from the catalog store or on-sale date. */
+  storeDate?: string | null;
+  covers?: Array<{ label: string; imageUrl: string }>;
 };
 
 export type MetronSeriesHit = {
@@ -44,7 +47,11 @@ export type CoverQuery = {
   format?: string | null;
   subtitle?: string | null;
   releaseYear?: number | null;
+  releaseDate?: Date | string | null;
+  seriesYear?: number | null;
   coverPrice?: unknown;
+  /** Store or cover year of the issue this copy is already linked to. */
+  catalogStoreYear?: number | null;
 };
 
 export type CoverDecision =

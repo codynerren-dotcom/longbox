@@ -116,7 +116,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         <IssueCatalogLinks comic={comic} />
         <MatchPanel
           comicId={comic.id}
-          query={matchQuery({ series: edition.searchNames[0] || comic.series, issueNo: comic.issueNo, year: matchYear })}
+          query={matchQuery({ series: edition.searchNames[0] || comic.series, issueNo: edition.kind === "facsimile" ? edition.issueNo : comic.issueNo, year: matchYear })}
           barcode={comic.barcode ?? ""}
           metronReady={metronReady}
           comicVineReady={Boolean(settings.comicvine.apiKey)}

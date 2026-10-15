@@ -97,7 +97,7 @@ function gcdIssue(overrides: Partial<GcdIssueRow> = {}): GcdIssueRow {
 describe("edition detection", () => {
   it("reads facsimile, reprint, printing, anniversary, True Believers, and omnibus wording", () => {
     expect(detectEdition(spider).kind).toBe("facsimile");
-    expect(detectEdition(spider).searchNames[0]).toBe("The Amazing Spider-Man Facsimile Edition");
+    expect(detectEdition(spider).searchNames[0]).toBe("Amazing Spider-Man Facsimile Edition");
     expect(detectEdition({ ...spider, variantDescription: "Reprint", format: null }).kind).toBe("reprint");
     expect(detectEdition({ ...spider, variantDescription: "2nd Printing", releaseYear: 2014, coverYear: 2014, coverPrice: "3.99" }).kind).toBe("printing");
     expect(detectEdition({ ...spider, variantDescription: "1st printing", releaseYear: 2014, coverYear: 2014, coverPrice: "3.99" }).kind).toBe("regular");
@@ -175,7 +175,8 @@ describe("edition scoring", () => {
       },
     });
     const missed = await resolveCover(spider, client);
-    expect(calls[0]).toBe("The Amazing Spider-Man Facsimile Edition");
+    expect(calls[0]).toBe("Amazing Spider-Man Facsimile Edition");
+    expect(calls.some((name) => name === "The Amazing Spider-Man")).toBe(false);
     expect(missed.status).toBe("unmatched");
     expect(missed.score).toBeLessThan(75);
 
@@ -209,7 +210,9 @@ describe("edition scoring", () => {
 
 describe("suspect matches", () => {
   it("flags a facsimile link and a year gap, and leaves a tight regular link alone", () => {
-    expect(suspectMatchReason({ ...spider, metronIssueId: "10" })).toMatch(/facsimile|Release year/);
+    expect(suspectMatchReason({ ...spider, metronIssueId: "10" })).toMatch(/facsimile|store year/);
+    expect(suspectMatchReason({ ...spider, metronIssueId: "10", catalogStoreYear: 2022 })).toBeNull();
+    expect(suspectMatchReason({ ...spider, metronIssueId: "10", catalogStoreYear: 1963 })).toMatch(/1963/);
     expect(suspectMatchReason({ ...spider, metronIssueId: null, gcdIssueId: null })).toBeNull();
     expect(
       suspectMatchReason({
@@ -231,10 +234,14 @@ describe("suspect matches", () => {
     ).toBeNull();
   });
 
-  it("keeps the re-match refusal in the cover action", () => {
-    const source = readFileSync(new URL("../src/app/covers/actions.ts", import.meta.url), "utf8");
-    expect(source).toContain("This link was chosen by hand. Unlink it first.");
-    expect(source).toContain('if (sources[field] !== "metron" && sources[field] !== "gcd") continue;');
+  it("keeps the re-match refusal and the bulk action", () => {
+    const rematch = readFileSync(new URL("../src/lib/covers/facsimile-rematch.ts", import.meta.url), "utf8");
+    const actions = readFileSync(new URL("../src/app/covers/actions.ts", import.meta.url), "utf8");
+    const suspects = readFileSync(new URL("../src/app/covers/suspect-actions.tsx", import.meta.url), "utf8");
+    expect(rematch).toContain("This link was chosen by hand. Unlink it first.");
+    expect(rematch).toContain('if (sources[field] !== "metron" && sources[field] !== "gcd") continue;');
+    expect(actions).toContain("rematchAllSuspectsAction");
+    expect(suspects).toContain("Re-match all suspect");
   });
 });
 

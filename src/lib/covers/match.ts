@@ -1,5 +1,5 @@
 import { parseComicBarcode } from "@/lib/barcode";
-import { detectEdition, scoreCandidate, type MatchCandidate } from "@/lib/covers/edition";
+import { detectEdition, scoreCandidate, type EditionProfile, type MatchCandidate } from "@/lib/covers/edition";
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
 
 export function coverYearOf(value: string | null | undefined): number | null {
@@ -82,7 +82,125 @@ function candidateFrom(hit: MetronIssueHit): MatchCandidate {
     seriesYear: hit.seriesYear ?? null,
     upc: hit.upc ?? null,
     publisher: hit.publisher ?? null,
+    storeDate: hit.storeDate ?? null,
   };
+}
+
+const VARIANT_COVER_WORDS = ["foil", "virgin", "sketch", "incentive", "ratio"];
+
+export function applyVariantCover(copy: CoverQuery, issue: MetronIssueHit): MetronIssueHit {
+  const text = `${copy.variantDescription ?? ""} ${copy.variant ?? ""}`.toLowerCase();
+  const covers = issue.covers ?? [];
+  for (const word of VARIANT_COVER_WORDS) {
+    if (!text.includes(word)) continue;
+    const cover = covers.find((item) => item.label.toLowerCase().includes(word));
+    if (!cover) continue;
+    return { ...issue, imageUrl: cover.imageUrl, variant: issue.variant ?? cover.label };
+  }
+  return issue;
+}
+
+function digitsOf(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+function sameUpc(barcode: string | null | undefined, upc: string | null | undefined): boolean {
+  const left = digitsOf(barcode);
+  const right = digitsOf(upc);
+  return left.length >= 12 && left === right;
+}
+
+function dedupeHits(hits: MetronIssueHit[]): MetronIssueHit[] {
+  const seen = new Set<string>();
+  const rows: MetronIssueHit[] = [];
+  for (const hit of hits) {
+    if (seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    rows.push(hit);
+  }
+  return rows;
+}
+
+export function chooseFacsimileIssue(hits: MetronIssueHit[], comic: CoverQuery, via: "barcode" | "series" | "gcd"): CoverDecision {
+  const edition = detectEdition(comic);
+  const labeled = `${comic.series} #${edition.issueNo || comic.issueNo || "?"}`;
+  const ranked = dedupeHits(hits)
+    .map((issue) => {
+      const adjusted = applyVariantCover(comic, issue);
+      const scored = scoreCandidate({ ...comic, issueNo: edition.issueNo || comic.issueNo }, candidateFrom(adjusted));
+      return { issue: adjusted, scored, exactUpc: sameUpc(comic.barcode, adjusted.upc) };
+    })
+    .filter((row) => row.scored.blocked == null && row.scored.auto)
+    .filter((row) => via === "gcd" || Boolean(row.issue.imageUrl))
+    .sort((a, b) => Number(b.exactUpc) - Number(a.exactUpc) || b.scored.score - a.scored.score);
+
+  const exact = ranked.filter((row) => row.exactUpc);
+  const pool = exact.length === 1 ? exact : ranked;
+  const best = pool[0];
+  const next = pool[1];
+  if (best && (!next || best.exactUpc || best.scored.score >= next.scored.score + 12)) {
+    return { status: "matched", via, issue: best.issue, score: best.scored.score };
+  }
+  if (ranked.length > 1) {
+    return { status: "unmatched", reason: `Several facsimile issues match ${labeled}.`, score: ranked[0]?.scored.score ?? 0 };
+  }
+  return { status: "unmatched", reason: `No facsimile issue for ${labeled}.`, score: 0 };
+}
+
+function facsimileSeriesRows(hits: MetronSeriesHit[], query: string, publisher: string | null): MetronSeriesHit[] {
+  const tokens = normName(query)
+    .split(" ")
+    .filter((word) => word && word !== "facsimile" && word !== "edition");
+  let rows = hits.filter((hit) => {
+    const name = normName(hit.name);
+    if (!name.includes("facsimile")) return false;
+    return tokens.every((word) => name.includes(word));
+  });
+  if (publisher) {
+    const published = rows.filter((hit) => publishersMatch(publisher, hit.publisher));
+    rows = published;
+  }
+  return rows.slice(0, 4);
+}
+
+async function resolveFacsimileCover(comic: CoverQuery, edition: EditionProfile, lookup: CoverLookup): Promise<CoverDecision> {
+  const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
+  const collected: MetronIssueHit[] = [];
+  if (barcode) {
+    collected.push(...(await lookup.issuesByUpc(barcode.combined)));
+    if (barcode.upc && barcode.upc !== barcode.combined) {
+      const base = await lookup.issuesByUpc(barcode.upc);
+      collected.push(...base);
+      if (base.length === 0) collected.push(...(await lookup.issuesByUpcPrefix(barcode.upc)));
+    }
+    const decision = chooseFacsimileIssue(collected, comic, "barcode");
+    if (decision.status === "matched") return decision;
+  }
+
+  if (edition.facsimileSearches.length === 0) {
+    return { status: "unmatched", reason: `No facsimile issue for ${comic.series}.`, score: 0 };
+  }
+
+  let best: CoverDecision = { status: "unmatched", reason: `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.`, score: 0 };
+  for (const search of edition.facsimileSearches) {
+    const found = await lookup.searchSeries(search.series);
+    const candidates = facsimileSeriesRows(found, search.series, comic.publisher);
+    for (const candidate of candidates) {
+      const issues = await lookup.issuesForSeries(candidate.id, search.issueNo, null);
+      const decision = chooseFacsimileIssue(
+        issues.map((issue) => ({
+          ...issue,
+          seriesYear: issue.seriesYear ?? candidate.yearBegan,
+          publisher: issue.publisher ?? candidate.publisher,
+        })),
+        comic,
+        "series",
+      );
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+    }
+  }
+  return best;
 }
 
 export function chooseIssue(
@@ -123,9 +241,10 @@ export function chooseIssue(
 }
 
 export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Promise<CoverDecision> {
+  const edition = detectEdition(comic);
+  if (edition.kind === "facsimile") return resolveFacsimileCover(comic, edition, lookup);
   const issueNo = issueToken(comic);
   const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
-  const edition = detectEdition(comic);
 
   if (barcode) {
     let hits = await lookup.issuesByUpc(barcode.combined);

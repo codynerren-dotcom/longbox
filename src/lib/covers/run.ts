@@ -77,6 +77,8 @@ async function loadComics(): Promise<CoverRecord[]> {
       subtitle: true,
       publisher: true,
       releaseYear: true,
+      releaseDate: true,
+      seriesYear: true,
       coverPrice: true,
       coverFile: true,
       coverStatus: true,
@@ -103,6 +105,8 @@ async function loadComics(): Promise<CoverRecord[]> {
       subtitle: row.subtitle,
       publisher: row.publisher,
       releaseYear: row.releaseYear,
+      releaseDate: row.releaseDate,
+      seriesYear: row.seriesYear,
       coverPrice: row.coverPrice,
       coverFile: row.coverFile,
       coverStatus: row.coverStatus,
@@ -146,7 +150,7 @@ async function readEnrichment(id: string) {
   return prisma.comic.findUnique({ where: { id }, select: enrichSelect });
 }
 
-async function applyEnrichment(
+export async function applyEnrichment(
   id: string,
   detail: MetronDetails | null,
   extra: Prisma.ComicUpdateInput,
@@ -190,7 +194,7 @@ async function applyEnrichment(
   return plan?.filled ?? [];
 }
 
-async function applyGcdLink(
+export async function applyGcdLink(
   id: string,
   gcdIssueId: string,
   gcdSeriesId: string | null,
@@ -280,6 +284,8 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
 }
 
 async function runCoverBackfillBody(emit: (line: string) => void, startedAt: string): Promise<BackfillSummary> {
+  const { scheduleFacsimileRematch } = await import("@/lib/covers/facsimile-rematch");
+  scheduleFacsimileRematch();
   const dir = coversDir();
   const transport = await metronTransport();
   const lookup = createMetronCoverLookup(transport);
@@ -658,7 +664,16 @@ export async function refreshIssueFromMetron(comicId: string): Promise<{ ok: boo
       coverYear: true,
       barcode: true,
       variant: true,
+      variantDescription: true,
+      format: true,
+      title: true,
+      fullTitle: true,
+      subtitle: true,
       publisher: true,
+      releaseYear: true,
+      releaseDate: true,
+      seriesYear: true,
+      coverPrice: true,
       metronIssueId: true,
     },
   });

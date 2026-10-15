@@ -4,6 +4,7 @@ import type { MatchHit } from "@/lib/catalog/match-hits";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { parseComicBarcode } from "@/lib/barcode";
 import { detectEdition, scoreCandidate, type MatchCandidate } from "@/lib/covers/edition";
+import { chooseFacsimileIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
 
@@ -49,6 +50,7 @@ export function gcdHit(issue: GcdIssueRow): MatchHit {
 
 export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): Promise<CoverDecision> {
   const edition = detectEdition(comic);
+  if (edition.kind === "facsimile") return resolveGcdFacsimile(comic, edition, catalog);
   const issueNo = (comic.issueNo || comic.issue || "").trim();
   const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
   if (barcode) {
@@ -116,6 +118,37 @@ export function gcdDetails(issue: GcdIssueRow): MetronDetails {
   };
 }
 
+async function resolveGcdFacsimile(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {
+  const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
+  const collected: GcdIssueRow[] = [];
+  if (barcode) {
+    collected.push(...(await catalog.issuesByBarcode(barcode.combined)));
+    if (barcode.upc && barcode.upc !== barcode.combined) collected.push(...(await catalog.issuesByBarcode(barcode.upc)));
+    const decision = chooseFacsimileIssue(collected.map(toHit), comic, "gcd");
+    if (decision.status === "matched") return decision;
+  }
+  let best: CoverDecision = { status: "unmatched", reason: `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.`, score: 0 };
+  let fetched = 0;
+  for (const search of edition.facsimileSearches) {
+    const seriesRows = await catalog.seriesByName(search.series);
+    const picked = pickSeries(seriesRows, search.series, comic.releaseYear ?? comic.coverYear).filter((row) => /facsimile/i.test(row.name));
+    for (const series of picked) {
+      const issueIds = issuesFor(series, search.issueNo, true).slice(0, 2);
+      for (const id of issueIds) {
+        if (fetched >= 6) return best;
+        fetched += 1;
+        const issue = await catalog.issue(id);
+        if (!issue) continue;
+        issue.seriesYear = issue.seriesYear ?? series.yearBegan;
+        const decision = chooseFacsimileIssue([toHit(issue)], comic, "gcd");
+        if (decision.status === "matched") return decision;
+        if (decision.score > best.score) best = decision;
+      }
+    }
+  }
+  return best;
+}
+
 function chooseGcd(issues: GcdIssueRow[], comic: CoverQuery, issueNo: string): CoverDecision {
   const hits = issues.map(toHit);
   if (hits.length === 0) return { status: "unmatched", reason: "No GCD issue for that search.", score: 0 };
@@ -145,6 +178,7 @@ function toHit(issue: GcdIssueRow): MetronIssueHit {
     upc: issue.barcode,
     publisher: issue.publisher,
     variant: issue.variant,
+    storeDate: issue.onSaleDate,
   };
 }
 
@@ -158,6 +192,7 @@ function candidateFrom(issue: MetronIssueHit): MatchCandidate {
     seriesYear: issue.seriesYear ?? null,
     upc: issue.upc ?? null,
     publisher: issue.publisher ?? null,
+    storeDate: issue.storeDate ?? null,
   };
 }
 

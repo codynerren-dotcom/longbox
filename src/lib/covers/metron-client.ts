@@ -1,7 +1,8 @@
+import { variantCoversFrom } from "@/lib/catalog/match-hits";
 import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
-import { budgetDay, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
+import { budgetDay, retryAfterFromMessage, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
 import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
@@ -36,12 +37,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+let sharedLimiter: MetronLimiter | null = null;
+
+/** One limiter for backfill, enrichment, and Match so they share the same wait. */
+export function sharedMetronLimiter(): MetronLimiter {
+  if (!sharedLimiter) {
+    sharedLimiter = new MetronLimiter(fileBudgetStore(), () => Date.now(), sleep, () => budgetDay(new Date()));
+  }
+  return sharedLimiter;
+}
+
 export async function metronTransport(): Promise<MetronTransport> {
   const auth = await metronBasicAuth();
   if (!auth) throw new Error("Set Metron username and password in Settings or the environment.");
   return {
     fetch,
-    limiter: new MetronLimiter(fileBudgetStore(), () => Date.now(), sleep, () => budgetDay(new Date())),
+    limiter: sharedMetronLimiter(),
     username: auth.username,
     password: auth.password,
     baseUrl: await metronBaseUrl(),
@@ -102,7 +113,15 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     variant,
     cvId: externalDigits(row.cv_id),
     gcdId: externalDigits(row.gcd_id),
+    storeDate: isoDay(text(row.store_date)),
+    covers: variantCoversFrom(row),
   };
+}
+
+function isoDay(value: string | null): string | null {
+  if (!value) return null;
+  const match = value.match(/(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] ?? null;
 }
 
 function externalDigits(value: unknown): string | null {
@@ -157,7 +176,8 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     if (response.status === 429) {
       attempt += 1;
       transport.limiter.observe(response.headers);
-      const delay = retryAfterMs(response.headers, transport.now()) ?? Math.min(60_000, 5_000 * 2 ** (attempt - 1));
+      const body = await response.text().catch(() => "");
+      const delay = retryAfterMs(response.headers, transport.now()) ?? retryAfterFromMessage(body) ?? Math.min(60_000, 5_000 * 2 ** (attempt - 1));
       if (attempt >= 3 || delay > 120_000) {
         throw new MetronBudgetError("Metron rate limit reached. Stopping so the run can resume.");
       }

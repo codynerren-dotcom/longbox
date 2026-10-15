@@ -2,12 +2,13 @@ import Link from "next/link";
 import { AttachForm } from "@/app/covers/attach-form";
 import { retryCoverAction } from "@/app/covers/actions";
 import { BackfillButton } from "@/app/covers/backfill-button";
-import { SuspectActions } from "@/app/covers/suspect-actions";
+import { RematchAllSuspects, SuspectActions } from "@/app/covers/suspect-actions";
 import { CoverLiveStatus } from "@/components/backfill-status";
 import { CatalogIdLink } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { suspectMatchReason } from "@/lib/covers/edition";
+import { readCatalogYears } from "@/lib/covers/facsimile-rematch";
 import { metronBasicAuth } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { formatIssue } from "@/lib/format";
@@ -15,7 +16,7 @@ import { formatIssue } from "@/lib/format";
 export const metadata = { title: "Covers" };
 
 export default async function CoversPage() {
-  const [matched, pending, unmatched, linked, configuredAuth] = await Promise.all([
+  const [matched, pending, unmatched, linked, configuredAuth, years] = await Promise.all([
     prisma.comic.count({ where: { coverStatus: "matched" } }),
     prisma.comic.count({
       where: { coverFile: null, OR: [{ coverStatus: null }, { coverStatus: "matched" }] },
@@ -46,10 +47,13 @@ export default async function CoversPage() {
         variant: true,
         variantDescription: true,
         format: true,
+        barcode: true,
         subtitle: true,
         publisher: true,
         coverYear: true,
         releaseYear: true,
+        releaseDate: true,
+        seriesYear: true,
         coverPrice: true,
         metronIssueId: true,
         metronIssueUrl: true,
@@ -58,9 +62,10 @@ export default async function CoversPage() {
       },
     }),
     metronBasicAuth(),
+    readCatalogYears(),
   ]);
   const suspects = linked.flatMap((comic) => {
-    const reason = suspectMatchReason(comic);
+    const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null });
     if (!reason) return [];
     const link = readManualLink(comic.manualLink);
     const manual = Boolean((comic.metronIssueId && link.metronIssueId) || (comic.gcdIssueId && link.gcdIssueId));
@@ -72,7 +77,7 @@ export default async function CoversPage() {
     <div className="max-w-3xl">
       <PageHeader kicker="Metron" title="Covers" />
       <p className="mb-4 text-sm leading-relaxed text-mist">
-        Backfill downloads a cover for every issue that does not have one yet. It tries the barcode first, then the series name, issue number, and release year. A facsimile, reprint, later printing, anniversary, True Believers, or omnibus copy is searched as its own series before the original. A match has to clear a confidence score or it stays here for the Match panel. When Metron is not confident, GCD is the fallback. GCD cover scans stay on comics.org.
+        Backfill downloads a cover for every issue that does not have one yet. It tries the barcode first, then the series name, issue number, and release year. A facsimile copy is matched by its UPC and by a facsimile series, and it is never linked to the original issue. A reprint, later printing, anniversary, True Believers, or omnibus copy is searched as its own series before the original. A match has to clear a confidence score or it stays here for the Match panel. When Metron is not confident, GCD is the fallback. GCD cover scans stay on comics.org.
       </p>
       <div className="mb-4 grid grid-cols-3 gap-3">
         <Count label="Matched" value={matched} />
@@ -94,8 +99,9 @@ export default async function CoversPage() {
       <section id="suspects" className="mt-6">
         <h2 className="font-display text-3xl tracking-wide">Review suspect matches</h2>
         <p className="mt-2 text-sm text-mist">
-          A link is listed when the copy looks like a facsimile or other edition, or when its release year and cover year are more than two years apart. Nothing here is removed until you unlink it or ask for a re-match.
+          A facsimile link is listed when the linked issue&apos;s store year is not within a year of the copy&apos;s release date. Other links are listed when the copy is another edition, or when its release year and cover year are more than two years apart. Re-match looks the facsimile up again and leaves it unmatched when nothing is confident.
         </p>
+        {suspects.length > 0 ? <RematchAllSuspects /> : null}
         {suspects.length === 0 ? (
           <p className="mt-2 text-sm text-mist">No suspect links.</p>
         ) : (
@@ -121,6 +127,7 @@ export default async function CoversPage() {
                   ) : null}
                 </p>
                 <p className="mt-2 text-sm text-paper">{comic.reason}</p>
+                {comic.variantDescription ? <p className="mt-1 text-sm text-mist">{comic.variantDescription}</p> : null}
                 <SuspectActions id={comic.id} manual={comic.manual} />
               </li>
             ))}
