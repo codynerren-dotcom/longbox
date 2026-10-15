@@ -637,7 +637,7 @@ describe("Vengeance of Bane facsimile fixture", () => {
       facsimile: true,
       catalog: catalog([]),
     });
-    expect(hits.map((hit) => hit.id)).toEqual(["2513854"]);
+    expect(hits.map((hit) => hit.id)).toEqual(["2513854", "2514867"]);
   });
 });
 

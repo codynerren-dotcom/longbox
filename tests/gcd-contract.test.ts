@@ -71,7 +71,7 @@ describe("recorded GCD responses", () => {
     };
 
     const byQuery = await searchGcdMatches(baneQuery, baneBarcode, "query", null, { catalog });
-    expect(byQuery.map((hit) => hit.id)).toEqual(["2513854"]);
+    expect(byQuery.map((hit) => hit.id)).toEqual(["2513854", "2514867"]);
     expect(byQuery[0]?.series).toContain("(Facsimile Edition)");
     expect(asked[0]).toBe("Vengeance of Bane");
     expect(asked.some((name) => /facsimile/i.test(name))).toBe(false);
@@ -79,7 +79,7 @@ describe("recorded GCD responses", () => {
     expect(barcodeCalls).toBe(0);
 
     const byBarcode = await searchGcdMatches(baneQuery, baneBarcode, "barcode", null, { facsimile: true, catalog });
-    expect(byBarcode.map((hit) => hit.id)).toEqual(["2513854"]);
+    expect(byBarcode.map((hit) => hit.id)).toEqual(["2513854", "2514867"]);
     expect(barcodeCalls).toBe(0);
   });
 

@@ -14,6 +14,16 @@ export type MatchHit = {
   publisher: string | null;
   coverUrl: string | null;
   covers: MatchCover[];
+  /** GCD issue barcode, when the issue payload sent one. */
+  barcode?: string | null;
+  /** GCD ISBN, when the issue has no barcode. */
+  isbn?: string | null;
+  /** GCD price string, such as `7.99 USD`. */
+  price?: string | null;
+  /** GCD on-sale day, `YYYY-MM-DD` when the payload sends one. */
+  onSaleDate?: string | null;
+  /** Cover page to open when the scan itself cannot be shown. */
+  coverPageUrl?: string | null;
 };
 
 function text(value: unknown): string | null {

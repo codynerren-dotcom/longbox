@@ -1,0 +1,44 @@
+{
+  "issue": {
+    "api_url": "https://www.comics.org/api/issue/2514867/?format=json",
+    "series": "https://www.comics.org/api/series/198517/?format=json",
+    "series_name": "Batman: Vengeance of Bane 1 (Facsimile Edition) (2023 series)",
+    "descriptor": "[Foil Cardstock Cover]",
+    "number": "[nn]",
+    "variant_name": "Foil Cardstock Cover",
+    "variant_of": "https://www.comics.org/api/issue/2513854/?format=json",
+    "title": "",
+    "publication_date": "[June] 2023",
+    "key_date": "2023-06-00",
+    "price": "7.99 USD",
+    "page_count": "68.000",
+    "indicia_publisher": "DC Comics",
+    "isbn": "",
+    "barcode": "76194137966100121",
+    "on_sale_date": "2023-04-04",
+    "cover": "",
+    "story_set": [
+      {
+        "type": "cover",
+        "title": "",
+        "feature": "Bane; Batman",
+        "sequence_number": 0,
+        "page_count": "1.000",
+        "script": "None",
+        "pencils": "Glenn Fabry (signed as GFABRY) (painting)",
+        "inks": "Glenn Fabry (signed as GFABRY) (painting)",
+        "colors": "Glenn Fabry (signed as GFABRY) (painting)",
+        "letters": "Alex Wald (logo design); ?",
+        "editing": "None",
+        "job_number": "",
+        "genre": "superhero",
+        "first_line": "",
+        "characters": "Bane; Batman",
+        "synopsis": "",
+        "notes": "",
+        "keywords": ""
+      }
+    ]
+  },
+  "source": "https://www.comics.org/api/issue/2514867/?format=json"
+}

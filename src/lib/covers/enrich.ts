@@ -124,6 +124,7 @@ export function readFieldSources(value: unknown): FieldSources {
     if (!FIELD_KEY.test(key)) continue;
     if (source === "user") sources[key] = "user";
     else if ((source === "metron" || source === "gcd") && (METRON_FIELDS as readonly string[]).includes(key)) sources[key] = source;
+    else if (source === "gcd" && (key === "variantDescription" || key === "publisher")) sources[key] = source;
   }
   return sources;
 }
@@ -194,22 +195,35 @@ export function planEnrichment(
   detail: MetronDetails,
   fieldSources: unknown,
   origin: "metron" | "gcd" = "metron",
+  options?: { overwrite?: boolean },
 ): EnrichmentPlan {
   const incoming = valuesFromDetail(detail);
   const sources = readFieldSources(fieldSources);
   const patch: EnrichmentPlan["patch"] = {};
   const filled: MetronField[] = [];
+  const overwrite = options?.overwrite === true;
   for (const field of METRON_FIELDS) {
     if (origin === "gcd" && GCD_SKIP.has(field)) continue;
     if (sources[field] === "user") continue;
-    if (!isBlank(field, current[field])) continue;
     const next = incoming[field];
     if (next == null || isBlank(field, next)) continue;
+    if (!isBlank(field, current[field])) {
+      if (!overwrite || sameStoredValue(current[field], next)) continue;
+    }
     patch[field] = next;
     sources[field] = origin;
     filled.push(field);
   }
   return { patch, sources, filled };
+}
+
+function sameStoredValue(current: unknown, next: string | number | Date): boolean {
+  if (next instanceof Date) {
+    const time = current instanceof Date ? current.getTime() : new Date(String(current)).getTime();
+    return time === next.getTime();
+  }
+  if (typeof next === "number") return Number(current) === next;
+  return String(current ?? "").trim() === String(next).trim();
 }
 
 export function protectMetronFields<T extends Record<string, unknown>>(

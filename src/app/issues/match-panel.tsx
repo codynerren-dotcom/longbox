@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { linkMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
+import { linkMatchAction, loadGcdMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
 import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
+import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 import { isCollected, shelfFormatOf } from "@/lib/shelf-format";
 
@@ -119,6 +120,8 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
   const [useCover, setUseCover] = useState(true);
   const [fillMissing, setFillMissing] = useState(true);
+  const [overwrite, setOverwrite] = useState(false);
+  const [gcdRef, setGcdRef] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [metronMissed, setMetronMissed] = useState(false);
@@ -204,6 +207,31 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
     });
   }
 
+  function loadGcd() {
+    setError("");
+    setNote("");
+    setSelected(null);
+    start(async () => {
+      const result = await loadGcdMatchAction(gcdRef);
+      if (!result.ok) {
+        setHits([]);
+        setError(result.message);
+        return;
+      }
+      setHits(result.hits);
+      const id = parseGcdIssueRef(gcdRef);
+      const hit = result.hits.find((item) => item.id === id) ?? result.hits[0] ?? null;
+      if (!hit) {
+        setNote("No matches.");
+        return;
+      }
+      setSelected(hit);
+      setCovers(hit.covers);
+      setCoverUrl(hit.coverUrl);
+      setUseCover(false);
+    });
+  }
+
   function link() {
     if (!selected) return;
     setError("");
@@ -214,6 +242,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         hit: selected,
         useCover: source === "gcd" ? false : useCover,
         fillMissing,
+        overwrite: source === "gcd" && overwrite,
         coverImageUrl: useCover ? coverUrl : null,
       });
       if (!result.ok) {
@@ -239,7 +268,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           <Tab active={source === "gcd"} onClick={() => selectSource("gcd")}>GCD</Tab>
         </div>
         {source === "gcd" ? (
-          <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Cover scans stay on the GCD cover page, so this link does not download one.</p>
+          <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Each row is one issue, including variants. Cover scans stay on the GCD cover page, so this link does not download one.</p>
         ) : null}
         {ready ? null : (
           <p className="mt-3 text-sm text-mist">
@@ -257,6 +286,21 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           Barcode
         </label>
         <input id="match-barcode" className="field mt-1" value={barcode} disabled={!ready || pending} onChange={(event) => setBarcode(event.target.value)} />
+        {source === "gcd" ? (
+          <>
+            <label className="mt-3 block text-[11px] font-semibold uppercase tracking-[0.14em] text-mist" htmlFor="gcd-ref">
+              GCD ID or URL
+            </label>
+            <input
+              id="gcd-ref"
+              className="field mt-1"
+              value={gcdRef}
+              placeholder="2513854 or https://www.comics.org/issue/2513854/"
+              disabled={pending}
+              onChange={(event) => setGcdRef(event.target.value)}
+            />
+          </>
+        ) : null}
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" className="rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50" disabled={!ready || pending} onClick={() => search("query")}>
             {pending ? "Searching…" : "Search"}
@@ -264,24 +308,32 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           <button type="button" className="rounded-full bg-panel2 px-4 py-2 text-sm font-semibold text-paper disabled:opacity-50" disabled={!ready || pending} onClick={() => search("barcode")}>
             Search barcode
           </button>
+          {source === "gcd" ? (
+            <button type="button" className="rounded-full bg-panel2 px-4 py-2 text-sm font-semibold text-paper disabled:opacity-50" disabled={pending} onClick={loadGcd}>
+              {pending ? "Loading…" : "Load GCD issue"}
+            </button>
+          ) : null}
         </div>
         {error ? <p className="mt-3 text-sm text-red-300">{error}</p> : null}
         {note ? <p className="mt-3 text-sm text-mist">{note}</p> : null}
         <ul className="mt-3 flex flex-col gap-2">
-          {hits.map((hit) => (
-            <li key={`${hit.source}-${hit.id}`}>
-              <button type="button" className={`flex w-full gap-3 rounded-xl p-2 text-left ring-1 ${selected?.id === hit.id ? "bg-panel2 ring-comic" : "bg-ink/30 ring-white/5"}`} onClick={() => choose(hit)}>
-                <Thumb src={hit.coverUrl} alt="" />
-                <span className="min-w-0">
+          {hits.map((hit) => {
+            const facts = gcdFactLine(hit);
+            const picked = selected?.id === hit.id && selected.source === hit.source;
+            return (
+              <li key={`${hit.source}-${hit.id}`} className={`flex w-full gap-3 rounded-xl p-2 ring-1 ${picked ? "bg-panel2 ring-comic" : "bg-ink/30 ring-white/5"}`}>
+                <CoverMark hit={hit} />
+                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => choose(hit)}>
                   <span className="block truncate font-semibold text-paper">
                     {hit.series} {hit.issueNo ? `#${hit.issueNo}` : ""}
                   </span>
                   {hit.variant ? <span className="block truncate text-sm text-mist">{hit.variant}</span> : null}
                   <span className="block truncate text-xs text-mist">{[hit.coverDate, hit.publisher].filter(Boolean).join(" · ")}</span>
-                </span>
-              </button>
-            </li>
-          ))}
+                  {facts ? <span className="block truncate text-xs text-mist">{facts}</span> : null}
+                </button>
+              </li>
+            );
+          })}
         </ul>
         {selected ? (
           <div className="mt-4 rounded-2xl bg-ink/30 p-3 ring-1 ring-white/5">
@@ -315,6 +367,12 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
               <input type="checkbox" checked={fillMissing} onChange={(event) => setFillMissing(event.target.checked)} />
               Fill missing details
             </label>
+            {source === "gcd" ? (
+              <label className="mt-2 flex items-center gap-2 text-sm text-paper">
+                <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
+                Overwrite existing
+              </label>
+            ) : null}
             <button type="button" className="mt-3 rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50" disabled={pending} onClick={link}>
               {pending ? "Linking…" : "Link this issue"}
             </button>
@@ -331,6 +389,23 @@ function Tab({ active, onClick, children }: { active: boolean; onClick: () => vo
       {children}
     </button>
   );
+}
+
+function gcdFactLine(hit: MatchHit): string {
+  if (hit.source !== "gcd") return "";
+  return [hit.barcode || hit.isbn, hit.onSaleDate, hit.price].filter(Boolean).join(" · ");
+}
+
+function CoverMark({ hit }: { hit: MatchHit }) {
+  if (hit.coverUrl) return <Thumb src={hit.coverUrl} alt="" />;
+  if (hit.coverPageUrl) {
+    return (
+      <a href={hit.coverPageUrl} target="_blank" rel="noreferrer" className="flex h-16 w-11 shrink-0 items-center justify-center rounded-md bg-panel2 px-1 text-center text-[10px] font-semibold leading-tight text-comic">
+        Cover on GCD
+      </a>
+    );
+  }
+  return <Thumb src={null} alt="" />;
 }
 
 function Thumb({ src, alt }: { src: string | null; alt: string }) {

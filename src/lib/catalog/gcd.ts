@@ -83,6 +83,8 @@ export type GcdIssueRow = {
   seriesName: string;
   number: string;
   variant: string | null;
+  /** Parent issue id from `variant_of`. Null on the base issue. */
+  variantOf?: string | null;
   title: string | null;
   coverDate: string | null;
   coverYear: number | null;
@@ -107,6 +109,8 @@ export type GcdIssueRow = {
 
 export type GcdCatalog = {
   seriesByName: (name: string) => Promise<GcdSeriesRow[]>;
+  /** Series detail. Optional so older test catalogs still typecheck. */
+  seriesById?: (id: string) => Promise<GcdSeriesRow | null>;
   issue: (id: string) => Promise<GcdIssueRow | null>;
   issuesByBarcode: (code: string) => Promise<GcdIssueRow[]>;
 };
@@ -334,6 +338,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     seriesName: seriesName.replace(/\s*\((?:18|19|20)\d{2}\s+series\)\s*$/i, "").trim(),
     number: text(row.number) ?? text(row.descriptor) ?? "",
     variant: text(row.variant_name),
+    variantOf: variantParentId(row.variant_of),
     title: text(story?.title) ?? text(row.title),
     coverDate: text(row.publication_date),
     coverYear: yearFrom(row.key_date) ?? yearFrom(row.publication_date),
@@ -353,6 +358,18 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     metronIssueId: foreignDigits(row, ["metron_id", "metron_issue_id"]),
     collects: readCollectedIssues(row),
   };
+}
+
+/**
+ * `variant_of` on the live issue payload is the parent issue URL, or null on the base issue.
+ * A bare id is accepted too.
+ */
+function variantParentId(value: unknown): string | null {
+  const fromUrl = idFromApiUrl(value);
+  if (fromUrl) return fromUrl;
+  const raw = text(value);
+  if (raw && /^\d{1,12}$/.test(raw) && raw !== "0") return raw;
+  return null;
 }
 
 function foreignDigits(row: UnknownRecord, keys: string[]): string | null {
@@ -419,6 +436,11 @@ export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
     async seriesByName(name) {
       const body = await gcdFetch(fetchImpl, `/api/series/name/${encodeURIComponent(name.trim())}/`);
       return asArray(body).map(parseGcdSeries).filter((row): row is GcdSeriesRow => row !== null);
+    },
+    async seriesById(id) {
+      if (!/^\d{1,12}$/.test(id) || id === "0") return null;
+      const body = await gcdFetch(fetchImpl, `/api/series/${id}/`);
+      return parseGcdSeries(body);
     },
     async issue(id) {
       if (!/^\d{1,12}$/.test(id)) return null;

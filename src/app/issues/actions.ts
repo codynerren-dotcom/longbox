@@ -4,6 +4,8 @@ import { unlink } from "node:fs/promises";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { linkIssueToCatalog, loadIssueCovers, repullLinkedCover, searchIssueCatalog, unlinkIssueCatalog } from "@/lib/catalog/link-issue";
+import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
+import { loadGcdIssueHits } from "@/lib/covers/gcd-match";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 import { refreshIssueFromMetron } from "@/lib/covers/run";
@@ -14,6 +16,7 @@ import { prisma } from "@/lib/db";
 import { choiceList, issueLabel, RAW_CHOICES, KEY_LEVELS } from "@/lib/issue-fields";
 import { planIssueEdit } from "@/lib/issue-edit";
 import { logCopyRemoved, logIssueEdited } from "@/lib/log/events";
+import { writeLog } from "@/lib/log/write";
 import { copiesOf } from "@/lib/shelf-copies";
 import { setReadState } from "@/lib/mutations";
 import { seriesRouteId } from "@/lib/series";
@@ -98,12 +101,33 @@ export async function loadMatchCoversAction(source: CatalogSource, issueId: stri
   return loadIssueCovers(source, issueId);
 }
 
+export async function loadGcdMatchAction(ref: string): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
+  const id = parseGcdIssueRef(ref);
+  if (!id) return { ok: false, message: "Enter a GCD issue id or a comics.org issue URL." };
+  try {
+    const hits = await loadGcdIssueHits(ref);
+    if (hits.length === 0) return { ok: false, message: `GCD has no issue ${id}.` };
+    await writeLog({
+      level: "info",
+      source: "gcd",
+      message: `Match load of GCD ${id} returned ${hits.length}.`,
+      details: { id, count: hits.length },
+    });
+    return { ok: true, hits };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "GCD load failed.";
+    await writeLog({ level: "warn", source: "gcd", message, details: { id } });
+    return { ok: false, message };
+  }
+}
+
 export async function linkMatchAction(args: {
   comicId: string;
   source: CatalogSource;
   hit: MatchHit;
   useCover: boolean;
   fillMissing: boolean;
+  overwrite?: boolean;
   coverImageUrl: string | null;
 }): Promise<{ ok: boolean; message: string }> {
   const result = await linkIssueToCatalog(args);

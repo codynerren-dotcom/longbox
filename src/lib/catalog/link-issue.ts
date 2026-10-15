@@ -58,6 +58,8 @@ async function comicForLink(id: string) {
       pageCount: true,
       coverPrice: true,
       barcode: true,
+      publisher: true,
+      variantDescription: true,
       writer: true,
       artist: true,
       coverArtist: true,
@@ -74,10 +76,23 @@ async function comicForLink(id: string) {
 
 function currentFields(
   comic: NonNullable<Awaited<ReturnType<typeof comicForLink>>>,
-): Partial<Record<MetronField, unknown>> & { gcdIssueId: string | null; gcdSeriesId: string | null; collects: string | null } {
+): Partial<Record<MetronField, unknown>> & {
+  gcdIssueId: string | null;
+  gcdSeriesId: string | null;
+  collects: string | null;
+  publisher: string | null;
+  variantDescription: string | null;
+} {
   const current: Partial<Record<MetronField, unknown>> = {};
   for (const field of METRON_FIELDS) current[field] = comic[field];
-  return { ...current, gcdIssueId: comic.gcdIssueId, gcdSeriesId: comic.gcdSeriesId, collects: comic.collects };
+  return {
+    ...current,
+    gcdIssueId: comic.gcdIssueId,
+    gcdSeriesId: comic.gcdSeriesId,
+    collects: comic.collects,
+    publisher: comic.publisher,
+    variantDescription: comic.variantDescription,
+  };
 }
 
 function storedLink(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
@@ -191,6 +206,7 @@ export async function linkIssueToCatalog(args: {
   hit: MatchHit;
   useCover: boolean;
   fillMissing: boolean;
+  overwrite?: boolean;
   coverImageUrl: string | null;
 }): Promise<{ ok: boolean; message: string }> {
   if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish." };
@@ -215,6 +231,7 @@ export async function linkIssueToCatalog(args: {
       manualLink: comic.manualLink,
       detail: loaded.detail,
       fillMissing: args.fillMissing,
+      overwrite: args.overwrite,
       cover,
       issueUrl: loaded.issueUrl,
       seriesUrl: loaded.seriesUrl,
