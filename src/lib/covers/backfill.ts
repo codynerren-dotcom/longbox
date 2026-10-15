@@ -60,6 +60,34 @@ export async function backfillCovers(args: {
   };
 
   let gcdOpen = Boolean(args.gcd && args.markGcd);
+  let lastGcdReason = "";
+
+  async function acceptGcd(comic: CoverRecord, issueNo: string): Promise<"matched" | "miss" | "budget" | "closed"> {
+    if (!gcdOpen || !args.markGcd) return "closed";
+    const gcdDecision = await tryGcd(gcdOpen, args.gcd, comic);
+    if (gcdDecision === "budget") {
+      gcdOpen = false;
+      args.log?.("GCD rate limit reached. Later copies will stay unmatched.");
+      return "budget";
+    }
+    if (gcdDecision && gcdDecision.status === "unmatched") lastGcdReason = gcdDecision.reason;
+    if (gcdDecision && gcdDecision.status === "matched") {
+      const printingEdition = detectEdition(comic);
+      const confirmedPrinting = printingEdition.kind === "printing" && printingEdition.printing != null && !gcdDecision.coverReview;
+      await args.markGcd(comic.id, {
+        gcdIssueId: gcdDecision.issue.id,
+        gcdSeriesId: gcdDecision.issue.seriesId,
+        score: gcdDecision.score,
+        coverReview: gcdDecision.coverReview ?? null,
+        printing: printingEdition.kind === "printing" ? (confirmedPrinting ? printingEdition.printing : null) : undefined,
+      });
+      summary.matched += 1;
+      args.log?.(`${comic.series} #${issueNo} matched GCD ${gcdDecision.issue.id}, score ${gcdDecision.score}. Cover stays on GCD.`);
+      return "matched";
+    }
+    return "miss";
+  }
+
   for (const comic of args.comics) {
     if (await args.shouldPause?.()) {
       summary.stoppedReason = "Paused.";
@@ -72,6 +100,7 @@ export async function backfillCovers(args: {
       continue;
     }
     const issueNo = comic.issueNo || comic.issue || "?";
+    lastGcdReason = "";
     const lockedMetronId = comic.manualMetronIssueId?.trim() || "";
     if (lockedMetronId) {
       try {
@@ -220,6 +249,14 @@ export async function backfillCovers(args: {
     }
     try {
       const editionKind = detectEdition(comic).kind;
+      const gcdFirst = editionKind === "facsimile" || editionKind === "printing";
+      if (gcdFirst) {
+        const taken = await acceptGcd(comic, issueNo);
+        if (taken === "matched") {
+          args.onProgress?.(summary);
+          continue;
+        }
+      }
       if (args.crossLookup && editionKind !== "facsimile" && editionKind !== "printing" && (comic.comicvineIssueId || comic.gcdIssueId || comic.embeddedMetronIssueId)) {
         const cross = await lookupCrossIssue(
           {
@@ -339,31 +376,21 @@ export async function backfillCovers(args: {
         );
         summary.matched += 1;
         args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}, score ${decision.score}.`);
-      } else {
-        const gcdDecision = await tryGcd(gcdOpen, args.gcd, comic);
-        if (gcdDecision === "budget") {
-          gcdOpen = false;
-          args.log?.("GCD rate limit reached. Later copies will stay unmatched.");
-        }
-        if (gcdDecision && gcdDecision !== "budget" && gcdDecision.status === "matched" && args.markGcd) {
-          const printingEdition = detectEdition(comic);
-          const confirmedPrinting = printingEdition.kind === "printing" && printingEdition.printing != null && !gcdDecision.coverReview;
-          await args.markGcd(comic.id, {
-            gcdIssueId: gcdDecision.issue.id,
-            gcdSeriesId: gcdDecision.issue.seriesId,
-            score: gcdDecision.score,
-            coverReview: gcdDecision.coverReview ?? null,
-            printing: printingEdition.kind === "printing" ? (confirmedPrinting ? printingEdition.printing : null) : undefined,
-          });
-          summary.matched += 1;
-          args.log?.(`${comic.series} #${issueNo} matched GCD ${gcdDecision.issue.id}, score ${gcdDecision.score}. Cover stays on GCD.`);
-        } else {
-          const gcdReason = gcdDecision && gcdDecision !== "budget" && gcdDecision.status === "unmatched" ? ` ${gcdDecision.reason}` : "";
+      } else if (!gcdFirst) {
+        const taken = await acceptGcd(comic, issueNo);
+        if (taken !== "matched") {
+          const gcdReason = lastGcdReason ? ` ${lastGcdReason}` : "";
           const reason = `${decision.reason}${gcdReason}`;
           await args.markUnmatched(comic.id, reason);
           summary.unmatched += 1;
           args.log?.(`${comic.series} #${issueNo} unmatched: ${reason}`);
         }
+      } else {
+        const gcdReason = lastGcdReason ? ` ${lastGcdReason}` : "";
+        const reason = `${decision.reason}${gcdReason}`;
+        await args.markUnmatched(comic.id, reason);
+        summary.unmatched += 1;
+        args.log?.(`${comic.series} #${issueNo} unmatched: ${reason}`);
       }
       args.onProgress?.(summary);
     } catch (error) {

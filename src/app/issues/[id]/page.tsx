@@ -144,6 +144,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
             year: matchYear,
           })}
           barcode={comic.barcode ?? ""}
+          facsimile={edition.kind === "facsimile"}
           metronReady={metronReady}
           comicVineReady={Boolean(settings.comicvine.apiKey)}
           metronIssueId={comic.metronIssueId}

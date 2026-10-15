@@ -132,6 +132,32 @@ export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; 
         ? `No later printing for ${comic.series} #${edition.issueNo || "?"}.`
         : "No confident match.";
   const metronReady = Boolean(await metronBasicAuth());
+  const gcdFirst = edition.kind === "facsimile" || edition.kind === "printing";
+
+  const linkGcd = async (): Promise<{ ok: true; message: string } | { ok: false; reason: string }> => {
+    const gcd = await resolveGcdCover(query, createGcdCatalog());
+    if (gcd.status !== "matched") return { ok: false, reason: gcd.reason };
+    const { gcdDetails } = await import("@/lib/covers/gcd-match");
+    const issue = await createGcdCatalog().issue(gcd.issue.id);
+    const detail = issue ? gcdDetails(issue) : null;
+    await clearAutomaticLink(comicId, "Re-matching.");
+    const confirmedPrinting = edition.kind === "printing" && edition.printing != null && !gcd.coverReview;
+    await applyGcdLink(comicId, gcd.issue.id, gcd.issue.seriesId, gcd.score, detail, {
+      coverReview: gcd.coverReview ?? null,
+      printing: edition.kind === "printing" ? (confirmedPrinting ? edition.printing : null) : undefined,
+    });
+    await writeCatalogYear(comicId, catalogYear(gcd.issue));
+    const review = gcd.coverReview ? ` ${gcd.coverReview}` : "";
+    const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.${review}`;
+    await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score } });
+    return { ok: true, message };
+  };
+
+  if (gcdFirst) {
+    const gcd = await linkGcd();
+    if (gcd.ok) return gcd;
+    reason = gcd.reason || reason;
+  }
 
   if (metronReady) {
     const transport = await metronTransport();
@@ -172,28 +198,15 @@ export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; 
     reason = decision.reason;
   }
 
-  const gcd = await resolveGcdCover(query, createGcdCatalog());
-  if (gcd.status === "matched") {
-    const { gcdDetails } = await import("@/lib/covers/gcd-match");
-    const issue = await createGcdCatalog().issue(gcd.issue.id);
-    const detail = issue ? gcdDetails(issue) : null;
-    await clearAutomaticLink(comicId, "Re-matching.");
-    const confirmedPrinting = edition.kind === "printing" && edition.printing != null && !gcd.coverReview;
-    await applyGcdLink(comicId, gcd.issue.id, gcd.issue.seriesId, gcd.score, detail, {
-      coverReview: gcd.coverReview ?? null,
-      printing: edition.kind === "printing" ? (confirmedPrinting ? edition.printing : null) : undefined,
-    });
-    await writeCatalogYear(comicId, catalogYear(gcd.issue));
-    const review = gcd.coverReview ? ` ${gcd.coverReview}` : "";
-    const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.${review}`;
-    await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score } });
-    return { ok: true, message };
+  if (!gcdFirst) {
+    const gcd = await linkGcd();
+    if (gcd.ok) return gcd;
+    reason = gcd.reason || reason;
   }
 
   if (!metronReady) {
     return { ok: false, message: "Set Metron username and password in Settings or the environment." };
   }
-  reason = gcd.reason || reason;
   await clearAutomaticLink(comicId, reason);
   await writeLog({ level: "info", source: "covers/backfill", message: reason, details: { comicId } });
   return { ok: true, message: reason };

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { GcdBudgetError, createGcdCatalog, parseGcdIssue, parseGcdSeries, resetGcdBudget, type GcdCatalog, type GcdIssueRow } from "@/lib/catalog/gcd";
+import { GcdBudgetError, createGcdCatalog, gcdByBarcode, parseGcdIssue, parseGcdSeries, resetGcdBudget, type GcdCatalog, type GcdIssueRow } from "@/lib/catalog/gcd";
 import { backfillCovers } from "@/lib/covers/backfill";
 import { detectEdition, scoreCandidate, suspectMatchReason } from "@/lib/covers/edition";
 import { fieldCredit, planEnrichment, type MetronDetails } from "@/lib/covers/enrich";
@@ -279,33 +279,17 @@ describe("GCD catalog", () => {
     expect(gcdHit(parsed as GcdIssueRow).covers).toEqual([]);
   });
 
-  it("drops barcode hits whose digits do not match", async () => {
+  it("does not call a GCD barcode search", async () => {
     resetGcdBudget();
+    const urls: string[] = [];
     const fetchImpl: typeof fetch = async (input) => {
-      const url = String(input);
-      expect(url).toContain("/api/issue/?barcode=");
-      return new Response(
-        JSON.stringify({
-          results: [
-            {
-              api_url: "https://www.comics.org/api/issue/1/",
-              series_name: "Saga (2012 series)",
-              number: "1",
-              barcode: "00000000000000000",
-            },
-            {
-              api_url: "https://www.comics.org/api/issue/900/",
-              series_name: "Saga (2012 series)",
-              number: "1",
-              barcode: "75960612345600011",
-            },
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
+      urls.push(String(input));
+      return new Response("missing", { status: 404, headers: { "content-type": "text/html" } });
     };
     const issues = await createGcdCatalog(fetchImpl).issuesByBarcode("75960612345600011");
-    expect(issues.map((issue) => issue.id)).toEqual(["900"]);
+    expect(issues).toEqual([]);
+    expect(urls).toEqual([]);
+    expect(await gcdByBarcode({ raw: "75960612345600011", digits: "75960612345600011", upc: "759606123456", addon: "00011", combined: "75960612345600011" })).toEqual([]);
   });
 
   it("asks for the facsimile descriptor before the original issue", async () => {
@@ -315,7 +299,7 @@ describe("GCD catalog", () => {
         return [
           parseGcdSeries({
             api_url: "https://www.comics.org/api/series/77/",
-            name: "The Amazing Spider-Man Facsimile Edition (2022 series)",
+            name: "Amazing Spider-Man No. 1 Facsimile Edition (2022 series)",
             year_began: 2022,
             year_ended: null,
             active_issues: ["https://www.comics.org/api/issue/1/", "https://www.comics.org/api/issue/2/"],
@@ -333,7 +317,7 @@ describe("GCD catalog", () => {
       },
     };
     const decision = await resolveGcdCover(spider, catalog);
-    expect(fetched[0]).toBe("2");
+    expect(fetched).toEqual(["1", "2"]);
     expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "2" } });
   });
 
@@ -373,6 +357,62 @@ describe("GCD catalog", () => {
     expect(plan.filled).not.toContain("metronIssueId");
     expect(plan.sources.writer).toBe("gcd");
     expect(fieldCredit(plan.sources, "writer")).toBe("Data from GCD");
+  });
+});
+
+describe("GCD before Metron", () => {
+  it("asks GCD first for a facsimile and still tries Metron when GCD misses", async () => {
+    const order: string[] = [];
+    const first = await backfillCovers({
+      comics: [record()],
+      lookup: lookup({
+        async searchSeries() {
+          order.push("metron");
+          return [];
+        },
+      }),
+      fileExists: () => false,
+      saveImage: async () => "nope.jpg",
+      markMatched: async () => {
+        throw new Error("Metron should not match");
+      },
+      markUnmatched: async () => {},
+      gcd: async () => {
+        order.push("gcd");
+        return { status: "matched", via: "gcd", score: 90, issue: hit({ id: "2513854", imageUrl: null, seriesName: "Batman: Vengeance of Bane 1 (Facsimile Edition)", number: "[nn]" }) };
+      },
+      markGcd: async () => {},
+    });
+    expect(first.matched).toBe(1);
+    expect(order).toEqual(["gcd"]);
+
+    order.length = 0;
+    const second = await backfillCovers({
+      comics: [record({ barcode: null })],
+      lookup: lookup({
+        async searchSeries() {
+          order.push("metron");
+          return [{ id: "77", name: "The Amazing Spider-Man Facsimile Edition", yearBegan: 2022, yearEnd: null, publisher: "Marvel" }];
+        },
+        async issuesForSeries() {
+          return [hit({ id: "fac", seriesName: "The Amazing Spider-Man Facsimile Edition", number: "1", coverYear: 2022, releaseYear: 2022, seriesYear: 2022, storeDate: "2022-03-09", publisher: "Marvel", variant: "Facsimile Edition" })];
+        },
+      }),
+      fileExists: () => false,
+      saveImage: async () => "metron-fac.jpg",
+      markMatched: async () => {},
+      markUnmatched: async () => {},
+      gcd: async () => {
+        order.push("gcd");
+        return { status: "unmatched", reason: "No facsimile issue for The Amazing Spider-Man #1.", score: 0 };
+      },
+      markGcd: async () => {
+        throw new Error("should not link");
+      },
+    });
+    expect(order[0]).toBe("gcd");
+    expect(order).toContain("metron");
+    expect(second.matched).toBe(1);
   });
 });
 

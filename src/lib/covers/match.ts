@@ -130,6 +130,15 @@ function sameUpc(barcode: string | null | undefined, upc: string | null | undefi
   return left.length >= 12 && left === right;
 }
 
+/** Both codes are long enough to compare, and neither is the other plus an add-on. */
+function barcodeDisagrees(barcode: string | null | undefined, upc: string | null | undefined): boolean {
+  const left = digitsOf(barcode);
+  const right = digitsOf(upc);
+  if (left.length < 12 || right.length < 12) return false;
+  if (left === right) return false;
+  return !(left.startsWith(right) || right.startsWith(left));
+}
+
 function dedupeHits(hits: MetronIssueHit[]): MetronIssueHit[] {
   const seen = new Set<string>();
   const rows: MetronIssueHit[] = [];
@@ -147,7 +156,10 @@ export function chooseFacsimileIssue(hits: MetronIssueHit[], comic: CoverQuery, 
   const ranked = dedupeHits(hits)
     .map((issue) => {
       const adjusted = applyVariantCover(comic, issue);
-      const scored = scoreCandidate({ ...comic, issueNo: edition.issueNo || comic.issueNo }, candidateFrom(adjusted));
+      let scored = scoreCandidate({ ...comic, issueNo: edition.issueNo || comic.issueNo }, candidateFrom(adjusted));
+      if (via === "gcd" && barcodeDisagrees(comic.barcode, adjusted.upc)) {
+        scored = { ...scored, auto: false, blocked: scored.blocked ?? "Barcode does not match." };
+      }
       return { issue: adjusted, scored, exactUpc: sameUpc(comic.barcode, adjusted.upc) };
     })
     .filter((row) => row.scored.blocked == null && row.scored.auto)

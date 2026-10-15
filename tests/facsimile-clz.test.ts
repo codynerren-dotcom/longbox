@@ -1,8 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { GcdCatalog, GcdIssueRow } from "@/lib/catalog/gcd";
+import { parseGcdIssue, parseGcdSeries, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
 import { detectEdition, scoreCandidate, stripIssueVariant } from "@/lib/covers/edition";
 import { runFacsimilePass } from "@/lib/covers/facsimile-once";
-import { resolveGcdCover } from "@/lib/covers/gcd-match";
+import { gcdFacsimileQueries, resolveGcdCover, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
 import type { CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
 
@@ -316,8 +317,8 @@ describe("CLZ facsimile variants", () => {
     const issue: GcdIssueRow = {
       id: "880",
       seriesId: "90",
-      seriesName: "Avengers #8 Facsimile Edition",
-      number: "1",
+      seriesName: "Avengers No. 8 Facsimile Edition",
+      number: "[nn]",
       variant: "Facsimile Edition",
       title: "The Avengers",
       coverDate: "September 1964",
@@ -337,32 +338,40 @@ describe("CLZ facsimile variants", () => {
       metronIssueId: null,
     };
     const catalog: GcdCatalog = {
-      async issuesByBarcode(code) {
-        asked.push(code);
-        if (code === example.barcode) return [];
-        if (code === base) return [issue];
+      async issuesByBarcode() {
         return [];
       },
-      async seriesByName() {
-        return [];
+      async seriesByName(name) {
+        asked.push(name);
+        if (name !== "Avengers No. 8") return [];
+        return [
+          {
+            id: "90",
+            name: "Avengers No. 8 Facsimile Edition",
+            yearBegan: 2023,
+            yearEnded: 2023,
+            format: "one-shot",
+            issues: [{ id: "880", descriptor: "" }],
+          },
+        ];
       },
-      async issue() {
-        return null;
+      async issue(id) {
+        return id === "880" ? issue : null;
       },
     };
     const decision = await resolveGcdCover(copyOf(example), catalog);
-    expect(asked).toEqual([example.barcode, base]);
+    expect(asked).toContain("Avengers No. 8");
     expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "880" } });
   });
 
-  it("matches GCD series named Title N (Facsimile Edition) and skips the original series", async () => {
+  it("queries the core series name and skips the original series", async () => {
     const bane = examples[6];
     const batman = examples[5];
     const cases = [
-      { example: bane, seriesName: "Batman: Vengeance of Bane 1 (Facsimile Edition)", id: "bane-fac" },
-      { example: batman, seriesName: "Batman 1 (Facsimile Edition)", id: "batman-fac" },
+      { example: bane, query: "Vengeance of Bane 1", seriesName: "Batman: Vengeance of Bane 1 (Facsimile Edition)", id: "bane-fac" },
+      { example: batman, query: "Batman 1", seriesName: "Batman 1 (Facsimile Edition)", id: "batman-fac" },
     ];
-    for (const { example, seriesName, id } of cases) {
+    for (const { example, query, seriesName, id } of cases) {
       const asked: string[] = [];
       const catalog: GcdCatalog = {
         async issuesByBarcode() {
@@ -370,19 +379,7 @@ describe("CLZ facsimile variants", () => {
         },
         async seriesByName(name) {
           asked.push(name);
-          if (name === seriesName) {
-            return [
-              {
-                id: `${id}-series`,
-                name: seriesName,
-                yearBegan: 2023,
-                yearEnded: null,
-                format: "series",
-                issues: [{ id, descriptor: "1" }],
-              },
-            ];
-          }
-          if (!/facsimile/i.test(name)) {
+          if (name !== query) {
             return [
               {
                 id: "original-series",
@@ -394,7 +391,24 @@ describe("CLZ facsimile variants", () => {
               },
             ];
           }
-          return [];
+          return [
+            {
+              id: "original-series",
+              name: example.series.replace(/,?\s+\bvol(?:ume)?\.?\s*\d+\s*$/i, ""),
+              yearBegan: 1939,
+              yearEnded: null,
+              format: "series",
+              issues: [{ id: "original-issue", descriptor: example.number }],
+            },
+            {
+              id: `${id}-series`,
+              name: seriesName,
+              yearBegan: 2023,
+              yearEnded: 2023,
+              format: "one-shot",
+              issues: [{ id, descriptor: "" }],
+            },
+          ];
         },
         async issue(issueId) {
           if (issueId !== id) return null;
@@ -402,8 +416,8 @@ describe("CLZ facsimile variants", () => {
             id,
             seriesId: `${id}-series`,
             seriesName,
-            number: "1",
-            variant: "Facsimile Edition",
+            number: "[nn]",
+            variant: null,
             title: null,
             coverDate: "April 2023",
             coverYear: 2023,
@@ -425,8 +439,7 @@ describe("CLZ facsimile variants", () => {
       };
       const decision = await resolveGcdCover(copyOf(example, { barcode: null }), catalog);
       expect(decision, seriesName).toMatchObject({ status: "matched", via: "gcd", issue: { id } });
-      expect(asked).toContain(seriesName);
-      expect(asked.some((name) => !/facsimile/i.test(name))).toBe(false);
+      expect(asked[0]).toBe(query);
     }
   });
 
@@ -439,7 +452,7 @@ describe("CLZ facsimile variants", () => {
         return [];
       },
       async seriesByName(name) {
-        if (name !== "Batman 1 (Facsimile Edition)") return [];
+        if (name !== "Batman 1") return [];
         return [
           {
             id: "later",
@@ -482,6 +495,147 @@ describe("CLZ facsimile variants", () => {
       catalog,
     );
     expect(foil).toMatchObject({ status: "matched", via: "gcd", issue: { id: "foil" } });
+  });
+
+  it("keeps looking when an earlier facsimile series has a different barcode", async () => {
+    const spider = examples[3];
+    const asked: string[] = [];
+    const catalog: GcdCatalog = {
+      async issuesByBarcode() {
+        return [];
+      },
+      async seriesByName(name) {
+        asked.push(name);
+        if (name === "Amazing Spider-Man 1") {
+          return [
+            {
+              id: "2021",
+              name: "Amazing Spider-Man 1 Facsimile",
+              yearBegan: 2021,
+              yearEnded: 2021,
+              format: "one-shot",
+              issues: [{ id: "earlier", descriptor: "" }],
+            },
+          ];
+        }
+        if (name === "Amazing Spider-Man No. 1") {
+          return [
+            {
+              id: "2022",
+              name: "Amazing Spider-Man No. 1 Facsimile Edition",
+              yearBegan: 2022,
+              yearEnded: 2022,
+              format: "one-shot",
+              issues: [{ id: "right", descriptor: "" }],
+            },
+          ];
+        }
+        return [];
+      },
+      async issue(id) {
+        if (id === "earlier") {
+          return { ...gcdFacsimileIssue(id, "Amazing Spider-Man 1 Facsimile", "2021-01-20", "75960620000000111"), publisher: "Marvel" };
+        }
+        if (id === "right") {
+          return { ...gcdFacsimileIssue(id, "Amazing Spider-Man No. 1 Facsimile Edition", spider.releaseDate, spider.barcode), publisher: "Marvel" };
+        }
+        return null;
+      },
+    };
+    const decision = await resolveGcdCover(copyOf(spider), catalog);
+    expect(asked.slice(0, 2)).toEqual(["Amazing Spider-Man 1", "Amazing Spider-Man No. 1"]);
+    expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "right" } });
+  });
+
+  it("does not auto-link a foil add-on onto the regular barcode", async () => {
+    const foil = examples[1];
+    const catalog: GcdCatalog = {
+      async issuesByBarcode() {
+        return [];
+      },
+      async seriesByName(name) {
+        if (name !== "Amazing Spider-Man 300" && name !== "Amazing Spider-Man No. 300") return [];
+        return [
+          {
+            id: "300",
+            name: "Amazing Spider-Man No. 300 Facsimile Edition",
+            yearBegan: 2023,
+            yearEnded: 2023,
+            format: "one-shot",
+            issues: [{ id: "regular", descriptor: "" }],
+          },
+        ];
+      },
+      async issue(id) {
+        if (id !== "regular") return null;
+        return {
+          ...gcdFacsimileIssue(id, "Amazing Spider-Man No. 300 Facsimile Edition", foil.releaseDate, "75960620687200111"),
+          publisher: "Marvel",
+        };
+      },
+    };
+    const decision = await resolveGcdCover(copyOf(foil), catalog);
+    expect(decision.status).toBe("unmatched");
+  });
+});
+
+describe("Vengeance of Bane facsimile fixture", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../fixtures/gcd/vengeance-of-bane.json", import.meta.url), "utf8")) as {
+    series: { results: unknown[] };
+    issue: unknown;
+  };
+  const series = fixture.series.results.map((row) => parseGcdSeries(row)).filter((row): row is GcdSeriesRow => row !== null);
+  const issue = parseGcdIssue(fixture.issue);
+
+  function catalog(asked: string[]): GcdCatalog {
+    return {
+      async seriesByName(name) {
+        asked.push(name);
+        return /vengeance of bane/i.test(name) ? series : [];
+      },
+      async issue(id) {
+        if (id === "2513854") return issue;
+        if (id === "2514867") {
+          return {
+            ...(issue as GcdIssueRow),
+            id: "2514867",
+            barcode: "76194137966100121",
+            variant: "Foil Cardstock Cover",
+          };
+        }
+        return null;
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    };
+  }
+
+  it("names the core series, including the part after Batman:", () => {
+    expect(gcdFacsimileQueries("Batman: Vengeance of Bane", "1")[0]).toBe("Vengeance of Bane 1");
+    expect(gcdFacsimileQueries("The Amazing Spider-Man, Vol. 1", "300")).toContain("Amazing Spider-Man No. 300");
+    expect(gcdFacsimileQueries("Batman, Vol. 1", "1")[0]).toBe("Batman 1");
+    expect(gcdFacsimileQueries("Batman, Vol. 1", "1")).not.toContain("Batman");
+    expect(gcdFacsimileQueries("The Avengers, Vol. 1", "8")).toContain("Avengers No. 8");
+  });
+
+  it("resolves Batman: Vengeance of Bane 1D Facsimile Edition 2023 to GCD issue 2513854", async () => {
+    const bane = examples[6];
+    expect(issue?.id).toBe("2513854");
+    expect(issue?.number).toBe("[nn]");
+    expect(issue?.barcode).toBe("76194137966100111");
+    expect(series.map((row) => row.id)).toContain("198517");
+
+    const asked: string[] = [];
+    const decision = await resolveGcdCover(copyOf(bane), catalog(asked));
+    expect(decision).toMatchObject({ status: "matched", via: "gcd", issue: { id: "2513854" } });
+    expect(asked[0]).toBe("Vengeance of Bane 1");
+
+    const hits = await searchGcdMatches("Batman: Vengeance of Bane Facsimile Edition #1 2023", bane.barcode, "barcode", null, {
+      facsimile: true,
+      catalog: catalog([]),
+    });
+    expect(hits.map((hit) => hit.id)).toEqual(["2513854"]);
   });
 });
 

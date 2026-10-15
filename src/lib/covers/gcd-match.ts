@@ -9,22 +9,53 @@ import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
 import { gcdFormatMatches, isbnDigits, isCollected, resolveShelfFormat, tradeSearchSeries, volumeNumber, type ShelfFormat } from "@/lib/shelf-format";
 
+/** Names to send to `/api/series/name/`. The issue number lives in the GCD series title. */
+export function gcdFacsimileQueries(series: string, issueNo: string | null): string[] {
+  const names = gcdCoreNames(series);
+  const issue = issueNo && /^\d+$/.test(issueNo) ? issueNo : null;
+  const queries: string[] = [];
+  const add = (value: string) => {
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    if (trimmed.length < 3) return;
+    if (queries.some((query) => query.toLowerCase() === trimmed.toLowerCase())) return;
+    queries.push(trimmed);
+  };
+  for (const name of names) {
+    if (issue) {
+      add(`${name} ${issue}`);
+      add(`${name} No. ${issue}`);
+      add(`${name} #${issue}`);
+    }
+    if (name.split(" ").filter(Boolean).length >= 2) add(name);
+  }
+  return queries;
+}
+
 export async function searchGcdMatches(
   query: string,
   barcode: string,
   mode: "query" | "barcode",
   shelfFormat?: string | null,
+  options?: { facsimile?: boolean; catalog?: GcdCatalog },
 ): Promise<MatchHit[]> {
-  const catalog = createGcdCatalog();
+  const catalog = options?.catalog ?? createGcdCatalog();
   const format = resolveShelfFormat({ shelfFormat });
-  if (mode === "barcode") {
-    const code = barcode.trim();
-    if (!code) return [];
-    const isbn = isbnDigits(code);
-    const issues = await catalog.issuesByBarcode(isbn ?? code);
+  const parsed = parseMatchQuery(mode === "barcode" && !query.trim() ? "" : query);
+  const probe: CoverQuery = {
+    series: parsed.series || query.trim(),
+    issueNo: parsed.issueNo,
+    issue: parsed.issueNo,
+    coverYear: null,
+    barcode: barcode.trim() || null,
+    variant: null,
+    publisher: null,
+    releaseYear: parsed.year,
+    variantDescription: options?.facsimile || /\bfacsimile\b/i.test(query) ? "Facsimile Edition" : null,
+  };
+  if ((options?.facsimile || detectEdition(probe).kind === "facsimile") && probe.series.trim()) {
+    const issues = await collectGcdFacsimileIssues(probe, catalog);
     return issues.map(gcdHit);
   }
-  const parsed = parseMatchQuery(query);
   if (!parsed.series) return [];
   const wanted = isCollected(format) ? tradeSearchSeries(parsed.series) || parsed.series : parsed.series;
   let seriesRows = await catalog.seriesByName(wanted);
@@ -210,38 +241,35 @@ async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof 
 }
 
 async function resolveGcdFacsimile(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {
-  const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
-  const collected: GcdIssueRow[] = [];
-  if (barcode) {
-    collected.push(...(await catalog.issuesByBarcode(barcode.combined)));
-    if (barcode.upc && barcode.upc !== barcode.combined) collected.push(...(await catalog.issuesByBarcode(barcode.upc)));
-    const decision = chooseFacsimileIssue(collected.map(toHit), comic, "gcd");
-    if (decision.status === "matched") return decision;
+  const issues = await collectGcdFacsimileIssues(comic, catalog);
+  if (issues.length === 0) {
+    return { status: "unmatched", reason: `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.`, score: 0 };
   }
-  let best: CoverDecision = { status: "unmatched", reason: `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.`, score: 0 };
+  return chooseFacsimileIssue(issues.map(toHit), comic, "gcd");
+}
+
+/** Facsimile series from the core name, then the issues inside them, best barcode first. */
+export async function collectGcdFacsimileIssues(comic: CoverQuery, catalog: GcdCatalog): Promise<GcdIssueRow[]> {
+  const edition = detectEdition(comic);
+  const issueNo = edition.issueNo || "";
+  if (!comic.series.trim() || !issueNo) return [];
+  const releaseYear = comic.releaseYear ?? yearFromDate(comic.releaseDate);
+  let fallback: GcdIssueRow[] = [];
   let fetched = 0;
-  for (const search of edition.facsimileSearches) {
-    const seriesRows = await catalog.seriesByName(search.series);
-    const picked = pickSeries(seriesRows, search.series, comic.releaseYear ?? comic.coverYear).filter((row) => /facsimile/i.test(row.name));
-    for (const series of picked) {
-      const issueIds = issuesFor(series, search.issueNo, true).slice(0, 3);
-      const batch: MetronIssueHit[] = [];
-      for (const id of issueIds) {
-        if (fetched >= 6) break;
-        fetched += 1;
-        const issue = await catalog.issue(id);
-        if (!issue) continue;
-        issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-        batch.push(toHit(issue));
-      }
-      if (batch.length === 0) continue;
-      const decision = chooseFacsimileIssue(batch, comic, "gcd");
-      if (decision.status === "matched") return decision;
-      if (decision.score > best.score) best = decision;
-      if (fetched >= 6) return best;
-    }
+  for (const name of gcdFacsimileQueries(comic.series, issueNo).slice(0, 8)) {
+    if (fetched >= 8) break;
+    const rows = await catalog.seriesByName(name);
+    const kept = keepFacsimileSeries(rows, issueNo, releaseYear);
+    if (kept.length === 0) continue;
+    const ranked = rankFacsimileIssues(await loadFacsimileIssues(kept, catalog), comic);
+    fetched += ranked.length;
+    if (ranked.length === 0) continue;
+    const best = ranked[0]?.rank ?? 3;
+    const picked = ranked.filter((row) => row.rank === best).map((row) => row.issue);
+    if (best <= 1 || !comic.barcode) return picked;
+    if (fallback.length === 0) fallback = picked;
   }
-  return best;
+  return fallback;
 }
 
 function chooseGcd(issues: GcdIssueRow[], comic: CoverQuery, issueNo: string): CoverDecision {
@@ -289,6 +317,103 @@ function candidateFrom(issue: MetronIssueHit): MatchCandidate {
     publisher: issue.publisher ?? null,
     storeDate: issue.storeDate ?? null,
   };
+}
+
+function gcdCoreNames(series: string): string[] {
+  const withoutEdition = series.replace(/\bfacsimile editions?\b/gi, " ").replace(/\bfacsimiles?\b/gi, " ");
+  const base = withoutEdition
+    .replace(/\s*\((?:18|19|20)\d{2}(?:\s+series)?\)\s*$/i, "")
+    .replace(/,?\s+\bvol(?:ume)?\.?\s*\d+\s*$/i, "")
+    .replace(/^\s*the\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const names: string[] = [];
+  const add = (value: string) => {
+    const trimmed = value.replace(/[^A-Za-z0-9!&'-]+/g, " ").replace(/\s+/g, " ").trim();
+    if (trimmed.length < 3) return;
+    if (names.some((name) => name.toLowerCase() === trimmed.toLowerCase())) return;
+    names.push(trimmed);
+  };
+  const colon = base.indexOf(":");
+  if (colon >= 0) add(base.slice(colon + 1));
+  add(base);
+  return names;
+}
+
+function keepFacsimileSeries(rows: GcdSeriesRow[], issueNo: string, releaseYear: number | null): GcdSeriesRow[] {
+  const named = rows.filter((row) => /facsimile/i.test(row.name) && seriesMentionsIssue(row.name, issueNo));
+  if (named.length === 0 || releaseYear == null) return named;
+  const close = named.filter((row) => row.yearBegan == null || Math.abs(row.yearBegan - releaseYear) <= 1);
+  if (close.length > 0) return close;
+  return named.filter((row) => row.yearBegan == null || Math.abs(row.yearBegan - releaseYear) <= 3);
+}
+
+async function loadFacsimileIssues(seriesRows: GcdSeriesRow[], catalog: GcdCatalog): Promise<Array<{ issue: GcdIssueRow; descriptor: string }>> {
+  const descriptors = new Map<string, { descriptor: string; year: number | null }>();
+  for (const series of seriesRows.slice(0, 3)) {
+    for (const issue of series.issues) {
+      if (descriptors.size >= 6) break;
+      if (!descriptors.has(issue.id)) descriptors.set(issue.id, { descriptor: issue.descriptor, year: series.yearBegan });
+    }
+  }
+  const loaded: Array<{ issue: GcdIssueRow; descriptor: string }> = [];
+  for (const [id, meta] of descriptors) {
+    const issue = await catalog.issue(id);
+    if (!issue) continue;
+    issue.seriesYear = issue.seriesYear ?? meta.year;
+    loaded.push({ issue: withDescriptor(issue, meta.descriptor), descriptor: meta.descriptor });
+  }
+  return loaded;
+}
+
+function rankFacsimileIssues(
+  rows: Array<{ issue: GcdIssueRow; descriptor: string }>,
+  comic: CoverQuery,
+): Array<{ issue: GcdIssueRow; descriptor: string; rank: number }> {
+  const hint = coverHint(comic.variantDescription);
+  return rows
+    .map((row, index) => {
+      const agree = barcodeAgreement(comic.barcode, row.issue.barcode);
+      const kind = coverHint(`${row.descriptor} ${row.issue.variant ?? ""}`);
+      let rank = 3;
+      if (agree === "exact") rank = 0;
+      else if (agree === "prefix") rank = 1;
+      else if (kind === hint) rank = 2;
+      return { ...row, rank, index };
+    })
+    .sort((a, b) => a.rank - b.rank || a.index - b.index);
+}
+
+function withDescriptor(issue: GcdIssueRow, descriptor: string): GcdIssueRow {
+  if (issue.variant || !descriptor.trim()) return issue;
+  const label = descriptor.replace(/^\[|\]$/g, "").trim();
+  return label ? { ...issue, variant: label } : issue;
+}
+
+function coverHint(value: string | null | undefined): "foil" | "blank" | "regular" {
+  const text = (value ?? "").toLowerCase();
+  if (/\bfoil\b/.test(text)) return "foil";
+  if (/\bblank\b/.test(text)) return "blank";
+  return "regular";
+}
+
+function barcodeAgreement(copy: string | null | undefined, issue: string | null | undefined): "exact" | "prefix" | null {
+  const want = (copy ?? "").replace(/\D/g, "");
+  const got = (issue ?? "").replace(/\D/g, "");
+  if (want.length < 12 || got.length < 12) return null;
+  if (want === got) return "exact";
+  if (want.startsWith(got) || got.startsWith(want)) return "prefix";
+  return null;
+}
+
+function yearFromDate(value: Date | string | null | undefined): number | null {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    const year = value.getUTCFullYear();
+    return Number.isInteger(year) ? year : null;
+  }
+  const match = String(value).match(/\b((?:18|19|20)\d{2})\b/);
+  return match?.[1] ? Number(match[1]) : null;
 }
 
 function pickSeries(rows: GcdSeriesRow[], name: string, year: number | null): GcdSeriesRow[] {

@@ -163,7 +163,7 @@ function gcdDigits(id: string | null | undefined): string | null {
 function idFromApiUrl(value: unknown): string | null {
   const raw = text(value);
   if (!raw) return null;
-  const match = raw.match(/\/(\d+)\/?$/);
+  const match = raw.match(/\/(\d+)\/?(?:\?.*)?$/);
   return match?.[1] && match[1] !== "0" ? match[1] : null;
 }
 
@@ -288,13 +288,6 @@ function pageCount(value: unknown): number | null {
   return Math.round(amount);
 }
 
-function barcodeMatches(issue: GcdIssueRow, code: string): boolean {
-  const want = code.replace(/\D/g, "");
-  const got = (issue.barcode ?? "").replace(/\D/g, "");
-  if (want.length < 11 || got.length < 11) return false;
-  return got === want || got.startsWith(want) || want.startsWith(got);
-}
-
 async function gcdGet(pathAndQuery: string): Promise<unknown> {
   await gcdPause();
   const url = `${gcdBase()}${pathAndQuery}`;
@@ -327,25 +320,12 @@ async function gcdGet(pathAndQuery: string): Promise<unknown> {
   return response.json();
 }
 
-/** Try the public issue endpoints that accept a barcode filter. Skip quietly on failure. */
-export async function gcdByBarcode(parsed: ParsedBarcode): Promise<CatalogMatch[]> {
-  const code = encodeURIComponent(parsed.combined);
-  const paths = [`/api/v2/issues/?barcode=${code}`, `/api/issues/?barcode=${code}`];
-  if (parsed.upc && parsed.upc !== parsed.combined) {
-    const upc = encodeURIComponent(parsed.upc);
-    paths.push(`/api/v2/issues/?barcode=${upc}`, `/api/issues/?barcode=${upc}`);
-  }
-  for (const path of paths) {
-    try {
-      const body = await gcdGet(path);
-      const matches = asArray(body)
-        .map((item) => toMatch(item, parsed.combined))
-        .filter((match): match is CatalogMatch => match !== null);
-      if (matches.length > 0) return matches;
-    } catch {
-      continue;
-    }
-  }
+/**
+ * GCD has no barcode search. `/api/issue/?barcode=`, `/api/issues/?barcode=`,
+ * and `/api/v2/issues/?barcode=` all 404. Callers verify a barcode by reading
+ * it off an issue found through `/api/series/name/`.
+ */
+export async function gcdByBarcode(_parsed: ParsedBarcode): Promise<CatalogMatch[]> {
   return [];
 }
 
@@ -360,21 +340,7 @@ export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
       const body = await gcdFetch(fetchImpl, `/api/issue/${id}/`);
       return parseGcdIssue(body);
     },
-    async issuesByBarcode(code) {
-      const encoded = encodeURIComponent(code.trim());
-      const paths = [`/api/issue/?barcode=${encoded}`, `/api/issues/?barcode=${encoded}`, `/api/v2/issues/?barcode=${encoded}`];
-      for (const path of paths) {
-        try {
-          const body = await gcdFetch(fetchImpl, path);
-          const issues = asArray(body)
-            .map((item) => parseGcdIssue(item))
-            .filter((issue): issue is GcdIssueRow => issue !== null)
-            .filter((issue) => barcodeMatches(issue, code));
-          if (issues.length > 0) return issues.slice(0, 8);
-        } catch (error) {
-          if (error instanceof GcdBudgetError) throw error;
-        }
-      }
+    async issuesByBarcode() {
       return [];
     },
   };

@@ -12,6 +12,7 @@ type Props = {
   comicId: string;
   query: string;
   barcode: string;
+  facsimile?: boolean;
   shelfFormat?: string | null;
   metronReady: boolean;
   comicVineReady: boolean;
@@ -118,19 +119,58 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
   const [fillMissing, setFillMissing] = useState(true);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
+  const [metronMissed, setMetronMissed] = useState(false);
   const [pending, start] = useTransition();
   const ready = source === "metron" ? props.metronReady : source === "comicvine" ? props.comicVineReady : true;
   const hint = source === "metron" ? "Add a Metron username and password in Settings to search." : "Add a Comic Vine API key in Settings to search.";
+
+  function selectSource(next: CatalogSource) {
+    setSource(next);
+    setHits([]);
+    setSelected(null);
+    setError("");
+    setNote(next === "metron" && metronMissed ? "Metron may not list facsimiles, try GCD." : "");
+  }
 
   function search(mode: "query" | "barcode") {
     setError("");
     setNote("");
     setSelected(null);
     start(async () => {
-      const result = await searchMatchesAction({ source, query, barcode, mode, shelfFormat: props.shelfFormat ?? null });
+      const result = await searchMatchesAction({
+        source,
+        query,
+        barcode,
+        mode,
+        shelfFormat: props.shelfFormat ?? null,
+        facsimile: props.facsimile,
+      });
       if (!result.ok) {
         setHits([]);
         setError(result.message);
+        return;
+      }
+      if (source === "metron" && props.facsimile && result.hits.length === 0) {
+        setMetronMissed(true);
+        setHits([]);
+        setNote("Metron may not list facsimiles, try GCD.");
+        const gcd = await searchMatchesAction({
+          source: "gcd",
+          query,
+          barcode,
+          mode,
+          shelfFormat: props.shelfFormat ?? null,
+          facsimile: true,
+        });
+        if (!gcd.ok) {
+          setError(gcd.message);
+          return;
+        }
+        if (gcd.hits.length > 0) {
+          setSource("gcd");
+          setHits(gcd.hits);
+          setNote("");
+        }
         return;
       }
       setHits(result.hits);
@@ -182,9 +222,9 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           </button>
         </div>
         <div className="mt-3 flex gap-2" role="tablist">
-          <Tab active={source === "metron"} onClick={() => setSource("metron")}>Metron</Tab>
-          <Tab active={source === "comicvine"} onClick={() => setSource("comicvine")}>Comic Vine</Tab>
-          <Tab active={source === "gcd"} onClick={() => setSource("gcd")}>GCD</Tab>
+          <Tab active={source === "metron"} onClick={() => selectSource("metron")}>Metron</Tab>
+          <Tab active={source === "comicvine"} onClick={() => selectSource("comicvine")}>Comic Vine</Tab>
+          <Tab active={source === "gcd"} onClick={() => selectSource("gcd")}>GCD</Tab>
         </div>
         {source === "gcd" ? (
           <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Cover scans stay on the GCD cover page, so this link does not download one.</p>
