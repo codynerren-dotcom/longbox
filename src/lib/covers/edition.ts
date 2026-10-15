@@ -170,8 +170,11 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
   let blocked: string | null = null;
   if (wantedIssue && foundIssue) {
     const numbered = sameIssueNumber(wantedIssue, foundIssue);
-    const facsimileOne = edition.kind === "facsimile" && sameIssueNumber(foundIssue, "1") && seriesMentionsIssue(candidate.seriesName, wantedIssue);
-    if (numbered || facsimileOne) issuePoints = 25;
+    const facsimileNamed =
+      edition.kind === "facsimile" &&
+      seriesMentionsIssue(candidate.seriesName, wantedIssue) &&
+      (sameIssueNumber(foundIssue, "1") || isUnnumberedIssue(foundIssue));
+    if (numbered || facsimileNamed) issuePoints = 25;
     else blocked = "Issue numbers do not match.";
   }
 
@@ -347,9 +350,15 @@ function leadingIssue(value: string): string {
   return match?.[1] ?? value.trim();
 }
 
-function seriesMentionsIssue(seriesName: string, issueNo: string): boolean {
+export function seriesMentionsIssue(seriesName: string, issueNo: string): boolean {
   if (!/^\d+$/.test(issueNo)) return false;
   return new RegExp(`(?:#|\\b)${issueNo}\\b`, "i").test(seriesName);
+}
+
+/** GCD facsimile series often leave the issue number blank or `[nn]` and put it in the series title. */
+export function isUnnumberedIssue(value: string): boolean {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed === "" || trimmed === "[nn]" || trimmed === "nn";
 }
 
 export function calendarDay(value: Date | string | null | undefined): string | null {

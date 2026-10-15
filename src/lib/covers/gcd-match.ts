@@ -3,7 +3,7 @@ import { createGcdCatalog } from "@/lib/catalog/gcd";
 import type { MatchHit } from "@/lib/catalog/match-hits";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { parseComicBarcode } from "@/lib/barcode";
-import { detectEdition, scoreCandidate, type MatchCandidate } from "@/lib/covers/edition";
+import { detectEdition, scoreCandidate, seriesMentionsIssue, type MatchCandidate } from "@/lib/covers/edition";
 import { chooseFacsimileIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
@@ -133,17 +133,21 @@ async function resolveGcdFacsimile(comic: CoverQuery, edition: ReturnType<typeof
     const seriesRows = await catalog.seriesByName(search.series);
     const picked = pickSeries(seriesRows, search.series, comic.releaseYear ?? comic.coverYear).filter((row) => /facsimile/i.test(row.name));
     for (const series of picked) {
-      const issueIds = issuesFor(series, search.issueNo, true).slice(0, 2);
+      const issueIds = issuesFor(series, search.issueNo, true).slice(0, 3);
+      const batch: MetronIssueHit[] = [];
       for (const id of issueIds) {
-        if (fetched >= 6) return best;
+        if (fetched >= 6) break;
         fetched += 1;
         const issue = await catalog.issue(id);
         if (!issue) continue;
         issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-        const decision = chooseFacsimileIssue([toHit(issue)], comic, "gcd");
-        if (decision.status === "matched") return decision;
-        if (decision.score > best.score) best = decision;
+        batch.push(toHit(issue));
       }
+      if (batch.length === 0) continue;
+      const decision = chooseFacsimileIssue(batch, comic, "gcd");
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+      if (fetched >= 6) return best;
     }
   }
   return best;
@@ -214,6 +218,14 @@ function issuesFor(series: GcdSeriesRow, issueNo: string, reprint: boolean): str
   const ranked = series.issues
     .map((issue) => ({ id: issue.id, descriptor: issue.descriptor.toLowerCase(), reprint: /facsimile|reprint|printing|omnibus|true believers|anniversary/.test(issue.descriptor.toLowerCase()) }))
     .filter((issue) => issue.descriptor === wanted || issue.descriptor.startsWith(`${wanted} `) || issue.descriptor.startsWith(`${wanted}[`));
+  if (ranked.length === 0 && reprint && seriesMentionsIssue(series.name, issueNo)) {
+    return series.issues
+      .filter((issue) => {
+        const descriptor = issue.descriptor.trim().toLowerCase();
+        return descriptor === "" || descriptor === "[nn]" || descriptor === "nn" || descriptor.startsWith("[");
+      })
+      .map((issue) => issue.id);
+  }
   ranked.sort((a, b) => {
     const preferA = reprint ? a.reprint : !a.reprint;
     const preferB = reprint ? b.reprint : !b.reprint;

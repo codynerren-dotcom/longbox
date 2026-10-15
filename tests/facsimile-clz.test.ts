@@ -66,6 +66,32 @@ function facsimileHit(example: Example, overrides: Partial<MetronIssueHit> = {})
   };
 }
 
+function gcdFacsimileIssue(id: string, seriesName: string, onSaleDate: string, barcode: string, variant: string | null = null): GcdIssueRow {
+  return {
+    id,
+    seriesId: "gcd-series",
+    seriesName,
+    number: "[nn]",
+    variant,
+    title: null,
+    coverDate: onSaleDate,
+    coverYear: Number(onSaleDate.slice(0, 4)),
+    onSaleYear: Number(onSaleDate.slice(0, 4)),
+    onSaleDate,
+    price: "6.99 USD",
+    pageCount: 32,
+    barcode,
+    publisher: "DC",
+    writer: null,
+    artist: null,
+    coverArtist: null,
+    characters: null,
+    seriesYear: Number(onSaleDate.slice(0, 4)),
+    comicvineIssueId: null,
+    metronIssueId: null,
+  };
+}
+
 function originalHit(example: Example): MetronIssueHit {
   return facsimileHit(example, {
     id: `orig-${example.number}`,
@@ -402,6 +428,60 @@ describe("CLZ facsimile variants", () => {
       expect(asked).toContain(seriesName);
       expect(asked.some((name) => !/facsimile/i.test(name))).toBe(false);
     }
+  });
+
+  it("links a GCD [nn] facsimile when the series title carries the issue number and the barcode matches", async () => {
+    const batman = examples[5];
+    const foilBarcode = "76194138217300121";
+    const fetched: string[] = [];
+    const catalog: GcdCatalog = {
+      async issuesByBarcode() {
+        return [];
+      },
+      async seriesByName(name) {
+        if (name !== "Batman 1 (Facsimile Edition)") return [];
+        return [
+          {
+            id: "later",
+            name: "Batman 1 (Facsimile Edition)",
+            yearBegan: 2025,
+            yearEnded: null,
+            format: "series",
+            issues: [{ id: "later-main", descriptor: "" }],
+          },
+          {
+            id: "2023",
+            name: "Batman 1 (Facsimile Edition)",
+            yearBegan: 2023,
+            yearEnded: null,
+            format: "series",
+            issues: [
+              { id: "main", descriptor: "" },
+              { id: "foil", descriptor: "[Foil Cardstock Cover]" },
+            ],
+          },
+        ];
+      },
+      async issue(id) {
+        fetched.push(id);
+        if (id === "later-main") {
+          return gcdFacsimileIssue(id, "Batman 1 (Facsimile Edition)", "2025-09-17", "76194138717800111");
+        }
+        if (id === "foil") return gcdFacsimileIssue(id, "Batman 1 (Facsimile Edition)", batman.releaseDate, foilBarcode, "Foil Cardstock Cover");
+        if (id === "main") return gcdFacsimileIssue(id, "Batman 1 (Facsimile Edition)", batman.releaseDate, batman.barcode);
+        return null;
+      },
+    };
+    const regular = await resolveGcdCover(copyOf(batman, { barcode: batman.barcode }), catalog);
+    expect(regular).toMatchObject({ status: "matched", via: "gcd", issue: { id: "main" } });
+    expect(fetched).not.toContain("later-main");
+
+    fetched.length = 0;
+    const foil = await resolveGcdCover(
+      copyOf(batman, { barcode: foilBarcode, variantDescription: "Facsimile Foil Variant" }),
+      catalog,
+    );
+    expect(foil).toMatchObject({ status: "matched", via: "gcd", issue: { id: "foil" } });
   });
 });
 
