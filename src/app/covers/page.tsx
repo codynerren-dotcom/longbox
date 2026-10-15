@@ -8,7 +8,7 @@ import { CatalogIdLink } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { suspectMatchReason } from "@/lib/covers/edition";
-import { readCatalogYears } from "@/lib/covers/facsimile-years";
+import { readCatalogYears, readPrintingCovers } from "@/lib/covers/facsimile-years";
 import { metronBasicAuth } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { formatIssue } from "@/lib/format";
@@ -16,7 +16,7 @@ import { formatIssue } from "@/lib/format";
 export const metadata = { title: "Covers" };
 
 export default async function CoversPage() {
-  const [matched, pending, unmatched, linked, configuredAuth, years] = await Promise.all([
+  const [matched, pending, unmatched, linked, configuredAuth, years, printings] = await Promise.all([
     prisma.comic.count({ where: { coverStatus: "matched" } }),
     prisma.comic.count({
       where: { coverFile: null, OR: [{ coverStatus: null }, { coverStatus: "matched" }] },
@@ -63,9 +63,10 @@ export default async function CoversPage() {
     }),
     metronBasicAuth(),
     readCatalogYears(),
+    readPrintingCovers(),
   ]);
   const suspects = linked.flatMap((comic) => {
-    const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null });
+    const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
     if (!reason) return [];
     const link = readManualLink(comic.manualLink);
     const manual = Boolean((comic.metronIssueId && link.metronIssueId) || (comic.gcdIssueId && link.gcdIssueId));
@@ -77,7 +78,7 @@ export default async function CoversPage() {
     <div className="max-w-3xl">
       <PageHeader kicker="Metron" title="Covers" />
       <p className="mb-4 text-sm leading-relaxed text-mist">
-        Backfill downloads a cover for every issue that does not have one yet. It tries the barcode first, then the series name, issue number, and release year. A facsimile copy is matched by its UPC and by a facsimile series, and it is never linked to the original issue. A reprint, later printing, anniversary, True Believers, or omnibus copy is searched as its own series before the original. A match has to clear a confidence score or it stays here for the Match panel. When Metron is not confident, GCD is the fallback. GCD cover scans stay on comics.org.
+        Backfill downloads a cover for every issue that does not have one yet. It tries the barcode first, then the series name, issue number, and release year. A facsimile copy is matched by its UPC and by a facsimile series, and it is never linked to the original issue. A later printing stays on the same issue. The variant description and the last digit of the UPC add-on pick the printing, then the cover whose name matches that printing is saved. When that cover is missing, the issue stays linked and the cover stays for review. A reprint, anniversary, True Believers, or omnibus copy is searched as its own series before the original. A match has to clear a confidence score or it stays here for the Match panel. When Metron is not confident, GCD is the fallback. GCD cover scans stay on comics.org.
       </p>
       <div className="mb-4 grid grid-cols-3 gap-3">
         <Count label="Matched" value={matched} />
@@ -99,7 +100,7 @@ export default async function CoversPage() {
       <section id="suspects" className="mt-6">
         <h2 className="font-display text-3xl tracking-wide">Review suspect matches</h2>
         <p className="mt-2 text-sm text-mist">
-          A facsimile link is listed when the linked issue&apos;s store year is not within a year of the copy&apos;s release date. Other links are listed when the copy is another edition, or when its release year and cover year are more than two years apart. Re-match looks the facsimile up again and leaves it unmatched when nothing is confident.
+          A facsimile link is listed when the linked issue&apos;s store year is not within a year of the copy&apos;s release date. A later printing stays listed until its printing cover is confirmed. Re-match keeps that issue link and leaves the cover for review when the printing cover is missing. Other links are listed when the copy is another edition, or when its release year and cover year are more than two years apart.
         </p>
         {suspects.length > 0 ? <RematchAllSuspects /> : null}
         {suspects.length === 0 ? (

@@ -1,6 +1,21 @@
+import { parseComicBarcode } from "@/lib/barcode";
+
 export const AUTO_LINK_SCORE = 75;
 export const DECADE_YEARS = 10;
 export const FACSIMILE_DATE_WINDOW_DAYS = 60;
+
+const PRINTING_WORDS: Record<number, readonly [string, string]> = {
+  1: ["1st", "first"],
+  2: ["2nd", "second"],
+  3: ["3rd", "third"],
+  4: ["4th", "fourth"],
+  5: ["5th", "fifth"],
+  6: ["6th", "sixth"],
+  7: ["7th", "seventh"],
+  8: ["8th", "eighth"],
+  9: ["9th", "ninth"],
+  10: ["10th", "tenth"],
+};
 
 export type EditionKind = "regular" | "facsimile" | "reprint" | "printing" | "anniversary" | "true-believers" | "omnibus";
 
@@ -21,6 +36,8 @@ export type EditionCopy = {
   seriesYear?: number | null;
   coverPrice?: unknown;
   catalogStoreYear?: number | null;
+  /** Printing number whose cover was confirmed for this linked copy. */
+  catalogPrinting?: number | null;
 };
 
 export type FacsimileSearch = {
@@ -35,8 +52,10 @@ export type EditionProfile = {
   searchNames: string[];
   /** Series and issue pairs for a facsimile. Empty for every other kind. */
   facsimileSearches: FacsimileSearch[];
-  /** Issue number with a trailing variant letter removed when this copy is a facsimile. */
+  /** Issue number with trailing variant letters removed for a facsimile or later printing. */
   issueNo: string | null;
+  /** 2 or higher for a later printing. First printing and everything else stay null. */
+  printing: number | null;
   reasons: string[];
 };
 
@@ -102,26 +121,99 @@ export function detectEdition(copy: EditionCopy): EditionProfile {
     reasons.push(`Release year ${release} is ${release - started} years after the series started in ${started}.`);
     kind = "facsimile";
   }
+  const described = printingNumberFromText(text);
+  const fromBarcode = printingNumberFromBarcode(copy.barcode);
+  let printing: number | null = null;
+  if (described != null && described >= 2) printing = described;
+  else if (described == null && fromBarcode != null && fromBarcode >= 2) printing = fromBarcode;
+  if (described === 1) printing = null;
+  if (printing != null && kind === "regular") {
+    kind = "printing";
+    reasons.push(`The copy is a ${printingOrdinal(printing)} printing.`);
+  }
+  if (kind === "printing" && printing != null) {
+    if (described != null && fromBarcode != null && described === fromBarcode) {
+      reasons.push(`The variant description and the UPC add-on both say ${printingOrdinal(printing)} printing.`);
+    } else if (described != null) reasons.push(`The variant description says ${printingOrdinal(printing)} printing.`);
+    else reasons.push(`The UPC add-on says ${printingOrdinal(printing)} printing.`);
+  }
   const baseSeries = baseSeriesName(copy.series) || copy.series.trim();
   const stripped = stripIssueVariant(copy.issueNo);
   const facsimileSearches = kind === "facsimile" ? buildFacsimileSearches(copy.series, stripped.number) : [];
+  const laterPrinting = kind === "printing" && printing != null;
   return {
     kind,
     reprint: kind !== "regular",
     baseSeries,
     searchNames: kind === "facsimile" ? facsimileSearches.map((search) => search.series) : searchNames(kind, copy.series, baseSeries),
     facsimileSearches,
-    issueNo: kind === "facsimile" ? stripped.number || null : copy.issueNo?.trim() || null,
+    issueNo: kind === "facsimile" || laterPrinting ? stripped.number || null : copy.issueNo?.trim() || null,
+    printing: laterPrinting ? printing : null,
     reasons,
   };
 }
 
-/** "300K" is issue 300 with variant letter K. A bare "300" stays 300. */
+/** "300K" and "1AX" keep the issue number and drop the CLZ variant letters. */
 export function stripIssueVariant(issueNo: string | null | undefined): { number: string; letter: string | null } {
   const trimmed = (issueNo ?? "").trim().replace(/^#\s*/, "");
-  const match = trimmed.match(/^(\d+)([A-Za-z])$/);
+  const match = trimmed.match(/^(\d+)([A-Za-z]+)$/);
   if (!match) return { number: trimmed, letter: null };
   return { number: match[1], letter: match[2].toUpperCase() };
+}
+
+/** Word or ordinal in front of "printing". "First" and "1st" are 1. */
+export function printingNumberFromText(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const text = value.toLowerCase();
+  const word = text.match(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+printings?\b/);
+  if (word) {
+    const found = Object.entries(PRINTING_WORDS).find(([, names]) => names[1] === word[1]);
+    return found ? Number(found[0]) : null;
+  }
+  const digit = text.match(/\b(\d+)(?:st|nd|rd|th)\s+printings?\b/);
+  if (!digit) return null;
+  const printing = Number(digit[1]);
+  if (!Number.isInteger(printing) || printing < 1 || printing > 20) return null;
+  return printing;
+}
+
+/**
+ * US comic add-on is issue, cover, printing (IIICP). The last digit is the printing.
+ * 1 is the first printing. 2 through 9 are later printings.
+ */
+export function printingNumberFromBarcode(barcode: string | null | undefined): number | null {
+  if (!barcode) return null;
+  const parsed = parseComicBarcode(barcode);
+  if (!parsed?.addon || parsed.addon.length !== 5) return null;
+  const printing = Number(parsed.addon.slice(-1));
+  if (!Number.isInteger(printing) || printing < 1 || printing > 9) return null;
+  return printing;
+}
+
+export function printingOrdinal(printing: number): string {
+  return PRINTING_WORDS[printing]?.[0] ?? `${printing}th`;
+}
+
+export function printingWords(printing: number): string[] {
+  const known = PRINTING_WORDS[printing];
+  return known ? [known[0], known[1]] : [`${printing}th`];
+}
+
+export function labelMatchesPrinting(label: string, printing: number): boolean {
+  if (!/\bprintings?\b/i.test(label)) return false;
+  return printingWords(printing).some((word) => new RegExp(`\\b${word}\\b`, "i").test(label));
+}
+
+/** Cover-artist words left after the printing phrase, such as "Travel Foreman". */
+export function printingArtistHint(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const cleaned = value
+    .replace(/\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+printings?\b/gi, " ")
+    .replace(/\b(?:printings?|variants?|covers?|editions?)\b/gi, " ")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || null;
 }
 
 /** Drop a leading "The" and a trailing volume so facsimile series search uses the catalog name. */
@@ -162,9 +254,17 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
   if (copyBase && candidateBase && copyBase === candidateBase) seriesPoints = 30;
   else if (copyBase && candidateBase && (copyBase.includes(candidateBase) || candidateBase.includes(copyBase))) seriesPoints = 16;
   if (edition.kind !== "regular" && candidateKind === edition.kind) seriesPoints = 30;
-  if (edition.kind !== candidateKind) seriesPoints = Math.min(seriesPoints, 8);
+  const printingOnSameIssue = edition.kind === "printing" && (candidateKind === "regular" || candidateKind === "printing");
+  if (edition.kind !== candidateKind && !printingOnSameIssue) seriesPoints = Math.min(seriesPoints, 8);
+  if (edition.kind === "printing") {
+    const volumeFree = normName(facsimileSeriesBase(copy.series));
+    if (volumeFree && candidateBase && volumeFree === candidateBase) seriesPoints = 30;
+  }
 
-  const wantedIssue = edition.kind === "facsimile" ? stripIssueVariant(copy.issueNo).number : leadingIssue(copy.issueNo ?? "");
+  const wantedIssue =
+    edition.kind === "facsimile" || edition.kind === "printing"
+      ? edition.issueNo || stripIssueVariant(copy.issueNo).number
+      : leadingIssue(copy.issueNo ?? "");
   const foundIssue = leadingIssue(candidate.issueNo);
   let issuePoints = 0;
   let blocked: string | null = null;
@@ -190,8 +290,15 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
       blocked = blocked ?? `Release years are ${gap} years apart.`;
     }
   }
-  if (edition.kind !== candidateKind) {
+  if (edition.kind === "printing" && (left == null || right == null) && blocked == null) yearPoints = 20;
+  if (edition.kind !== candidateKind && !printingOnSameIssue) {
     blocked = blocked ?? `This copy is ${KIND_LABEL[edition.kind]} and the catalog issue is ${KIND_LABEL[candidateKind]}.`;
+  }
+  if (edition.kind === "printing" && edition.printing != null) {
+    const foundPrinting = printingNumberFromText(candidate.variant ?? "");
+    if (foundPrinting != null && foundPrinting !== edition.printing) {
+      blocked = blocked ?? `Catalog cover is a ${printingOrdinal(foundPrinting)} printing.`;
+    }
   }
   if (edition.kind === "facsimile") {
     const copyDay = calendarDay(copy.releaseDate);
@@ -240,6 +347,12 @@ export function suspectMatchReason(copy: EditionCopy & { metronIssueId?: string 
     else parts.push("Linked issue store year is not within a year of the release date.");
     return parts.join(" ");
   }
+  if (edition.kind === "printing" && edition.printing != null) {
+    if (copy.catalogPrinting === edition.printing) return null;
+    const parts = [...edition.reasons];
+    parts.push(`The ${printingOrdinal(edition.printing)} printing cover has not been confirmed.`);
+    return parts.join(" ");
+  }
   const parts = [...edition.reasons];
   if (release != null && cover != null && Math.abs(release - cover) > 2 && !parts.some((part) => part.includes("Release year"))) {
     parts.push(`Release year ${release} and cover year ${cover} are ${Math.abs(release - cover)} years apart.`);
@@ -255,7 +368,7 @@ function searchNames(kind: EditionKind, series: string, base: string): string[] 
     const trimmed = value.replace(/\s+/g, " ").trim();
     if (trimmed && !names.some((name) => normName(name) === normName(trimmed))) names.push(trimmed);
   };
-  if (kind === "facsimile" || kind === "reprint" || kind === "printing") add(`${base} Facsimile Edition`);
+  if (kind === "facsimile" || kind === "reprint") add(`${base} Facsimile Edition`);
   if (kind === "true-believers") {
     add(`True Believers ${base}`);
     add(`${base} Facsimile Edition`);
@@ -265,6 +378,7 @@ function searchNames(kind: EditionKind, series: string, base: string): string[] 
   if (kind === "reprint") add(`${base} Reprint`);
   add(series);
   if (kind !== "regular") add(base);
+  if (kind === "printing") add(facsimileSeriesBase(series));
   return names;
 }
 

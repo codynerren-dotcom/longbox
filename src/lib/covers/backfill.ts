@@ -3,7 +3,7 @@ import { crossLinkLine, lookupCrossIssue, type CrossLookup } from "@/lib/covers/
 import { detectEdition } from "@/lib/covers/edition";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { coverFileKey } from "@/lib/covers/files";
-import { resolveCover } from "@/lib/covers/match";
+import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
 import { MetronBudgetError, type CoverDecision, type CoverLookup, type CoverRecord, type MetronIssueHit } from "@/lib/covers/types";
 
 export type BackfillSummary = {
@@ -36,12 +36,15 @@ export async function backfillCovers(args: {
   loadIssue?: (issueId: string) => Promise<MetronDetails | null>;
   markMatched: (
     id: string,
-    update: { metronIssueId: string; coverFile: string; coverUrl: string },
+    update: { metronIssueId: string; coverFile: string | null; coverUrl: string | null; coverNote?: string | null; printing?: number | null },
     detail: MetronDetails | null,
   ) => Promise<void>;
   markUnmatched: (id: string, reason: string) => Promise<void>;
   gcd?: (comic: CoverRecord) => Promise<CoverDecision>;
-  markGcd?: (id: string, update: { gcdIssueId: string; gcdSeriesId: string | null; score: number }) => Promise<void>;
+  markGcd?: (
+    id: string,
+    update: { gcdIssueId: string; gcdSeriesId: string | null; score: number; coverReview?: string | null; printing?: number | null },
+  ) => Promise<void>;
   /** Comic Vine id and GCD id lookups on Metron. An exact hit is linked before a name search. */
   crossLookup?: CrossLookup;
   log?: (line: string) => void;
@@ -127,6 +130,56 @@ export async function backfillCovers(args: {
     if (storedMetronId) {
       try {
         const detail = args.loadIssue ? await args.loadIssue(storedMetronId) : null;
+        const printing = savedPrintingCover(
+          comic,
+          {
+            id: storedMetronId,
+            seriesId: detail?.seriesId ?? null,
+            seriesName: detail?.seriesName || comic.series,
+            number: detail?.number || issueNo,
+            coverYear: detail?.coverYear ?? comic.coverYear,
+            imageUrl: null,
+            label: null,
+            covers: detail?.covers ?? [],
+          },
+        );
+        if (printing.active) {
+          if (!printing.imageUrl) {
+            await args.markMatched(
+              comic.id,
+              { metronIssueId: storedMetronId, coverFile: null, coverUrl: null, coverNote: printing.note, printing: null },
+              detail,
+            );
+            summary.matched += 1;
+            args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}. ${printing.note ?? ""}`.trim());
+            args.onProgress?.(summary);
+            continue;
+          }
+          const filename = await args.saveImage({
+            id: coverFileKey(storedMetronId, printing.imageUrl, null),
+            seriesId: detail?.seriesId ?? null,
+            seriesName: comic.series,
+            number: issueNo,
+            coverYear: comic.coverYear,
+            imageUrl: printing.imageUrl,
+            label: printing.note,
+          });
+          await args.markMatched(
+            comic.id,
+            {
+              metronIssueId: storedMetronId,
+              coverFile: filename,
+              coverUrl: coverPublicPath(filename),
+              coverNote: null,
+              printing: printing.printing,
+            },
+            detail,
+          );
+          summary.matched += 1;
+          args.log?.(`${comic.series} #${issueNo} kept Metron ${storedMetronId}.`);
+          args.onProgress?.(summary);
+          continue;
+        }
         const imageUrl = detail?.imageUrl || "";
         if (!imageUrl) {
           summary.skipped += 1;
@@ -166,7 +219,8 @@ export async function backfillCovers(args: {
       continue;
     }
     try {
-      if (args.crossLookup && detectEdition(comic).kind !== "facsimile" && (comic.comicvineIssueId || comic.gcdIssueId || comic.embeddedMetronIssueId)) {
+      const editionKind = detectEdition(comic).kind;
+      if (args.crossLookup && editionKind !== "facsimile" && editionKind !== "printing" && (comic.comicvineIssueId || comic.gcdIssueId || comic.embeddedMetronIssueId)) {
         const cross = await lookupCrossIssue(
           {
             id: comic.id,
@@ -236,12 +290,36 @@ export async function backfillCovers(args: {
         let detail: MetronDetails | null = null;
         if (args.loadDetail) detail = await args.loadDetail(decision.issue.id);
         const metronIssueId = detail?.id || decision.issue.id;
-        const imageUrl = detail?.imageUrl || decision.issue.imageUrl;
+        const printing = savedPrintingCover(comic, decision.issue, detail?.covers);
+        const imageUrl = printing.active ? printing.imageUrl : detail?.imageUrl || decision.issue.imageUrl;
+        if (printing.active && !imageUrl) {
+          await args.markMatched(
+            comic.id,
+            { metronIssueId, coverFile: null, coverUrl: null, coverNote: printing.note, printing: null },
+            detail,
+          );
+          summary.matched += 1;
+          args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}, score ${decision.score}. ${printing.note ?? ""}`.trim());
+          args.onProgress?.(summary);
+          continue;
+        }
         let filename: string;
         try {
           if (!imageUrl) throw new Error(`Metron issue ${metronIssueId} has no cover image.`);
           filename = await args.saveImage({ ...decision.issue, id: metronIssueId, imageUrl });
         } catch (error) {
+          if (printing.active) {
+            const reason = error instanceof Error ? error.message : "Could not download the printing cover.";
+            await args.markMatched(
+              comic.id,
+              { metronIssueId, coverFile: null, coverUrl: null, coverNote: reason, printing: null },
+              detail,
+            );
+            summary.matched += 1;
+            args.log?.(`${comic.series} #${issueNo} matched Metron ${decision.issue.id} via ${decision.via}, score ${decision.score}. ${reason}`);
+            args.onProgress?.(summary);
+            continue;
+          }
           const reason = error instanceof Error ? error.message : "Could not download the Metron cover.";
           await args.markUnmatched(comic.id, reason);
           summary.unmatched += 1;
@@ -255,6 +333,7 @@ export async function backfillCovers(args: {
             metronIssueId,
             coverFile: filename,
             coverUrl: coverPublicPath(filename),
+            ...(printing.active ? { coverNote: null, printing: printing.printing } : {}),
           },
           detail,
         );
@@ -267,10 +346,14 @@ export async function backfillCovers(args: {
           args.log?.("GCD rate limit reached. Later copies will stay unmatched.");
         }
         if (gcdDecision && gcdDecision !== "budget" && gcdDecision.status === "matched" && args.markGcd) {
+          const printingEdition = detectEdition(comic);
+          const confirmedPrinting = printingEdition.kind === "printing" && printingEdition.printing != null && !gcdDecision.coverReview;
           await args.markGcd(comic.id, {
             gcdIssueId: gcdDecision.issue.id,
             gcdSeriesId: gcdDecision.issue.seriesId,
             score: gcdDecision.score,
+            coverReview: gcdDecision.coverReview ?? null,
+            printing: printingEdition.kind === "printing" ? (confirmedPrinting ? printingEdition.printing : null) : undefined,
           });
           summary.matched += 1;
           args.log?.(`${comic.series} #${issueNo} matched GCD ${gcdDecision.issue.id}, score ${gcdDecision.score}. Cover stays on GCD.`);

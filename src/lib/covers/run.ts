@@ -5,6 +5,7 @@ import { coverPublicPath, backfillCovers, type BackfillSummary } from "@/lib/cov
 import { blankCrossIds } from "@/lib/covers/cross-link";
 import { crossLinkShelf, linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { planEnrichment, type EnrichmentPlan, type MetronDetails, type MetronField } from "@/lib/covers/enrich";
+import { writePrintingCover } from "@/lib/covers/facsimile-years";
 import { logCoverFinished, logCoverProgress, logCoverStarted, logEnrichFinished, logEnrichStarted, logMetronFill } from "@/lib/log/events";
 import { coverLineLevel } from "@/lib/log/query";
 import { writeLog } from "@/lib/log/write";
@@ -200,6 +201,7 @@ export async function applyGcdLink(
   gcdSeriesId: string | null,
   score: number,
   detail: MetronDetails | null,
+  options?: { coverReview?: string | null; printing?: number | null },
 ): Promise<string[]> {
   const current = await readEnrichment(id);
   const fill = detail != null && (await getPreferences()).covers.fillMissing;
@@ -208,15 +210,20 @@ export async function applyGcdLink(
     gcdIssueId,
     gcdSeriesId,
     coverStatus: "gcd",
-    coverNote: `Linked GCD ${gcdIssueId}, score ${score}. Cover stays on GCD.`,
+    coverNote: options?.coverReview || `Linked GCD ${gcdIssueId}, score ${score}. Cover stays on GCD.`,
     coverCheckedAt: new Date(),
   };
+  if (options?.coverReview) {
+    data.coverFile = null;
+    data.coverUrl = null;
+  }
   if (plan && plan.filled.length > 0) Object.assign(data, enrichmentPatch(plan));
   if (detail && current) Object.assign(data, blankCrossIds(current, current.fieldSources, current.manualLink, detail));
   const gcdLink = readManualLink(current?.manualLink);
   if (gcdLink.gcdIssueId) data.gcdIssueId = gcdLink.gcdIssueId;
   stripLockedCover(data, current?.manualLink);
   await prisma.comic.update({ where: { id }, data });
+  if (options && options.printing !== undefined) await writePrintingCover(id, options.printing);
   return plan?.filled ?? [];
 }
 
@@ -267,6 +274,23 @@ function assignField(data: Prisma.ComicUpdateInput, field: MetronField, value: s
   }
 }
 
+function matchedCoverPatch(update: {
+  metronIssueId: string;
+  coverFile: string | null;
+  coverUrl: string | null;
+  coverNote?: string | null;
+}): Prisma.ComicUpdateInput {
+  const saved = Boolean(update.coverFile);
+  return {
+    metronIssueId: update.metronIssueId,
+    coverFile: update.coverFile,
+    coverUrl: update.coverUrl,
+    coverStatus: saved ? "matched" : null,
+    coverNote: saved ? null : (update.coverNote ?? null),
+    coverCheckedAt: new Date(),
+  };
+}
+
 export async function runCoverBackfill(log: (line: string) => void = console.log): Promise<BackfillSummary> {
   const startedAt = new Date().toISOString();
   const emit = (line: string) => {
@@ -306,14 +330,8 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
       return downloadCover(issue.imageUrl, issue.id, dir);
     },
     markMatched: async (id, update, detail) => {
-      const filled = await applyEnrichment(id, detail, {
-        metronIssueId: update.metronIssueId,
-        coverFile: update.coverFile,
-        coverUrl: update.coverUrl,
-        coverStatus: "matched",
-        coverNote: null,
-        coverCheckedAt: new Date(),
-      });
+      const filled = await applyEnrichment(id, detail, matchedCoverPatch(update));
+      if (update.printing !== undefined) await writePrintingCover(id, update.printing);
       if (detail && (await getPreferences()).covers.fillMissing) {
         await logMetronFill(labels.get(id) ?? id, update.metronIssueId, filled);
       }
@@ -332,7 +350,10 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
     markGcd: async (id, update) => {
       const issue = await createGcdCatalog().issue(update.gcdIssueId);
       const detail = issue ? gcdDetails(issue) : null;
-      const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail);
+      const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail, {
+        coverReview: update.coverReview,
+        printing: update.printing,
+      });
       if (issue?.metronIssueId) await linkMetronFromForeignIds(id, issue.metronIssueId);
       if (detail && filled.length > 0) {
         await writeLog({
@@ -493,14 +514,8 @@ export async function refetchOneCover(comicId: string): Promise<string> {
         return downloadCover(issue.imageUrl, issue.id);
       },
       markMatched: async (id, update, detail) => {
-        const filled = await applyEnrichment(id, detail, {
-          metronIssueId: update.metronIssueId,
-          coverFile: update.coverFile,
-          coverUrl: update.coverUrl,
-          coverStatus: "matched",
-          coverNote: null,
-          coverCheckedAt: new Date(),
-        });
+        const filled = await applyEnrichment(id, detail, matchedCoverPatch(update));
+        if (update.printing !== undefined) await writePrintingCover(id, update.printing);
         if (detail && (await getPreferences()).covers.fillMissing) {
           await logMetronFill(label, update.metronIssueId, filled);
         }
@@ -519,7 +534,10 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       markGcd: async (id, update) => {
         const issue = await createGcdCatalog().issue(update.gcdIssueId);
         const detail = issue ? gcdDetails(issue) : null;
-        const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail);
+        const filled = await applyGcdLink(id, update.gcdIssueId, update.gcdSeriesId, update.score, detail, {
+          coverReview: update.coverReview,
+          printing: update.printing,
+        });
         if (issue?.metronIssueId) await linkMetronFromForeignIds(id, issue.metronIssueId);
         if (detail && filled.length > 0) {
           await writeLog({

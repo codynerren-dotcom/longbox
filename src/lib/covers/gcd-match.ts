@@ -4,7 +4,7 @@ import type { MatchHit } from "@/lib/catalog/match-hits";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { parseComicBarcode } from "@/lib/barcode";
 import { detectEdition, scoreCandidate, seriesMentionsIssue, type MatchCandidate } from "@/lib/covers/edition";
-import { chooseFacsimileIssue } from "@/lib/covers/match";
+import { chooseFacsimileIssue, choosePrintingIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
 
@@ -51,6 +51,7 @@ export function gcdHit(issue: GcdIssueRow): MatchHit {
 export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): Promise<CoverDecision> {
   const edition = detectEdition(comic);
   if (edition.kind === "facsimile") return resolveGcdFacsimile(comic, edition, catalog);
+  if (edition.kind === "printing") return resolveGcdPrinting(comic, edition, catalog);
   const issueNo = (comic.issueNo || comic.issue || "").trim();
   const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
   if (barcode) {
@@ -116,6 +117,43 @@ export function gcdDetails(issue: GcdIssueRow): MetronDetails {
     gcdIssueId: null,
     gcdSeriesId: null,
   };
+}
+
+async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {
+  const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
+  const collected: GcdIssueRow[] = [];
+  if (barcode) {
+    collected.push(...(await catalog.issuesByBarcode(barcode.combined)));
+    if (barcode.upc && barcode.upc !== barcode.combined) collected.push(...(await catalog.issuesByBarcode(barcode.upc)));
+    const decision = choosePrintingIssue(collected.map(toHit), comic, "gcd");
+    if (decision.status === "matched") return decision;
+  }
+  const issueNo = edition.issueNo || "";
+  let best: CoverDecision = { status: "unmatched", reason: `No later printing for ${comic.series} #${issueNo || "?"}.`, score: 0 };
+  if (!comic.series.trim() || !issueNo) return best;
+  let fetched = 0;
+  for (const name of edition.searchNames) {
+    const seriesRows = await catalog.seriesByName(name);
+    const picked = pickSeries(seriesRows, name, comic.releaseYear ?? comic.coverYear);
+    for (const series of picked) {
+      const issueIds = issuesFor(series, issueNo, true).slice(0, 3);
+      const batch: MetronIssueHit[] = [];
+      for (const id of issueIds) {
+        if (fetched >= 6) break;
+        fetched += 1;
+        const issue = await catalog.issue(id);
+        if (!issue) continue;
+        issue.seriesYear = issue.seriesYear ?? series.yearBegan;
+        batch.push(toHit(issue));
+      }
+      if (batch.length === 0) continue;
+      const decision = choosePrintingIssue(batch, comic, "gcd");
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+      if (fetched >= 6) return best;
+    }
+  }
+  return best;
 }
 
 async function resolveGcdFacsimile(comic: CoverQuery, edition: ReturnType<typeof detectEdition>, catalog: GcdCatalog): Promise<CoverDecision> {

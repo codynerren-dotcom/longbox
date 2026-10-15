@@ -55,7 +55,14 @@ export type CoverQuery = {
 };
 
 export type CoverDecision =
-  | { status: "matched"; via: "barcode" | "series" | "gcd"; issue: MetronIssueHit; score: number }
+  | {
+      status: "matched";
+      via: "barcode" | "series" | "gcd";
+      issue: MetronIssueHit;
+      score: number;
+      /** Set when the issue is linked and the 1st-print cover must not be saved. */
+      coverReview?: string | null;
+    }
   | { status: "unmatched"; reason: string; score: number };
 
 export type CoverRecord = CoverQuery & {

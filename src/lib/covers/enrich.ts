@@ -1,4 +1,5 @@
 import { metronSiteUrl } from "@/lib/catalog-links";
+import { variantCoversFrom } from "@/lib/catalog/match-hits";
 import { coverYearOf } from "@/lib/covers/match";
 
 export const METRON_FIELDS = [
@@ -78,6 +79,8 @@ export type MetronDetails = {
   /** GCD issue id stored on the Metron issue, when Metron sends one. */
   gcdIssueId: string | null;
   gcdSeriesId: string | null;
+  /** Variant covers from the same issue payload. The first entry is often the 1st-print "Cover". */
+  covers?: Array<{ label: string; imageUrl: string }>;
 };
 
 export type FieldMark = "metron" | "gcd" | "user";
@@ -169,6 +172,7 @@ export function mapMetronDetails(value: unknown): MetronDetails | null {
     comicvineSeriesId: externalId(series?.cv_id ?? row.series_cv_id),
     gcdIssueId: externalId(row.gcd_id),
     gcdSeriesId: externalId(series?.gcd_id ?? row.series_gcd_id),
+    covers: variantCoversFrom(row),
   };
 }
 

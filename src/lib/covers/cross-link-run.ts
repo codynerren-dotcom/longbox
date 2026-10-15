@@ -2,6 +2,8 @@ import type { Prisma } from "@prisma/client";
 import { readManualLink, stripLockedCover } from "@/lib/catalog/manual-link";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { blankCrossIds, crossLinkDownloadsCover, crossLinkLine, lookupCrossIssue, type CrossCopy, type CrossVia } from "@/lib/covers/cross-link";
+import { writePrintingCover } from "@/lib/covers/facsimile-years";
+import { savedPrintingCover } from "@/lib/covers/match";
 import { planEnrichment, type MetronDetails } from "@/lib/covers/enrich";
 import { downloadCover } from "@/lib/covers/files";
 import { fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
@@ -34,6 +36,13 @@ const copySelect = {
   pageCount: true,
   coverPrice: true,
   barcode: true,
+  variant: true,
+  variantDescription: true,
+  format: true,
+  subtitle: true,
+  fullTitle: true,
+  publisher: true,
+  releaseYear: true,
   writer: true,
   artist: true,
   coverArtist: true,
@@ -144,9 +153,36 @@ async function saveCrossLink(
     data.fieldSources = plan.sources;
   }
   if (detail) Object.assign(data, blankCrossIds(row, row.fieldSources, row.manualLink, detail));
+  const printing = savedPrintingCover(
+    {
+      series: row.series,
+      issueNo: row.issueNo,
+      issue: row.issue,
+      coverYear: row.coverYear,
+      barcode: row.barcode,
+      variant: row.variant,
+      variantDescription: row.variantDescription,
+      format: row.format,
+      subtitle: row.subtitle,
+      fullTitle: row.fullTitle,
+      title: row.title,
+      publisher: row.publisher,
+      releaseYear: row.releaseYear,
+      releaseDate: row.releaseDate,
+      seriesYear: row.seriesYear,
+    },
+    hit,
+    detail?.covers,
+  );
   if (crossLinkDownloadsCover(toCopy(row))) {
-    const imageUrl = detail?.imageUrl || hit.imageUrl;
-    if (imageUrl) {
+    const imageUrl = printing.active ? printing.imageUrl : detail?.imageUrl || hit.imageUrl;
+    if (printing.active && !imageUrl) {
+      data.coverFile = null;
+      data.coverUrl = null;
+      data.coverStatus = null;
+      data.coverNote = printing.note;
+      data.coverCheckedAt = new Date();
+    } else if (imageUrl) {
       try {
         const file = await downloadCover(imageUrl, metronIssueId);
         data.coverFile = file;
@@ -157,6 +193,11 @@ async function saveCrossLink(
       } catch (error) {
         if (error instanceof MetronBudgetError) throw error;
         data.coverNote = error instanceof Error ? error.message : "Could not download the Metron cover.";
+        if (printing.active) {
+          data.coverFile = null;
+          data.coverUrl = null;
+          data.coverStatus = null;
+        }
       }
     }
   }
@@ -164,6 +205,9 @@ async function saveCrossLink(
   if (link.gcdIssueId) data.gcdIssueId = link.gcdIssueId;
   stripLockedCover(data, row.manualLink);
   await prisma.comic.update({ where: { id: row.id }, data });
+  if (printing.active && crossLinkDownloadsCover(toCopy(row))) {
+    await writePrintingCover(row.id, data.coverFile ? printing.printing : null);
+  }
   const stored = detail?.comicvineIssueId && data.comicvineIssueId === detail.comicvineIssueId ? ` Stored Comic Vine ${detail.comicvineIssueId}.` : "";
   const storedGcd = detail?.gcdIssueId && data.gcdIssueId === detail.gcdIssueId ? ` Stored GCD ${detail.gcdIssueId}.` : "";
   const message = `${name} linked Metron ${metronIssueId} from ${from} ${foreignId}.${stored}${storedGcd}`;

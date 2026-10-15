@@ -1,5 +1,15 @@
 import { parseComicBarcode } from "@/lib/barcode";
-import { detectEdition, scoreCandidate, type EditionProfile, type MatchCandidate } from "@/lib/covers/edition";
+import {
+  detectEdition,
+  labelMatchesPrinting,
+  printingArtistHint,
+  printingOrdinal,
+  printingNumberFromText,
+  scoreCandidate,
+  stripIssueVariant,
+  type EditionProfile,
+  type MatchCandidate,
+} from "@/lib/covers/edition";
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
 
 export function coverYearOf(value: string | null | undefined): number | null {
@@ -240,9 +250,151 @@ export function chooseIssue(
   return { status: "unmatched", reason: `${name}: ${why}.`, score: best.scored.score };
 }
 
+function printingIssueNumber(value: string): string {
+  const leading = value.trim().match(/^#?\s*(\d+)/);
+  return stripIssueVariant(leading?.[1] ?? value).number;
+}
+
+/** The printing cover to save. A missing variant stays unconfirmed so the 1st-print image is not used. */
+export function savedPrintingCover(
+  comic: CoverQuery,
+  issue: MetronIssueHit,
+  extraCovers?: Array<{ label: string; imageUrl: string }>,
+): { active: boolean; imageUrl: string | null; note: string | null; printing: number | null } {
+  const edition = detectEdition(comic);
+  if (edition.kind !== "printing" || edition.printing == null) {
+    return { active: false, imageUrl: issue.imageUrl, note: null, printing: null };
+  }
+  const covers: Array<{ label: string; imageUrl: string }> = [];
+  const seen = new Set<string>();
+  for (const cover of [...(issue.covers ?? []), ...(extraCovers ?? [])]) {
+    if (seen.has(cover.imageUrl)) continue;
+    seen.add(cover.imageUrl);
+    covers.push(cover);
+  }
+  const selected = selectPrintingCover({ ...issue, covers }, edition.printing, printingArtistHint(comic.variantDescription));
+  if (selected.review || !selected.issue.imageUrl) {
+    const ordinal = printingOrdinal(edition.printing);
+    return {
+      active: true,
+      imageUrl: null,
+      note: selected.review ?? `No ${ordinal} printing cover on this issue. The 1st-print cover was left off.`,
+      printing: null,
+    };
+  }
+  return { active: true, imageUrl: selected.issue.imageUrl, note: null, printing: edition.printing };
+}
+
+function artistFits(label: string, artist: string | null): boolean {
+  if (!artist) return true;
+  const hay = normName(label);
+  return artist.split(/\s+/).every((word) => hay.includes(normName(word)));
+}
+
+/** Pick the printing variant. The main "Cover" image stays unused. */
+export function selectPrintingCover(
+  issue: MetronIssueHit,
+  printing: number,
+  artist: string | null,
+): { issue: MetronIssueHit; review: string | null } {
+  const own = [issue.variant, issue.label].filter((part) => part && !/^cover$/i.test(part)).join(" ");
+  if (labelMatchesPrinting(own, printing) && artistFits(own, artist)) {
+    return { issue, review: null };
+  }
+  const covers = (issue.covers ?? []).filter((cover) => labelMatchesPrinting(cover.label, printing));
+  const fitting = covers.filter((cover) => artistFits(cover.label, artist));
+  const plain = fitting.filter((cover) => !printingArtistHint(cover.label));
+  const pool = artist ? fitting : plain.length > 0 ? plain : [];
+  if (pool.length === 1) {
+    return { issue: { ...issue, imageUrl: pool[0].imageUrl, variant: pool[0].label, label: pool[0].label }, review: null };
+  }
+  const ordinal = printingOrdinal(printing);
+  if (pool.length > 1) {
+    return { issue: { ...issue, imageUrl: null }, review: `Several ${ordinal} printing covers match. The 1st-print cover was left off.` };
+  }
+  return { issue: { ...issue, imageUrl: null }, review: `No ${ordinal} printing cover on this issue. The 1st-print cover was left off.` };
+}
+
+export function choosePrintingIssue(hits: MetronIssueHit[], comic: CoverQuery, via: "barcode" | "series" | "gcd"): CoverDecision {
+  const edition = detectEdition(comic);
+  const printing = edition.printing;
+  const labeled = `${comic.series} #${edition.issueNo || comic.issueNo || "?"}`;
+  if (printing == null) return { status: "unmatched", reason: `No later printing for ${labeled}.`, score: 0 };
+  const number = edition.issueNo || stripIssueVariant(comic.issueNo).number;
+  let rows = dedupeHits(hits);
+  if (number) {
+    const numbered = rows.filter((hit) => sameIssueNumber(printingIssueNumber(hit.number), number));
+    if (numbered.length === 0) return { status: "unmatched", reason: `No later printing for ${labeled}.`, score: 0 };
+    rows = numbered;
+  }
+  rows = rows.filter((hit) => {
+    const found = printingNumberFromText(`${hit.variant ?? ""} ${hit.label ?? ""}`);
+    return found == null || found === printing;
+  });
+  const artist = printingArtistHint(comic.variantDescription);
+  const ranked = rows
+    .map((issue) => {
+      const own = labelMatchesPrinting(`${issue.variant ?? ""} ${issue.label ?? ""}`, printing);
+      const scored = scoreCandidate({ ...comic, issueNo: number }, candidateFrom(issue));
+      return { issue, scored, exactUpc: sameUpc(comic.barcode, issue.upc), own };
+    })
+    .filter((row) => row.scored.blocked == null && row.scored.auto)
+    .sort((a, b) => Number(b.own) - Number(a.own) || Number(b.exactUpc) - Number(a.exactUpc) || b.scored.score - a.scored.score);
+  const best = ranked[0];
+  const next = ranked[1];
+  if (!best || (next && !best.own && !best.exactUpc && best.scored.score < next.scored.score + 12)) {
+    if (ranked.length > 1) return { status: "unmatched", reason: `Several issues match ${labeled}.`, score: ranked[0]?.scored.score ?? 0 };
+    return { status: "unmatched", reason: `No later printing for ${labeled}.`, score: best?.scored.score ?? 0 };
+  }
+  const selected = selectPrintingCover(best.issue, printing, artist);
+  return { status: "matched", via, issue: selected.issue, score: best.scored.score, coverReview: selected.review };
+}
+
+async function resolvePrintingCover(comic: CoverQuery, edition: EditionProfile, lookup: CoverLookup): Promise<CoverDecision> {
+  const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
+  const collected: MetronIssueHit[] = [];
+  if (barcode) {
+    collected.push(...(await lookup.issuesByUpc(barcode.combined)));
+    if (barcode.upc && barcode.upc !== barcode.combined) {
+      const base = await lookup.issuesByUpc(barcode.upc);
+      collected.push(...base);
+      if (base.length === 0) collected.push(...(await lookup.issuesByUpcPrefix(barcode.upc)));
+    }
+    const decision = choosePrintingIssue(collected, comic, "barcode");
+    if (decision.status === "matched") return decision;
+  }
+  const issueNo = edition.issueNo || "";
+  if (!comic.series.trim() || !issueNo) {
+    return { status: "unmatched", reason: `No later printing for ${comic.series}.`, score: 0 };
+  }
+  let best: CoverDecision = { status: "unmatched", reason: `No later printing for ${comic.series} #${issueNo}.`, score: 0 };
+  for (const name of edition.searchNames) {
+    const found = await lookup.searchSeries(name);
+    let candidates = narrowSeries(found, { ...comic, series: name, coverYear: comic.releaseYear ?? comic.coverYear });
+    if (candidates.length === 0) candidates = narrowSeries(found, { ...comic, series: name, coverYear: null });
+    for (const candidate of candidates.slice(0, 4)) {
+      let issues = await lookup.issuesForSeries(candidate.id, issueNo, comic.releaseYear ?? comic.coverYear);
+      if (issues.length === 0) issues = await lookup.issuesForSeries(candidate.id, issueNo, null);
+      const decision = choosePrintingIssue(
+        issues.map((issue) => ({
+          ...issue,
+          seriesYear: issue.seriesYear ?? candidate.yearBegan,
+          publisher: issue.publisher ?? candidate.publisher,
+        })),
+        comic,
+        "series",
+      );
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+    }
+  }
+  return best;
+}
+
 export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Promise<CoverDecision> {
   const edition = detectEdition(comic);
   if (edition.kind === "facsimile") return resolveFacsimileCover(comic, edition, lookup);
+  if (edition.kind === "printing") return resolvePrintingCover(comic, edition, lookup);
   const issueNo = issueToken(comic);
   const barcode = comic.barcode ? parseComicBarcode(comic.barcode) : null;
 

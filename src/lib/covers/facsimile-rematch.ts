@@ -5,10 +5,10 @@ import { calendarDay, detectEdition, suspectMatchReason } from "@/lib/covers/edi
 import { METRON_FIELDS, readFieldSources } from "@/lib/covers/enrich";
 import { coversDir, downloadCover } from "@/lib/covers/files";
 import { resolveGcdCover } from "@/lib/covers/gcd-match";
-import { resolveCover } from "@/lib/covers/match";
+import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
 import { createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport } from "@/lib/covers/metron-client";
 import { runFacsimilePass, type RematchOutcome } from "@/lib/covers/facsimile-once";
-import { FACSIMILE_REMATCH_KEY, readCatalogYears, writeCatalogYear } from "@/lib/covers/facsimile-years";
+import { FACSIMILE_REMATCH_KEY, readCatalogYears, readPrintingCovers, writeCatalogYear, writePrintingCover } from "@/lib/covers/facsimile-years";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
@@ -107,6 +107,7 @@ async function clearAutomaticLink(comicId: string, reason: string): Promise<void
   data.fieldSources = sources;
   await prisma.comic.update({ where: { id: comicId }, data });
   await writeCatalogYear(comicId, null);
+  await writePrintingCover(comicId, null);
 }
 
 export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; message: string }> {
@@ -122,7 +123,12 @@ export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; 
 
   const query = coverQuery(comic);
   const edition = detectEdition(query);
-  let reason = edition.kind === "facsimile" ? `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.` : "No confident match.";
+  let reason =
+    edition.kind === "facsimile"
+      ? `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.`
+      : edition.kind === "printing"
+        ? `No later printing for ${comic.series} #${edition.issueNo || "?"}.`
+        : "No confident match.";
   const metronReady = Boolean(await metronBasicAuth());
 
   if (metronReady) {
@@ -130,14 +136,17 @@ export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; 
     const decision = await resolveCover(query, createMetronCoverLookup(transport));
     if (decision.status === "matched") {
       const detail = await fetchMetronIssueRecord(transport, decision.issue.id);
+      const printing = savedPrintingCover(query, decision.issue, detail?.covers);
       let filename: string | null = null;
-      const imageUrl = detail?.imageUrl || decision.issue.imageUrl;
+      let note = printing.active ? printing.note : null;
+      const imageUrl = printing.active ? printing.imageUrl : detail?.imageUrl || decision.issue.imageUrl;
       if (imageUrl) {
         try {
           filename = await downloadCover(imageUrl, decision.issue.id, coversDir());
         } catch (error) {
           if (error instanceof MetronBudgetError) throw error;
           filename = null;
+          if (printing.active) note = error instanceof Error ? error.message : "Could not download the printing cover.";
         }
       }
       await clearAutomaticLink(comicId, "Re-matching.");
@@ -147,12 +156,14 @@ export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; 
         coverFile: filename,
         coverUrl: filename ? coverPublicPath(filename) : null,
         coverStatus: filename ? "matched" : null,
-        coverNote: null,
+        coverNote: filename ? null : note,
         coverCheckedAt: new Date(),
       });
       const year = catalogYear(decision.issue) ?? (detail?.releaseDate ? detail.releaseDate.getUTCFullYear() : null);
       await writeCatalogYear(comicId, year);
-      const message = `Matched Metron ${decision.issue.id} (${decision.issue.seriesName} #${decision.issue.number}), score ${decision.score}.`;
+      if (printing.active) await writePrintingCover(comicId, filename ? printing.printing : null);
+      const review = filename ? "" : note ? ` ${note}` : "";
+      const message = `Matched Metron ${decision.issue.id} (${decision.issue.seriesName} #${decision.issue.number}), score ${decision.score}.${review}`;
       await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, metronIssueId: decision.issue.id, score: decision.score } });
       return { ok: true, message };
     }
@@ -165,9 +176,14 @@ export async function rematchShelfCopy(comicId: string): Promise<{ ok: boolean; 
     const issue = await createGcdCatalog().issue(gcd.issue.id);
     const detail = issue ? gcdDetails(issue) : null;
     await clearAutomaticLink(comicId, "Re-matching.");
-    await applyGcdLink(comicId, gcd.issue.id, gcd.issue.seriesId, gcd.score, detail);
+    const confirmedPrinting = edition.kind === "printing" && edition.printing != null && !gcd.coverReview;
+    await applyGcdLink(comicId, gcd.issue.id, gcd.issue.seriesId, gcd.score, detail, {
+      coverReview: gcd.coverReview ?? null,
+      printing: edition.kind === "printing" ? (confirmedPrinting ? edition.printing : null) : undefined,
+    });
     await writeCatalogYear(comicId, catalogYear(gcd.issue));
-    const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.`;
+    const review = gcd.coverReview ? ` ${gcd.coverReview}` : "";
+    const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.${review}`;
     await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score } });
     return { ok: true, message };
   }
@@ -205,18 +221,19 @@ const linkedSelect = {
 } as const;
 
 export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string }> {
-  const [comics, years] = await Promise.all([
+  const [comics, years, printings] = await Promise.all([
     prisma.comic.findMany({
       where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
       select: linkedSelect,
     }),
     readCatalogYears(),
+    readPrintingCovers(),
   ]);
   let matched = 0;
   let unmatched = 0;
   let skipped = 0;
   for (const comic of comics) {
-    const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null });
+    const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
     if (!reason) continue;
     const link = readManualLink(comic.manualLink);
     if (link.metronIssueId || link.gcdIssueId || link.comicvineIssueId || link.userCover) {
@@ -254,15 +271,16 @@ async function runStoredFacsimileRematch(): Promise<boolean> {
       });
     },
     ids: async () => {
-      const [comics, years] = await Promise.all([
+      const [comics, years, printings] = await Promise.all([
         prisma.comic.findMany({
           where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
           select: linkedSelect,
         }),
         readCatalogYears(),
+        readPrintingCovers(),
       ]);
       return comics.flatMap((comic) => {
-        const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null });
+        const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
         if (!reason) return [];
         const link = readManualLink(comic.manualLink);
         const manual = Boolean(link.metronIssueId || link.gcdIssueId || link.comicvineIssueId || link.userCover);
@@ -289,7 +307,7 @@ async function runStoredFacsimileRematch(): Promise<boolean> {
     await writeLog({
       level: "info",
       source: "covers/backfill",
-      message: `Facsimile re-match finished. Matched ${summary.matched}. Unmatched ${summary.unmatched}. Skipped ${summary.skipped} hand-picked links.`,
+      message: `Edition re-match finished. Matched ${summary.matched}. Unmatched ${summary.unmatched}. Skipped ${summary.skipped} hand-picked links.`,
       details: summary,
     });
   }
