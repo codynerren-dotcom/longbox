@@ -28,7 +28,7 @@ export function scheduleFacsimileRematch(): void {
       if (finished) finishedForProcess = true;
     })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : "Facsimile re-match failed.";
+      const message = error instanceof Error ? error.message : "Edition re-match failed.";
       return writeLog({ level: "error", source: "covers/backfill", message });
     })
     .finally(() => {
