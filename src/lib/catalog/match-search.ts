@@ -1,7 +1,16 @@
 import { mapComicVineMatchHit, mapMetronMatchHit, orderMatchHits, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
 import { catalogIssueCount } from "@/lib/series-view";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
+import {
+  comicVineResource,
+  emptyComicVineRate,
+  noteComicVinePause,
+  pauseLabel,
+  planComicVineAcquire,
+  type ComicVineRateState,
+} from "@/lib/catalog/rate-limit";
 import { fetchMetronIssueBody, listMetronIssueRows, type MetronTransport } from "@/lib/covers/metron-client";
+import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
 import { catalogNameQueries, isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
 
@@ -80,7 +89,42 @@ export async function searchMetronMatches(
   );
 }
 
+let vineMemory: ComicVineRateState = emptyComicVineRate();
+
+/** One Comic Vine request. Tests keep the window in memory and skip the one-second gap. */
+export async function reserveComicVineRequest(path: string, now = Date.now()): Promise<void> {
+  const resource = comicVineResource(path);
+  if (process.env.VITEST === "true") {
+    const plan = planComicVineAcquire(vineMemory, now, resource);
+    if (plan.kind === "pause") {
+      vineMemory = plan.state;
+      throw new Error(pauseLabel("Comic Vine", plan.hold.resumeAt));
+    }
+    vineMemory = plan.state;
+    return;
+  }
+  const { ensureRateHydrated, readComicVineWindow, saveComicVineWindow } = await import("@/lib/catalog/rate-store");
+  await ensureRateHydrated();
+  const plan = planComicVineAcquire(readComicVineWindow(), now, resource);
+  if (plan.kind === "pause") {
+    await saveComicVineWindow(plan.state);
+    throw new Error(pauseLabel("Comic Vine", plan.hold.resumeAt));
+  }
+  await saveComicVineWindow(plan.state);
+  if (plan.waitMs > 0) await new Promise((resolve) => setTimeout(resolve, plan.waitMs));
+}
+
+export async function pauseComicVineUntil(resumeAt: number): Promise<void> {
+  if (process.env.VITEST === "true") {
+    vineMemory = noteComicVinePause(vineMemory, resumeAt);
+    return;
+  }
+  const { readComicVineWindow, saveComicVineWindow } = await import("@/lib/catalog/rate-store");
+  await saveComicVineWindow(noteComicVinePause(readComicVineWindow(), resumeAt));
+}
+
 async function comicVineGet(fetchImpl: typeof fetch, apiKey: string, path: string, params: Record<string, string>): Promise<unknown> {
+  await reserveComicVineRequest(path);
   const url = new URL(path.startsWith("http") ? path : `${CV_BASE}${path}`);
   url.searchParams.set("api_key", apiKey);
   url.searchParams.set("format", "json");
@@ -103,8 +147,20 @@ async function comicVineGet(fetchImpl: typeof fetch, apiKey: string, path: strin
     throw error;
   }
   await recordFetch({ source: "comicvine", url: url.toString(), startedAt: started, status: response.status });
+  if (response.status === 420 || response.status === 429) {
+    const body = await response.text().catch(() => "");
+    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60 * 60 * 1000;
+    const resumeAt = Date.now() + delay;
+    await pauseComicVineUntil(resumeAt);
+    throw new Error(pauseLabel("Comic Vine", resumeAt));
+  }
   if (!response.ok) throw new Error(`Comic Vine returned ${response.status}`);
   const body = (await response.json()) as { status_code?: number; error?: string; results?: unknown };
+  if (body.status_code === 107) {
+    const resumeAt = Date.now() + 60 * 60 * 1000;
+    await pauseComicVineUntil(resumeAt);
+    throw new Error(pauseLabel("Comic Vine", resumeAt));
+  }
   if (body.status_code != null && body.status_code !== 1) {
     throw new Error(body.error || `Comic Vine returned status ${body.status_code}.`);
   }

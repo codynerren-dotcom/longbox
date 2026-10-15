@@ -1,8 +1,11 @@
 import { variantCoversFrom } from "@/lib/catalog/match-hits";
+import { pauseLabel } from "@/lib/catalog/rate-limit";
+import { currentLane } from "@/lib/catalog/rate-lane";
+import { readMetronWindow, saveMetronWindow } from "@/lib/catalog/rate-store";
 import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
-import { budgetDay, formatResumeTime, retryAfterFromMessage, retryAfterMs, MetronLimiter } from "@/lib/covers/limiter";
+import { budgetDay, formatResumeTime, retryAfterFromMessage, retryAfterMs, MetronLimiter, type BudgetStore } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
 import {
   assertMetronCircuit,
@@ -62,10 +65,22 @@ export function clearMetronJobBudget(): void {
 
 let sharedLimiter: MetronLimiter | null = null;
 
+/** The database window is the copy that survives a restart. Tests keep the file store. */
+function persistentBudgetStore(): BudgetStore {
+  return {
+    read: () => readMetronWindow(),
+    write: (budget) => {
+      void saveMetronWindow(budget);
+    },
+  };
+}
+
 /** One limiter for backfill, enrichment, and Match so they share the same wait. */
 export function sharedMetronLimiter(): MetronLimiter {
   if (!sharedLimiter) {
-    sharedLimiter = new MetronLimiter(fileBudgetStore(), () => Date.now(), sleep, () => budgetDay(new Date()));
+    const pacing = process.env.VITEST === "true" ? async () => undefined : sleep;
+    const store = process.env.VITEST === "true" ? fileBudgetStore() : persistentBudgetStore();
+    sharedLimiter = new MetronLimiter(store, () => Date.now(), pacing, () => budgetDay(new Date()));
   }
   return sharedLimiter;
 }
@@ -250,11 +265,16 @@ async function takeJobSlot(now: number): Promise<void> {
 }
 
 async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<MetronPage> {
+  if (process.env.VITEST !== "true") {
+    const { ensureRateHydrated } = await import("@/lib/catalog/rate-store");
+    await ensureRateHydrated();
+  }
+  const lane = currentLane();
   let attempt = 0;
   while (true) {
     assertMetronCircuit(transport.now());
     await takeJobSlot(transport.now());
-    await transport.limiter.acquire();
+    await transport.limiter.acquire(lane);
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
     const started = transport.now();
     let response: Response;
@@ -286,12 +306,14 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
       transport.limiter.observe(response.headers);
       const body = await response.text().catch(() => "");
       const delay = retryAfterMs(response.headers, transport.now()) ?? retryAfterFromMessage(body) ?? Math.min(60_000, 5_000 * 2 ** (attempt - 1));
-      if (attempt >= 3 || delay > 120_000) {
+      const resumeAt = transport.now() + delay;
+      if (lane === "background" || attempt >= 3 || delay > 120_000) {
+        transport.limiter.notePause(resumeAt);
         const snap = transport.limiter.snapshot();
-        throw new MetronBudgetError("Metron rate limit reached. Stopping so the run can resume.", {
+        throw new MetronBudgetError(pauseLabel("Metron", resumeAt), {
           budget: "Metron rate limit",
           count: snap.count,
-          resumeAt: transport.now() + delay,
+          resumeAt,
         });
       }
       await writeLog({

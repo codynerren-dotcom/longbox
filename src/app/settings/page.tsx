@@ -12,6 +12,9 @@ import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
 import { duplicateGroups, isDemoCoreId } from "@/lib/maintenance";
 import { dateOptions, defaultPreferences } from "@/lib/settings/preferences";
+import { loadApiUsage } from "@/lib/catalog/rate-store";
+import { pauseLabel, type UsageWindow } from "@/lib/catalog/rate-limit";
+import { formatResumeTime } from "@/lib/covers/limiter";
 import { getPreferences, getSettingsView } from "@/lib/settings/service";
 import { APP_VERSION, appCommit } from "@/lib/version";
 
@@ -40,6 +43,7 @@ export default async function SettingsPage() {
     loadCounts(),
   ]);
   const status = readBackfillStatus();
+  const usage = await loadApiUsage().catch(() => [] as UsageWindow[]);
   const groups = duplicateGroups(
     comics.map((comic) => ({
       id: comic.id,
@@ -113,6 +117,7 @@ export default async function SettingsPage() {
 
       {error ? <p className="text-sm text-red-300">{error}</p> : null}
       {view ? <SettingsForm view={view} /> : null}
+      <ApiUsage windows={usage} />
 
       <MaintenancePanel groups={visible} hiddenGroups={Math.max(0, groups.length - visible.length)} demoCount={demoCount} />
 
@@ -129,6 +134,27 @@ export default async function SettingsPage() {
         </dl>
       </Panel>
     </div>
+  );
+}
+
+function ApiUsage({ windows }: { windows: UsageWindow[] }) {
+  return (
+    <Panel title="API usage" detail="Requests already counted in the open window. A pause holds the next request until that time.">
+      <ul className="space-y-3 text-sm">
+        {windows.map((row) => (
+          <li key={`${row.source}:${row.label}`} className="flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-paper">
+              {row.source} <span className="text-mist">{row.label}</span>
+            </span>
+            <span className="font-mono text-paper">
+              {row.used}/{row.limit}
+              {row.resetAt ? <span className="ml-2 font-sans text-mist">resets {formatResumeTime(row.resetAt)}</span> : null}
+            </span>
+            <span className="w-full text-mist">{row.pausedUntil ? pauseLabel(row.source, row.pausedUntil) : "Active"}</span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }
 

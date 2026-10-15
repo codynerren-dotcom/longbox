@@ -1,14 +1,20 @@
+import {
+  applyMetronHeaders,
+  commitMetronSend,
+  emptyMetronBudget,
+  METRON_FALLBACK_BURST,
+  METRON_FALLBACK_DAILY,
+  pauseLabel,
+  planMetronAcquire,
+  type MetronBudget,
+  type RateLane,
+} from "@/lib/catalog/rate-limit";
 import { MetronBudgetError } from "@/lib/covers/types";
 
-export const METRON_BURST_LIMIT = 20;
-export const METRON_DAILY_LIMIT = 5000;
+export type { MetronBudget, RateLane };
+export const METRON_BURST_LIMIT = METRON_FALLBACK_BURST;
+export const METRON_DAILY_LIMIT = METRON_FALLBACK_DAILY;
 export const METRON_MIN_INTERVAL_MS = 60_000 / METRON_BURST_LIMIT;
-
-export type MetronBudget = {
-  day: string;
-  count: number;
-  lastRequestAt: number | null;
-};
 
 export type BudgetStore = {
   read: () => MetronBudget;
@@ -16,7 +22,7 @@ export type BudgetStore = {
 };
 
 export function emptyBudget(): MetronBudget {
-  return { day: "", count: 0, lastRequestAt: null };
+  return emptyMetronBudget();
 }
 
 export function budgetDay(date: Date, timeZone = process.env.TZ || "America/Chicago"): string {
@@ -93,7 +99,7 @@ export class MetronLimiter {
     return { ...this.budget };
   }
 
-  async acquire(): Promise<void> {
+  async acquire(lane: RateLane = "interactive"): Promise<void> {
     const previous = this.pending;
     let release: () => void = () => undefined;
     this.pending = new Promise<void>((resolve) => {
@@ -101,30 +107,28 @@ export class MetronLimiter {
     });
     await previous;
     try {
-      await this.acquireTurn();
+      await this.acquireTurn(lane);
     } finally {
       release();
     }
   }
 
-  private async acquireTurn(): Promise<void> {
+  private async acquireTurn(lane: RateLane): Promise<void> {
     this.syncFromStore();
-    const day = this.day();
-    if (this.budget.day !== day) {
-      this.budget.day = day;
-      this.budget.count = 0;
-    }
-    if (this.budget.count >= METRON_DAILY_LIMIT) {
-      throw new MetronBudgetError("Metron daily limit reached (5000). Run again after the window resets.", {
-        budget: "Metron daily",
-        count: this.budget.count,
-        resumeAt: nextBudgetDayStart(this.now()),
+    const plan = planMetronAcquire(this.budget, this.now(), lane, this.day());
+    if (plan.kind === "pause") {
+      const resumeAt = plan.hold.resumeAt > 0 ? plan.hold.resumeAt : nextBudgetDayStart(this.now());
+      const pausedUntil = plan.hold.budget === "Metron reserve" ? plan.state.pausedUntil : resumeAt;
+      this.budget = { ...plan.state, pausedUntil };
+      this.store.write(this.budget);
+      throw new MetronBudgetError(pauseLabel("Metron", resumeAt), {
+        budget: plan.hold.budget,
+        count: plan.hold.count,
+        resumeAt,
       });
     }
-    const wait = this.msUntilNext();
-    if (wait > 0) await this.sleep(wait);
-    this.budget.count += 1;
-    this.budget.lastRequestAt = this.now();
+    if (plan.waitMs > 0) await this.sleep(plan.waitMs);
+    this.budget = commitMetronSend(plan.state, this.now(), this.day());
     this.store.write(this.budget);
   }
 
@@ -151,37 +155,16 @@ export class MetronLimiter {
     }
   }
 
-  observe(headers: HeaderBag): void {
-    const sustainedRemaining = numberHeader(headers, "x-ratelimit-sustained-remaining");
-    const sustainedLimit = numberHeader(headers, "x-ratelimit-sustained-limit");
-    if (sustainedRemaining === 0) {
-      this.budget.count = METRON_DAILY_LIMIT;
+  /** Remember a Retry-After pause so the next send, including after a restart, waits it out. */
+  notePause(resumeAt: number): void {
+    if (this.budget.pausedUntil == null || resumeAt > this.budget.pausedUntil) {
+      this.budget.pausedUntil = resumeAt;
       this.store.write(this.budget);
-    } else if (sustainedRemaining != null && sustainedLimit != null) {
-      const used = Math.max(0, sustainedLimit - sustainedRemaining);
-      if (used > this.budget.count) {
-        this.budget.count = Math.min(used, METRON_DAILY_LIMIT);
-        this.store.write(this.budget);
-      }
-    }
-
-    const burstRemaining = numberHeader(headers, "x-ratelimit-burst-remaining");
-    const burstReset = numberHeader(headers, "x-ratelimit-burst-reset");
-    if (burstRemaining === 0 && burstReset != null) {
-      const delay = burstReset * 1000 - this.now();
-      if (delay > 0) this.defer(Math.min(delay, 65_000));
     }
   }
 
-  private msUntilNext(): number {
-    if (this.budget.lastRequestAt == null) return 0;
-    return Math.max(0, METRON_MIN_INTERVAL_MS - (this.now() - this.budget.lastRequestAt));
+  observe(headers: HeaderBag): void {
+    this.budget = applyMetronHeaders(this.budget, headers, this.now());
+    this.store.write(this.budget);
   }
-}
-
-function numberHeader(headers: HeaderBag, name: string): number | null {
-  const raw = headers.get(name);
-  if (raw == null || raw === "") return null;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : null;
 }

@@ -22,6 +22,15 @@ export function SettingsForm({ view }: { view: SettingsView }) {
         ]}
       />
       <CredentialCard
+        title="Grand Comics Database"
+        detail="Optional. Anonymous requests stay at 30 per hour. A saved username and password switches that window to 2,000 per day."
+        service="gcd"
+        inputs={[
+          { name: "gcd.username", label: "Username", field: view.gcd.username },
+          { name: "gcd.password", label: "Password", field: view.gcd.password },
+        ]}
+      />
+      <CredentialCard
         title="Comic Vine"
         detail="API key from the Comic Vine account page."
         service="comicvine"
@@ -49,7 +58,7 @@ function CredentialCard({
 }: {
   title: string;
   detail: string;
-  service: "metron" | "comicvine" | "ebay";
+  service: "metron" | "gcd" | "comicvine" | "ebay";
   inputs: Array<{ name: string; label: string; field: FieldView }>;
 }) {
   const router = useRouter();

@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createGcdCatalog, GcdBudgetError } from "@/lib/catalog/gcd";
+import { runInLane } from "@/lib/catalog/rate-lane";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
@@ -549,6 +550,7 @@ async function rematchAlreadyDone(): Promise<boolean> {
 }
 
 async function runStoredFacsimileRematch(): Promise<boolean> {
+  return runInLane("background", async () => {
   if (await rematchAlreadyDone()) return true;
   if (!(await metronBasicAuth())) return false;
   return guardEditionPass(coversDir(), rematchAlreadyDone, async () => {
@@ -558,6 +560,7 @@ async function runStoredFacsimileRematch(): Promise<boolean> {
     } finally {
       clearMetronJobBudget();
     }
+  });
   });
 }
 

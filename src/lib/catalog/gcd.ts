@@ -1,5 +1,6 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { pauseLabel, planGcdAcquire, noteGcdRetry, type GcdRateMode } from "@/lib/catalog/rate-limit";
 import { formatResumeTime, retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
@@ -180,7 +181,7 @@ export function gcdRatePauseMessage(delayMs: number, resumeAt: number): string {
 async function pauseForRateLimit(response: Response, now = Date.now()): Promise<never> {
   const body = await response.text().catch(() => "");
   const explicit = retryAfterMs(response.headers, now) ?? retryAfterFromMessage(body);
-  const delay = gcdRetryDelay(explicit);
+  const delay = await takeGcdRetry(explicit, now);
   const resumeAt = now + delay;
   await writeLog({
     level: "info",
@@ -188,11 +189,23 @@ async function pauseForRateLimit(response: Response, now = Date.now()): Promise<
     message: gcdRatePauseMessage(delay, resumeAt),
     details: { delayMs: delay, resumeAt: new Date(resumeAt).toISOString() },
   });
-  throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
+  throw new GcdBudgetError(pauseLabel("GCD", resumeAt), {
     budget: "GCD rate limit",
     count: gcdHits.length,
     resumeAt,
   });
+}
+
+/** Retry-After is waited out in full. A missing hint uses the 30s, 1m, 2m, 5m, 10m ladder. */
+async function takeGcdRetry(explicitMs: number | null, now: number): Promise<number> {
+  if (process.env.VITEST === "true") return gcdRetryDelay(explicitMs);
+  const { ensureRateHydrated, readGcdWindow, saveGcdWindow } = await import("@/lib/catalog/rate-store");
+  await ensureRateHydrated();
+  const state = readGcdWindow();
+  const delay = explicitMs != null ? explicitMs : gcdBackoffMs(state.strikes);
+  const strikes = explicitMs != null ? state.strikes : state.strikes + 1;
+  await saveGcdWindow({ ...noteGcdRetry(state, delay, now), strikes });
+  return delay;
 }
 
 /**
@@ -210,17 +223,80 @@ export function gcdHourlyHold(now: number): number | null {
 }
 
 async function gcdPause(now = Date.now()): Promise<void> {
-  const resumeAt = gcdHourlyHold(now);
-  if (resumeAt != null) {
-    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
-      budget: "GCD hourly",
-      count: gcdHits.length,
-      resumeAt,
+  if (process.env.VITEST === "true") {
+    const resumeAt = gcdHourlyHold(now);
+    if (resumeAt != null) {
+      throw new GcdBudgetError(pauseLabel("GCD", resumeAt), {
+        budget: "GCD hourly",
+        count: gcdHits.length,
+        resumeAt,
+      });
+    }
+    const wait = Math.max(0, nextGcdAt - now);
+    nextGcdAt = Math.max(nextGcdAt, now) + MIN_GAP_MS;
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    return;
+  }
+  const { ensureRateHydrated, readGcdWindow, saveGcdWindow } = await import("@/lib/catalog/rate-store");
+  await ensureRateHydrated();
+  const mode = await gcdRateMode();
+  const plan = planGcdAcquire(readGcdWindow(), now, mode);
+  if (plan.kind === "pause") {
+    await saveGcdWindow(plan.state);
+    throw new GcdBudgetError(pauseLabel("GCD", plan.hold.resumeAt), {
+      budget: plan.hold.budget,
+      count: plan.hold.count,
+      resumeAt: plan.hold.resumeAt,
     });
   }
-  const wait = Math.max(0, nextGcdAt - now);
-  nextGcdAt = Math.max(nextGcdAt, now) + MIN_GAP_MS;
-  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  await saveGcdWindow(plan.state);
+  if (plan.waitMs > 0) await new Promise((resolve) => setTimeout(resolve, plan.waitMs));
+}
+
+/** One outbound GCD request. Match, backfill, and the Settings probe all call this. */
+export async function reserveGcdRequest(now = Date.now()): Promise<void> {
+  await gcdPause(now);
+}
+
+async function gcdRateMode(): Promise<GcdRateMode> {
+  const creds = await gcdCredentials();
+  return creds ? "authenticated" : "anonymous";
+}
+
+async function gcdCredentials(): Promise<{ username: string; password: string } | null> {
+  if (process.env.VITEST === "true") {
+    const username = process.env.GCD_USERNAME?.trim() ?? "";
+    const password = process.env.GCD_PASSWORD?.trim() ?? "";
+    if (!username || !password) return null;
+    return { username, password };
+  }
+  const { getSettings } = await import("@/lib/settings/service");
+  const settings = await getSettings();
+  if (!settings.gcd.username || !settings.gcd.password) return null;
+  return { username: settings.gcd.username, password: settings.gcd.password };
+}
+
+async function gcdAuthHeader(): Promise<string | null> {
+  const creds = await gcdCredentials();
+  if (!creds) return null;
+  return `Basic ${Buffer.from(`${creds.username}:${creds.password}`).toString("base64")}`;
+}
+
+async function withGcdAuth(headers: Record<string, string>): Promise<Record<string, string>> {
+  const authorization = await gcdAuthHeader();
+  if (!authorization) return headers;
+  return { ...headers, Authorization: authorization };
+}
+
+async function clearGcdStrikes(): Promise<void> {
+  if (process.env.VITEST === "true") {
+    gcdRateStrikes = 0;
+    return;
+  }
+  const { readGcdWindow, saveGcdWindow } = await import("@/lib/catalog/rate-store");
+  const state = readGcdWindow();
+  if (state.strikes === 0 && state.pausedUntil == null) return;
+  await saveGcdWindow({ ...state, strikes: 0, pausedUntil: null });
 }
 
 function gcdBase(): string {
@@ -395,10 +471,10 @@ async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS):
   let response: Response;
   try {
     response = await fetch(url, {
-      headers: {
+      headers: await withGcdAuth({
         Accept: "application/json",
         "User-Agent": "longbox/1.0 (personal comic shelf)",
-      },
+      }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
@@ -413,7 +489,7 @@ async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS):
   }
   await recordFetch({ source: "system", url, startedAt: started, status: response.status });
   if (response.status === 429) await pauseForRateLimit(response);
-  gcdRateStrikes = 0;
+  await clearGcdStrikes();
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) {
@@ -460,7 +536,10 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs
   let response: Response;
   try {
     response = await fetchImpl(url, {
-      headers: { Accept: "application/json", "User-Agent": "longbox/1.0 (personal comic shelf; CC BY-SA)" },
+      headers: await withGcdAuth({
+        Accept: "application/json",
+        "User-Agent": "longbox/1.0 (personal comic shelf; CC BY-SA)",
+      }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
@@ -475,7 +554,7 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs
   }
   await recordFetch({ source: "gcd", url, startedAt: started, status: response.status });
   if (response.status === 429) await pauseForRateLimit(response);
-  gcdRateStrikes = 0;
+  await clearGcdStrikes();
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) throw new Error("GCD response was not JSON");

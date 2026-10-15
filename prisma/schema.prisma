@@ -178,6 +178,13 @@ model AppLog {
   @@index([source, createdAt])
 }
 
+/// Rate-limit windows, connect pauses, and job cursors. Survives an app restart.
+model ApiWindow {
+  key       String   @id
+  payload   Json
+  updatedAt DateTime @updatedAt
+}
+
 /// History table for a future PriceProvider. v1 does not write rows.
 model PriceSnapshot {
   id        String   @id @default(cuid())

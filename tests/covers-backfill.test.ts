@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { groupSeries, seriesCardCountLabel, type ShelfComic } from "@/lib/collection";
+import { runInLane } from "@/lib/catalog/rate-lane";
 import { backfillCovers, needsCover } from "@/lib/covers/backfill";
 import { scoreCandidate } from "@/lib/covers/edition";
+import { METRON_FALLBACK_BURST, METRON_INTERACTIVE_RESERVE, METRON_SAFETY_REMAINING } from "@/lib/catalog/rate-limit";
 import { emptyBudget, METRON_DAILY_LIMIT, METRON_MIN_INTERVAL_MS, MetronLimiter, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 import { chooseIssue, narrowSeries, resolveCover } from "@/lib/covers/match";
 import {
@@ -668,10 +670,28 @@ describe("cover backfill", () => {
         unmatched.push(id);
       },
     });
-    expect(summary.stoppedReason).toMatch(/Metron daily/);
-    expect(summary.stoppedReason).toMatch(/Resumes at/);
+    expect(summary.stoppedReason).toMatch(/Metron paused until/);
     expect(summary.unmatched).toBe(0);
     expect(unmatched).toEqual([]);
+  });
+
+  it("resumes after the saved cursor instead of the first comic", async () => {
+    const seen: string[] = [];
+    const client = lookup();
+    const summary = await backfillCovers({
+      comics: [record({ id: "a" }), record({ id: "b" }), record({ id: "c" })],
+      cursorId: "a",
+      lookup: client,
+      fileExists: () => false,
+      saveImage: async () => "metron-50.jpg",
+      markMatched: async () => undefined,
+      markUnmatched: async (id) => {
+        seen.push(id);
+      },
+    });
+    expect(seen).toEqual(["b", "c"]);
+    expect(summary.pending).toBe(2);
+    expect(client.calls.some((call) => call.startsWith("upc:"))).toBe(true);
   });
 
   it("pauses before the next issue and leaves it unmarked", async () => {
@@ -720,6 +740,35 @@ describe("Metron rate limit", () => {
 
     budget.count = METRON_DAILY_LIMIT;
     await expect(limiter.acquire()).rejects.toBeInstanceOf(MetronBudgetError);
+  });
+
+  it("leaves the interactive reserve usable after a background job stops", async () => {
+    let time = 1_000_000;
+    const { store } = memoryStore();
+    const limiter = new MetronLimiter(
+      store,
+      () => time,
+      async (ms) => {
+        time += ms;
+      },
+      () => "2026-10-15",
+    );
+    let sent = 0;
+    let reserve: unknown = null;
+    for (let index = 0; index < METRON_FALLBACK_BURST; index += 1) {
+      try {
+        await limiter.acquire("background");
+        sent += 1;
+      } catch (error) {
+        reserve = error;
+        break;
+      }
+    }
+    expect(sent).toBe(METRON_FALLBACK_BURST - METRON_INTERACTIVE_RESERVE - METRON_SAFETY_REMAINING);
+    expect(reserve).toMatchObject({ pause: { budget: "Metron reserve" } });
+    expect(limiter.snapshot().pausedUntil).toBeNull();
+    await limiter.acquire("interactive");
+    expect(limiter.snapshot().count).toBe(sent + 1);
   });
 
   it("backs off on 429 and sends basic auth", async () => {
@@ -915,6 +964,28 @@ describe("Metron rate limit", () => {
     expect(mapped?.upcs).toEqual([]);
   });
 
+  it("pauses a background lane on the first 429 instead of retrying inside the request", async () => {
+    let calls = 0;
+    const { store } = memoryStore();
+    const limiter = new MetronLimiter(store, () => 1_000, async () => undefined, () => "2026-10-15");
+    const transport: MetronTransport = {
+      limiter,
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => 1_000,
+      fetch: async () => {
+        calls += 1;
+        return new Response("slow", { status: 429, headers: { "retry-after": "30" } });
+      },
+    };
+    await expect(runInLane("background", () => createMetronCoverLookup(transport).issuesByUpc("1"))).rejects.toMatchObject({
+      pause: { budget: "Metron rate limit", resumeAt: 31_000 },
+    });
+    expect(calls).toBe(1);
+    expect(limiter.snapshot().pausedUntil).toBe(31_000);
+  });
+
   it("reads Expected available in N seconds when Retry-After is missing", async () => {
     let time = 0;
     const waits: number[] = [];
@@ -949,7 +1020,7 @@ describe("Metron rate limit", () => {
   it("shares one budget file across limiters", async () => {
     let time = 0;
     const waits: number[] = [];
-    let disk: MetronBudget = { day: "", count: 0, lastRequestAt: null };
+    let disk: MetronBudget = emptyBudget();
     const store: BudgetStore = {
       read: () => ({ ...disk }),
       write: (next) => {
@@ -1036,7 +1107,10 @@ describe("Metron rate limit", () => {
       password: "secret",
       baseUrl: "https://metron.cloud/api",
       now: () => time,
-      fetch: async () => Response.json({ results: [] }),
+      fetch: async () => {
+        time += 60_000;
+        return Response.json({ results: [] });
+      },
     });
 
     const open = createMetronCoverLookup(transport());

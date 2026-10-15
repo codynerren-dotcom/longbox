@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "no
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
+import { normalizeMetronBudget } from "@/lib/catalog/rate-limit";
 import { emptyBudget, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
 const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
@@ -87,12 +88,7 @@ export function fileBudgetStore(dir = coversDir()): BudgetStore {
   return {
     read(): MetronBudget {
       try {
-        const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MetronBudget>;
-        return {
-          day: typeof parsed.day === "string" ? parsed.day : "",
-          count: typeof parsed.count === "number" && parsed.count > 0 ? parsed.count : 0,
-          lastRequestAt: typeof parsed.lastRequestAt === "number" ? parsed.lastRequestAt : null,
-        };
+        return normalizeMetronBudget(JSON.parse(readFileSync(file, "utf8")));
       } catch {
         return emptyBudget();
       }

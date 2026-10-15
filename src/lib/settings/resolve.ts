@@ -1,5 +1,5 @@
-export const PLAIN_KEYS = ["metron.username", "ebay.clientId"] as const;
-export const SECRET_KEYS = ["metron.password", "comicvine.apiKey", "ebay.clientSecret"] as const;
+export const PLAIN_KEYS = ["metron.username", "gcd.username", "ebay.clientId"] as const;
+export const SECRET_KEYS = ["metron.password", "gcd.password", "comicvine.apiKey", "ebay.clientSecret"] as const;
 export const CREDENTIAL_KEYS = [...PLAIN_KEYS, ...SECRET_KEYS] as const;
 
 export type PlainKey = (typeof PLAIN_KEYS)[number];
@@ -17,6 +17,8 @@ export type EnvSnapshot = {
   metronPassword: string;
   metronToken: string;
   metronBase: string;
+  gcdUsername: string;
+  gcdPassword: string;
   comicvineApiKey: string;
   ebayClientId: string;
   ebayClientSecret: string;
@@ -36,6 +38,7 @@ export type FieldView =
 
 export type SettingsView = {
   metron: { username: FieldView; password: FieldView };
+  gcd: { username: FieldView; password: FieldView };
   comicvine: { apiKey: FieldView };
   ebay: { clientId: FieldView; clientSecret: FieldView };
   seedOnEmpty: { enabled: boolean; source: "database" | "environment" };
@@ -47,6 +50,13 @@ export type IntegrationConfig = {
     password: string;
     token: string | null;
     baseUrl: string;
+    configured: boolean;
+    usernameSource: ValueSource;
+    passwordSource: ValueSource;
+  };
+  gcd: {
+    username: string;
+    password: string;
     configured: boolean;
     usernameSource: ValueSource;
     passwordSource: ValueSource;
@@ -80,6 +90,8 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): EnvSnapshot {
     metronPassword: env.METRON_PASSWORD ?? "",
     metronToken: env.METRON_API_TOKEN ?? "",
     metronBase: env.METRON_API_BASE || "https://metron.cloud/api",
+    gcdUsername: env.GCD_USERNAME ?? "",
+    gcdPassword: env.GCD_PASSWORD ?? "",
     comicvineApiKey: env.COMICVINE_API_KEY ?? "",
     ebayClientId: env.EBAY_CLIENT_ID ?? "",
     ebayClientSecret: env.EBAY_CLIENT_SECRET ?? "",
@@ -128,6 +140,8 @@ export function buildConfig(stored: StoredSettings, env: EnvSnapshot): Integrati
   const username = resolveString(stored.secrets["metron.username"], env.metronUsername);
   const password = resolveString(stored.secrets["metron.password"], env.metronPassword);
   const token = env.metronToken.trim();
+  const gcdUsername = resolveString(stored.secrets["gcd.username"], env.gcdUsername);
+  const gcdPassword = resolveString(stored.secrets["gcd.password"], env.gcdPassword);
   const comicvine = resolveString(stored.secrets["comicvine.apiKey"], env.comicvineApiKey);
   const clientId = resolveString(stored.secrets["ebay.clientId"], env.ebayClientId);
   const clientSecret = resolveString(stored.secrets["ebay.clientSecret"], env.ebayClientSecret);
@@ -141,6 +155,13 @@ export function buildConfig(stored: StoredSettings, env: EnvSnapshot): Integrati
       configured: Boolean((username.value && password.value) || token),
       usernameSource: username.source,
       passwordSource: password.source,
+    },
+    gcd: {
+      username: gcdUsername.value ?? "",
+      password: gcdPassword.value ?? "",
+      configured: Boolean(gcdUsername.value && gcdPassword.value),
+      usernameSource: gcdUsername.source,
+      passwordSource: gcdPassword.source,
     },
     comicvine: {
       apiKey: comicvine.value,
@@ -164,6 +185,10 @@ export function toSettingsView(config: IntegrationConfig): SettingsView {
       username: plainView(config.metron.usernameSource, config.metron.username),
       password: secretView(config.metron.passwordSource),
     },
+    gcd: {
+      username: plainView(config.gcd.usernameSource, config.gcd.username),
+      password: secretView(config.gcd.passwordSource),
+    },
     comicvine: { apiKey: secretView(config.comicvine.source) },
     ebay: {
       clientId: plainView(config.ebay.clientIdSource, config.ebay.clientId),
@@ -186,11 +211,15 @@ export function applyCredentialOverrides(
   };
   const username = typed("metron.username");
   const password = typed("metron.password");
+  const gcdUsername = typed("gcd.username");
+  const gcdPassword = typed("gcd.password");
   const apiKey = typed("comicvine.apiKey");
   const clientId = typed("ebay.clientId");
   const clientSecret = typed("ebay.clientSecret");
   const nextUsername = username ?? config.metron.username;
   const nextPassword = password ?? config.metron.password;
+  const nextGcdUsername = gcdUsername ?? config.gcd.username;
+  const nextGcdPassword = gcdPassword ?? config.gcd.password;
   const nextApiKey = apiKey ?? config.comicvine.apiKey;
   const nextClientId = clientId ?? config.ebay.clientId;
   const nextClientSecret = clientSecret ?? config.ebay.clientSecret;
@@ -203,6 +232,14 @@ export function applyCredentialOverrides(
       configured: Boolean((nextUsername && nextPassword) || config.metron.token),
       usernameSource: username ? "database" : config.metron.usernameSource,
       passwordSource: password ? "database" : config.metron.passwordSource,
+    },
+    gcd: {
+      ...config.gcd,
+      username: nextGcdUsername,
+      password: nextGcdPassword,
+      configured: Boolean(nextGcdUsername && nextGcdPassword),
+      usernameSource: gcdUsername ? "database" : config.gcd.usernameSource,
+      passwordSource: gcdPassword ? "database" : config.gcd.passwordSource,
     },
     comicvine: {
       ...config.comicvine,

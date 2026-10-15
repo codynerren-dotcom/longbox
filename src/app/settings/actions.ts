@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { logConnectionTest, logSettingsChange } from "@/lib/log/events";
-import { probeComicVine, probeEbay, probeMetron, type ProbeResult } from "@/lib/settings/probe";
+import { probeComicVine, probeEbay, probeGcd, probeMetron, type ProbeResult } from "@/lib/settings/probe";
 import { applyCredentialOverrides, CREDENTIAL_KEYS, isCredentialKey, isPlainKey, type CredentialKey } from "@/lib/settings/resolve";
 import { clearSecret, getSettings, savePlain, saveSecret, setSeedOnEmpty } from "@/lib/settings/service";
 
@@ -61,11 +61,13 @@ export async function testConnectionAction(_prev: ProbeActionState, formData: Fo
   const result =
     service === "metron"
       ? await probeMetron(config)
-      : service === "comicvine"
-        ? await probeComicVine(config)
-        : service === "ebay"
-          ? await probeEbay(config)
-          : { ok: false, message: "Unknown service." };
+      : service === "gcd"
+        ? await probeGcd(config)
+        : service === "comicvine"
+          ? await probeComicVine(config)
+          : service === "ebay"
+            ? await probeEbay(config)
+            : { ok: false, message: "Unknown service." };
   await logConnectionTest(service || "unknown", result);
   return { ...result, service, status: "done" };
 }
