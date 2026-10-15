@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+dist
+coverage
+.env
+.env.local
+.env.*.local
+data/
+longbox-secret.key
+!.env.example
+*.log
+npm-debug.log*
+.DS_Store
+tsconfig.tsbuildinfo

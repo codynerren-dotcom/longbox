@@ -1,0 +1,36 @@
+# Longbox roadmap
+
+v1 is a local shelf: CLZ import, barcode scan, collection browsing, and a dashboard. These are the next slices, in the order they should land.
+
+## eBay pricing
+
+`PriceProvider` in `src/lib/pricing/types.ts` is the contract. `EbayPriceProvider` reads the eBay client id and secret from Settings (environment variables are the fallback) and returns an empty quote. The implementation should:
+
+- Search sold and active listings by series, issue, and grade.
+- Write each quote to `price_snapshots` (comic, source, amount, currency, fetched time, raw payload).
+- Replace the issue-page placeholder that says "Pricing coming soon (eBay)".
+
+Do not add PriceCharting.
+
+## Cover recognition
+
+Metron cover backfill already downloads issue images into `longbox_covers` and serves them from the app. `CoverMatcher` in `src/lib/covers/matcher.ts` is still the contract for a photo of a physical book. A later matcher should:
+
+- Embed the photo and compare it with Metron cover hashes and any covers already on the shelf.
+- OCR the title, issue number, and barcode box.
+- Optionally ask a vision model when the shortlist is ambiguous.
+
+No model calls ship in v1.
+
+## Cloudflare Access
+
+The public shelf is `https://longbox.codyscasa.com`, with Cloudflare Access in front of the app. The LAN port 3210 stays private. Do not publish it to the open internet.
+
+- `viewerFromHeaders` trusts `Cf-Access-Authenticated-User-Email`.
+- The manifest link uses `crossorigin="use-credentials"` so install sends the Access cookie.
+- The service worker does not cache Access login redirects.
+- v1 does not reject anonymous LAN requests. Turning that into a real gate is a follow-up, if Access is the only path that should reach the app.
+
+## Trading cards
+
+Out of scope for the comic schema. A later collection type (sport or TCG) should get its own tables rather than overloading `Comic`. Shared pieces worth reusing: the scan sheet, the storage-box view, and the price-snapshot history.

@@ -1,0 +1,101 @@
+{
+  "series": {
+    "count": 4,
+    "results": [
+      {
+        "api_url": "https://www.comics.org/api/series/215428/?format=json",
+        "name": "Beneath the Trees Where Nobody Sees",
+        "year_began": 2024,
+        "year_ended": 2024,
+        "publishing_format": "collected edition",
+        "active_issues": [
+          "https://www.comics.org/api/issue/2658274/?format=json",
+          "https://www.comics.org/api/issue/2658462/?format=json"
+        ],
+        "issue_descriptors": [
+          "",
+          "[IDW Exclusive Hardcover Edition]"
+        ]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/225911/?format=json",
+        "name": "Beneath the Trees Where Nobody Sees: Rite of Spring",
+        "year_began": 2025,
+        "year_ended": 2026,
+        "publishing_format": "limited series",
+        "active_issues": [
+          "https://www.comics.org/api/issue/2755945/?format=json"
+        ],
+        "issue_descriptors": [
+          "1 [Cover A - Patrick Horvath]"
+        ]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/239303/?format=json",
+        "name": "Beneath the Trees Where Nobody Sees: Rite of Spring",
+        "year_began": 2026,
+        "year_ended": 2026,
+        "publishing_format": "collected edition",
+        "active_issues": [
+          "https://www.comics.org/api/issue/2853616/?format=json"
+        ],
+        "issue_descriptors": [
+          ""
+        ]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/239304/?format=json",
+        "name": "Beneath the Trees Where Nobody Sees: Rite of Spring",
+        "year_began": 2026,
+        "year_ended": 2026,
+        "publishing_format": "collected edition",
+        "active_issues": [
+          "https://www.comics.org/api/issue/2853617/?format=json"
+        ],
+        "issue_descriptors": [
+          ""
+        ]
+      }
+    ]
+  },
+  "issue": {
+    "api_url": "https://www.comics.org/api/issue/2853617/?format=json",
+    "series": "https://www.comics.org/api/series/239304/?format=json",
+    "series_name": "Beneath the Trees Where Nobody Sees: Rite of Spring (2026 series)",
+    "number": "[nn]",
+    "variant_name": "",
+    "publication_date": "July 2026",
+    "key_date": "2026-07-21",
+    "on_sale_date": "2026-07-21",
+    "price": "19.99 USD; 26.99 CAD",
+    "page_count": "148.000",
+    "indicia_publisher": "IDW Publishing",
+    "isbn": "979-8-88724-384-9",
+    "barcode": "979888724384951999",
+    "story_set": [
+      {
+        "type": "cover",
+        "title": "",
+        "pencils": "Patrick Horvath (credited)"
+      }
+    ],
+    "cover": "https://files1.comics.org//img/gcd/covers_by_id/1850/w400/1850144.jpg"
+  },
+  "otherIssue": {
+    "api_url": "https://www.comics.org/api/issue/2853616/?format=json",
+    "series": "https://www.comics.org/api/series/239303/?format=json",
+    "series_name": "Beneath the Trees Where Nobody Sees: Rite of Spring (2026 series)",
+    "number": "[nn]",
+    "variant_name": "",
+    "publication_date": "July 2026",
+    "key_date": "2026-07-21",
+    "on_sale_date": "2026-07-21",
+    "price": "29.99 USD; 39.99 CAD",
+    "page_count": null,
+    "indicia_publisher": "IDW Publishing",
+    "isbn": "979-8-88724-205-7",
+    "barcode": "979888724205752999",
+    "story_set": [],
+    "cover": ""
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "series": {
+    "count": 3,
+    "results": [
+      {
+        "api_url": "https://www.comics.org/api/series/10181/?format=json",
+        "name": "Batman: The Vengeance of Bane II",
+        "year_began": 1995,
+        "year_ended": 1995,
+        "publishing_format": "One-Shot",
+        "active_issues": [
+          "https://www.comics.org/api/issue/95978/?format=json"
+        ],
+        "issue_descriptors": [
+          "[2]"
+        ]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/198517/?format=json",
+        "name": "Batman: Vengeance of Bane 1 (Facsimile Edition)",
+        "year_began": 2023,
+        "year_ended": 2023,
+        "publishing_format": "one-shot",
+        "active_issues": [
+          "https://www.comics.org/api/issue/2513854/?format=json",
+          "https://www.comics.org/api/issue/2514867/?format=json"
+        ],
+        "issue_descriptors": [
+          "",
+          "[Foil Cardstock Cover]"
+        ]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/14747/?format=json",
+        "name": "Batman: Vengeance of Bane Special",
+        "year_began": 1993,
+        "year_ended": 1993,
+        "publishing_format": "one-shot",
+        "active_issues": [
+          "https://www.comics.org/api/issue/256156/?format=json",
+          "https://www.comics.org/api/issue/1310324/?format=json",
+          "https://www.comics.org/api/issue/2832968/?format=json"
+        ],
+        "issue_descriptors": [
+          "1",
+          "1 [Second Printing]",
+          "1 [Third Printing]"
+        ]
+      }
+    ]
+  },
+  "issue": {
+    "api_url": "https://www.comics.org/api/issue/2513854/?format=json",
+    "series": "https://www.comics.org/api/series/198517/?format=json",
+    "series_name": "Batman: Vengeance of Bane 1 (Facsimile Edition) (2023 series)",
+    "descriptor": "",
+    "number": "[nn]",
+    "variant_name": "",
+    "title": "",
+    "publication_date": "[June] 2023",
+    "key_date": "2023-06-00",
+    "price": "6.99 USD",
+    "page_count": "68.000",
+    "indicia_publisher": "DC Comics",
+    "barcode": "76194137966100111",
+    "on_sale_date": "2023-04-04",
+    "cover": "https://files1.comics.org//img/gcd/covers_by_id/1625/w400/1625206.jpg",
+    "story_set": [
+      {
+        "type": "cover",
+        "title": "",
+        "script": "None",
+        "pencils": "Glenn Fabry (signed as GFABRY) (painting)",
+        "characters": "Bane; Batman"
+      },
+      {
+        "type": "comic story",
+        "title": "Vengeance of Bane",
+        "script": "Chuck Dixon (credited)",
+        "pencils": "Graham Nolan (credited)",
+        "characters": "Bane; Batman"
+      }
+    ]
+  }
+}

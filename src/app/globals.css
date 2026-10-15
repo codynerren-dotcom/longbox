@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --accent-rgb: 255 204 26;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgb(var(--accent-rgb) / 0.08), transparent 55%),
+    #0d0e12;
+  color: #f4f1ea;
+}
+
+.halftone {
+  background-image: radial-gradient(rgba(13, 14, 18, 0.5) 1.05px, transparent 1.2px);
+  background-size: 7px 7px;
+}
+
+.missing-slot {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 7px,
+    rgb(var(--accent-rgb) / 0.14) 7px,
+    rgb(var(--accent-rgb) / 0.14) 8px
+  );
+}
+
+::selection {
+  background: rgb(var(--accent-rgb));
+  color: #0d0e12;
+}
+
+input,
+select,
+textarea {
+  background: #22262f;
+  border: 1px solid #343a46;
+  color: #f4f1ea;
+  border-radius: 12px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid rgb(var(--accent-rgb));
+  outline-offset: 1px;
+}
+
+.field {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.95rem;
+}
+
+/* Major keys stay metallic gold. Minor keys stay slate. Neither follows the accent. */
+.key-major {
+  background-image: linear-gradient(145deg, #f4e4a6 0%, #d4af37 48%, #b28b22 100%);
+  color: #1a1408;
+  box-shadow:
+    inset 0 1px 0 rgb(255 248 220 / 0.7),
+    0 0 0 1px rgb(90 62 8 / 0.4),
+    0 0 10px rgb(212 175 55 / 0.55);
+}
+
+.key-minor {
+  background: #2a2e38;
+  color: #d7dbe4;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16);
+}
