@@ -1,6 +1,7 @@
 import type { GcdCatalog, GcdIssueRow, GcdSeriesRow } from "@/lib/catalog/gcd";
 import { createGcdCatalog, gcdCoverHref } from "@/lib/catalog/gcd";
 import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
+import { exactBarcodeMatch } from "@/lib/catalog/match-row";
 import type { MatchHit } from "@/lib/catalog/match-hits";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { parseComicBarcode } from "@/lib/barcode";
@@ -25,6 +26,8 @@ import {
 
 /** One issue plus its variants. Keeps a search or a direct load inside the hourly cap. */
 const VARIANT_FETCH_CAP = 8;
+/** Match panel lists every cover of one issue. Still bounded so one search cannot spend the hour. */
+const MATCH_VARIANT_CAP = 24;
 
 /**
  * Names to send to `/api/series/name/`. The base name goes first, after the issue
@@ -80,11 +83,11 @@ export async function searchGcdMatches(
   };
   if ((options?.facsimile || detectEdition(probe).kind === "facsimile") && probe.series.trim()) {
     const issues = await collectGcdFacsimileIssues(probe, catalog, { every: true });
-    return issues.map((issue) => gcdHit(issue));
+    return orderGcdMatchHits(issues.map((issue) => gcdHit(issue)), barcode);
   }
   if (isCollected(format) || isbnDigits(barcode)) {
     const collected = await collectGcdCollectedIssues({ ...probe, shelfFormat: isCollected(format) ? format : "tp" }, isCollected(format) ? format : "tp", catalog);
-    return collected.map(gcdHit);
+    return orderGcdMatchHits(collected.map(gcdHit), barcode);
   }
   const wanted = parsed.series || series;
   if (!wanted.trim()) return [];
@@ -103,18 +106,20 @@ export async function searchGcdMatches(
     }
   }
   const hits: MatchHit[] = [];
-  for (const series of seriesRows.slice(0, 3)) {
-    const ids = issueIdsFor(series, parsed.issueNo, parsed.year, true).slice(0, VARIANT_FETCH_CAP);
+  for (const seriesRow of seriesRows.slice(0, 3)) {
+    const ids = gcdMatchIssueIds(seriesRow, parsed.issueNo, parsed.year);
+    const family: MatchHit[] = [];
     for (const id of ids) {
       const issue = await catalog.issue(id);
       if (!issue) continue;
-      issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-      const descriptor = series.issues.find((item) => item.id === id)?.descriptor ?? "";
-      hits.push(gcdHit(withDescriptor(issue, descriptor)));
-      if (hits.length >= 12) return hits;
+      issue.seriesYear = issue.seriesYear ?? seriesRow.yearBegan;
+      const descriptor = seriesRow.issues.find((item) => item.id === id)?.descriptor ?? "";
+      family.push(gcdHit(withDescriptor(issue, descriptor)));
     }
+    hits.push(...orderGcdMatchHits(family, barcode));
+    if (hits.length >= MATCH_VARIANT_CAP) break;
   }
-  return hits;
+  return orderGcdMatchHits(hits, barcode).slice(0, MATCH_VARIANT_CAP);
 }
 
 /**
@@ -159,7 +164,7 @@ export async function loadGcdIssueHits(input: string, catalog: GcdCatalog = crea
     const series = await catalog.seriesById(issue.seriesId);
     if (series) {
       issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-      const siblings = gcdVariantSiblingIds(series, issue.id).slice(0, VARIANT_FETCH_CAP - 1);
+      const siblings = gcdFamilyIssueIds(series, issue).filter((siblingId) => siblingId !== issue.id).slice(0, MATCH_VARIANT_CAP - 1);
       for (const siblingId of siblings) {
         const row = await catalog.issue(siblingId);
         if (!row || !inVariantFamily(issue, row)) continue;
@@ -186,6 +191,55 @@ export function gcdVariantSiblingIds(series: GcdSeriesRow, issueId: string): str
   if (!self) return [];
   const key = gcdIssueFamilyKey(self.descriptor);
   return series.issues.filter((item) => item.id !== issueId && gcdIssueFamilyKey(item.descriptor) === key).map((item) => item.id);
+}
+
+/**
+ * Issue ids for one Match-panel row family: the numbered issue plus every cover variant.
+ * A one-shot often stores Cover A as `[Cover A]` with no issue number, and only one
+ * sibling as `1 [Cover C]`. Those bare labels belong to that single issue.
+ */
+export function gcdMatchIssueIds(series: GcdSeriesRow, issueNo: string | null, coverYear: number | null): string[] {
+  const seeds = issueIdsFor(series, issueNo, coverYear, true);
+  const stems = descriptorStems(series);
+  const wanted = (issueNo ?? "").trim().toLowerCase();
+  const onlyStem = stems.size === 1 ? [...stems][0] ?? null : null;
+  const wholeSeriesIsOneIssue = stems.size <= 1 && series.issues.length > 0 && series.issues.length <= MATCH_VARIANT_CAP;
+  if (wholeSeriesIsOneIssue && (seeds.length > 0 || stems.size === 0 || wanted === "" || wanted === "1" || onlyStem === wanted)) {
+    return series.issues.map((issue) => issue.id);
+  }
+  const ids = [...seeds];
+  if (onlyStem && onlyStem === wanted) {
+    for (const issue of series.issues) {
+      if (descriptorStem(issue.descriptor) == null && !ids.includes(issue.id)) ids.push(issue.id);
+    }
+  }
+  return ids.slice(0, MATCH_VARIANT_CAP);
+}
+
+/** Parent plus every sibling of a loaded issue, including bare `[Cover A]` labels on a one-shot. */
+export function gcdFamilyIssueIds(series: GcdSeriesRow, anchor: GcdIssueRow): string[] {
+  const number = anchor.number && !/^\[?nn\]?$/i.test(anchor.number.trim()) ? anchor.number : null;
+  const matched = gcdMatchIssueIds(series, number ?? (series.issues.length <= MATCH_VARIANT_CAP ? "1" : null), anchor.coverYear);
+  if (matched.includes(anchor.id)) return matched;
+  const ids = [anchor.id, ...gcdVariantSiblingIds(series, anchor.id).filter((id) => id !== anchor.id)];
+  return ids.slice(0, MATCH_VARIANT_CAP);
+}
+
+/** Exact full barcode, add-on included, floats to the top. Other rows keep their order. */
+export function orderGcdMatchHits<T extends { barcode?: string | null }>(hits: T[], barcode: string | null | undefined): T[] {
+  return hits
+    .map((hit, index) => ({ hit, index, exact: exactBarcodeMatch(barcode, hit.barcode) ? 0 : 1 }))
+    .sort((a, b) => a.exact - b.exact || a.index - b.index)
+    .map((row) => row.hit);
+}
+
+function descriptorStem(descriptor: string): string | null {
+  const key = gcdIssueFamilyKey(descriptor);
+  return key === "[nn]" ? null : key;
+}
+
+function descriptorStems(series: GcdSeriesRow): Set<string> {
+  return new Set(series.issues.map((issue) => descriptorStem(issue.descriptor)).filter((stem): stem is string => Boolean(stem)));
 }
 
 function inVariantFamily(anchor: GcdIssueRow, row: GcdIssueRow): boolean {

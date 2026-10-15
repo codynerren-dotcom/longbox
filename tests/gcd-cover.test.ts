@@ -1,10 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { gcdCoverScan, parseGcdIssue } from "@/lib/catalog/gcd";
+import { gcdCoverScan, parseGcdIssue, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
 import { linkUpdate } from "@/lib/catalog/link-plan";
 import { readManualLink, shouldSaveCatalogCover, withUserCover } from "@/lib/catalog/manual-link";
+import { exactBarcodeMatch, fullSizeCoverUrl } from "@/lib/catalog/match-row";
 import { imagePaceName } from "@/lib/catalog/rate-limit";
-import { gcdDetails, gcdHit } from "@/lib/covers/gcd-match";
+import { gcdDetails, gcdHit, gcdMatchIssueIds, orderGcdMatchHits, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { coverContentType, coverFilename } from "@/lib/covers/files";
+
+function coverRow(id: string, variant: string, barcode: string, variantOf: string | null): GcdIssueRow {
+  return {
+    id,
+    seriesId: "special",
+    seriesName: "I Hate Fairyland: I Hate Image Special Edition",
+    number: variantOf ? "[nn]" : "1",
+    variant,
+    variantOf,
+    title: null,
+    coverDate: "2017",
+    coverYear: 2017,
+    onSaleYear: 2017,
+    onSaleDate: "2017-04-05",
+    price: "3.99 USD",
+    pageCount: 32,
+    barcode,
+    publisher: "Image",
+    writer: null,
+    artist: null,
+    coverArtist: null,
+    characters: null,
+    seriesYear: 2017,
+    comicvineIssueId: null,
+    metronIssueId: null,
+    coverUrl: `https://files1.comics.org/img/gcd/covers_by_id/1/w400/${id}.jpg`,
+  };
+}
 
 const PARENT = "https://files1.comics.org/img/gcd/covers_by_id/10/w400/10.jpg";
 const VARIANT = "https://files1.comics.org/img/gcd/covers_by_id/11/w400/11.jpg";
@@ -80,6 +109,68 @@ describe("GCD cover scans", () => {
     expect(photo.data.coverStatus).toBeUndefined();
     expect(readManualLink(photo.data.manualLink).userCover).toBe(true);
     expect(readManualLink(photo.data.manualLink).coverSource).toBeNull();
+  });
+
+  it("lists every cover of a one-shot and sorts the exact add-on match first", async () => {
+    const shelf = "70985302446000111";
+    expect(exactBarcodeMatch(shelf, "70985302446000111")).toBe(true);
+    expect(exactBarcodeMatch(shelf, "70985302446000131")).toBe(false);
+    expect(exactBarcodeMatch(shelf, "709853024460")).toBe(false);
+    expect(fullSizeCoverUrl("https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg")).toBe(
+      "https://files1.comics.org/img/gcd/covers_by_id/1/1.jpg",
+    );
+
+    const special: GcdSeriesRow = {
+      id: "special",
+      name: "I Hate Fairyland: I Hate Image Special Edition",
+      yearBegan: 2017,
+      yearEnded: 2017,
+      format: "one-shot",
+      issues: [
+        { id: "c", descriptor: "1 [Cover C - Walking Dead Tribute]" },
+        { id: "a", descriptor: "[Cover A]" },
+        { id: "b", descriptor: "[Cover B]" },
+        { id: "d", descriptor: "[Cover D - Walking Dead Tribute Black and White]" },
+      ],
+    };
+    expect(gcdMatchIssueIds(special, "1", 2017)).toEqual(["c", "a", "b", "d"]);
+    const ongoing: GcdSeriesRow = {
+      ...special,
+      id: "ongoing",
+      format: "ongoing series",
+      issues: [
+        { id: "1a", descriptor: "1 [Cover A]" },
+        { id: "1b", descriptor: "1 [Cover B]" },
+        { id: "2", descriptor: "2" },
+      ],
+    };
+    expect(gcdMatchIssueIds(ongoing, "1", 2015)).toEqual(["1a", "1b"]);
+
+    const rows: Record<string, GcdIssueRow> = {
+      c: coverRow("c", "Cover C - Walking Dead Tribute", "70985302446000131", "a"),
+      a: coverRow("a", "Cover A", shelf, null),
+      b: coverRow("b", "Cover B", "70985302446000121", "a"),
+      d: coverRow("d", "Cover D - Walking Dead Tribute Black and White", "70985302446000141", "a"),
+    };
+    const fetched: string[] = [];
+    const catalog: GcdCatalog = {
+      async seriesByName(name) {
+        return /i hate image special/i.test(name) ? [special] : [];
+      },
+      async issue(id) {
+        fetched.push(id);
+        return rows[id] ?? null;
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    };
+    const hits = await searchGcdMatches("I Hate Fairyland: I Hate Image Special Edition #1 2017", shelf, "query", null, { catalog });
+    expect(fetched.sort()).toEqual(["a", "b", "c", "d"]);
+    expect(hits.map((hit) => hit.id)).toEqual(["a", "c", "b", "d"]);
+    expect(hits[0]?.barcode).toBe(shelf);
+    expect(orderGcdMatchHits(hits, shelf)[0]?.id).toBe("a");
+    expect(hits.filter((hit) => hit.variant === "Cover C - Walking Dead Tribute")).toHaveLength(1);
   });
 
   it("serves a gcd cover file and paces image hosts apart from the API windows", () => {

@@ -10,7 +10,7 @@ import { LimitToast } from "@/components/limit-toast";
 import { matchPanelNote } from "@/lib/catalog/limit-notice";
 import type { QueueHint, QueueRequest } from "@/lib/catalog/search-queue";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
-import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
+import { catalogIssueHref, catalogViewLabel, exactBarcodeMatch, fullSizeCoverUrl } from "@/lib/catalog/match-row";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 import { isCollected, shelfFormatOf } from "@/lib/shelf-format";
 
@@ -294,16 +294,10 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
         return;
       }
       setHits(result.hits);
-      const id = parseGcdIssueRef(gcdRef);
-      const hit = result.hits.find((item) => item.id === id) ?? result.hits[0] ?? null;
-      if (!hit) {
-        setNote(matchPanelNote(0, result.notice));
-        return;
-      }
-      setSelected(hit);
-      setCovers(hit.covers);
-      setCoverUrl(hit.coverUrl);
-      coverChoice(hit);
+      setSelected(null);
+      setCovers([]);
+      setCoverUrl(null);
+      if (result.hits.length === 0) setNote(matchPanelNote(0, result.notice));
     });
   }
 
@@ -408,17 +402,29 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
           {hits.map((hit) => {
             const facts = gcdFactLine(hit);
             const picked = selected?.id === hit.id && selected.source === hit.source;
+            const viewHref = catalogIssueHref(hit.source, hit.id);
+            const exact = hit.source === "gcd" && exactBarcodeMatch(props.barcode, hit.barcode);
             return (
               <li key={`${hit.source}-${hit.id}`} className={`flex w-full gap-3 rounded-xl p-2 ring-1 ${picked ? "bg-panel2 ring-comic" : "bg-ink/30 ring-white/5"}`}>
                 <CoverMark hit={hit} />
-                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => choose(hit)}>
-                  <span className="block truncate font-semibold text-paper">
-                    {hit.series} {hit.issueNo ? `#${hit.issueNo}` : ""}
-                  </span>
-                  {hit.variant ? <span className="block truncate text-sm text-mist">{hit.variant}</span> : null}
-                  <span className="block truncate text-xs text-mist">{[hit.coverDate, hit.publisher].filter(Boolean).join(" · ")}</span>
-                  {facts ? <span className="block truncate text-xs text-mist">{facts}</span> : null}
-                </button>
+                <div className="min-w-0 flex-1">
+                  <button type="button" className="w-full text-left" onClick={() => choose(hit)}>
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-semibold text-paper">
+                        {hit.series} {hit.issueNo ? `#${hit.issueNo}` : ""}
+                      </span>
+                      {exact ? <span className="shrink-0 rounded-full bg-comic px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink">Exact barcode</span> : null}
+                    </span>
+                    {hit.variant ? <span className="block truncate text-sm text-mist">{hit.variant}</span> : null}
+                    <span className="block truncate text-xs text-mist">{[hit.coverDate, hit.publisher].filter(Boolean).join(" · ")}</span>
+                    {facts ? <span className="block truncate text-xs text-mist">{facts}</span> : null}
+                  </button>
+                  {viewHref ? (
+                    <a href={viewHref} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs font-semibold text-comic hover:underline">
+                      {catalogViewLabel(hit.source)}
+                    </a>
+                  ) : null}
+                </div>
               </li>
             );
           })}
@@ -465,11 +471,11 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
                 Overwrite existing
               </label>
             ) : null}
-            <button type="button" className="mt-3 rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50" disabled={pending} onClick={link}>
-              {pending ? "Linking…" : "Link this issue"}
-            </button>
           </div>
         ) : null}
+        <button type="button" className="mt-3 rounded-full bg-comic px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50" disabled={pending || !selected} onClick={link}>
+          {pending ? "Linking…" : "Accept"}
+        </button>
       </div>
     </div>
   );
@@ -489,7 +495,13 @@ function gcdFactLine(hit: MatchHit): string {
 }
 
 function CoverMark({ hit }: { hit: MatchHit }) {
-  return <Thumb src={hit.coverUrl} alt="" />;
+  const full = fullSizeCoverUrl(hit.coverUrl);
+  if (!full) return <Thumb src={null} alt="" />;
+  return (
+    <a href={full} target="_blank" rel="noopener noreferrer" aria-label="Open the full-size cover" className="shrink-0">
+      <Thumb src={hit.coverUrl} alt="" />
+    </a>
+  );
 }
 
 function Thumb({ src, alt }: { src: string | null; alt: string }) {
