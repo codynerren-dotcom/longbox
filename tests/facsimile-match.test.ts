@@ -503,6 +503,6 @@ describe("GCD backfill fallback", () => {
     });
     expect(gcdCalls).toBe(1);
     expect(second).toMatchObject({ matched: 1, unmatched: 1, stoppedReason: null });
-    expect(logs.join("\n")).toContain("GCD rate limit reached. Later copies will stay unmatched.");
+    expect(logs.join("\n")).toContain("GCD is paused. Metron matching continues.");
   });
 });

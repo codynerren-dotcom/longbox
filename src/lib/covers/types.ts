@@ -9,13 +9,15 @@ export type MetronIssueHit = {
   releaseYear?: number | null;
   seriesYear?: number | null;
   upc?: string | null;
+  /** Other UPC strings from the issue detail, including variant covers. The list payload leaves these off. */
+  upcs?: string[] | null;
   publisher?: string | null;
   variant?: string | null;
   cvId?: string | null;
   gcdId?: string | null;
   /** ISO day from the catalog store or on-sale date. */
   storeDate?: string | null;
-  covers?: Array<{ label: string; imageUrl: string }>;
+  covers?: Array<{ label: string; imageUrl: string; upc?: string | null }>;
 };
 
 export type MetronSeriesHit = {

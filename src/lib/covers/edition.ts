@@ -280,19 +280,19 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
     else blocked = "Issue numbers do not match.";
   }
 
-  const left = copyAnchor(copy, edition);
-  const right = candidateAnchor(candidate, candidateKind);
-  let yearPoints = left == null || right == null ? 8 : 0;
-  if (left != null && right != null) {
-    const gap = Math.abs(left - right);
+  const shelfYears = shelfPublicationYears(copy);
+  const catalogYears = catalogPublicationYears(candidate);
+  const gap = closestYearGap(shelfYears, catalogYears);
+  let yearPoints = shelfYears.length === 0 || catalogYears.length === 0 ? 8 : 0;
+  if (gap != null) {
     if (gap <= 1) yearPoints = 20;
     else if (gap === 2) yearPoints = 10;
     else {
       yearPoints = 0;
-      blocked = blocked ?? `Release years are ${gap} years apart.`;
+      blocked = blocked ?? `Release years are ${gap} years apart (${yearGapDetail(copy, candidate)}).`;
     }
   }
-  if (edition.kind === "printing" && (left == null || right == null) && blocked == null) yearPoints = 20;
+  if (edition.kind === "printing" && (shelfYears.length === 0 || catalogYears.length === 0) && blocked == null) yearPoints = 20;
   if (edition.kind !== candidateKind && !printingOnSameIssue) {
     blocked = blocked ?? `This copy is ${KIND_LABEL[edition.kind]} and the catalog issue is ${KIND_LABEL[candidateKind]}.`;
   }
@@ -415,21 +415,54 @@ export function baseSeriesName(series: string): string {
     .trim();
 }
 
-function copyAnchor(copy: EditionCopy, edition: EditionProfile): number | null {
-  if (edition.reprint && yearOf(copy.releaseYear) != null) return yearOf(copy.releaseYear);
-  return yearOf(copy.releaseYear) ?? yearOf(copy.coverYear);
+/** CLZ cover year and release year. Purchase year and added year are not match anchors. */
+function shelfPublicationYears(copy: EditionCopy): number[] {
+  const years: number[] = [];
+  const cover = yearOf(copy.coverYear);
+  const release = yearOf(copy.releaseYear) ?? yearFromDay(calendarDay(copy.releaseDate));
+  if (cover != null) years.push(cover);
+  if (release != null && release !== cover) years.push(release);
+  return years;
 }
 
-function candidateAnchor(candidate: MatchCandidate, kind: EditionKind): number | null {
+/**
+ * Issue cover date and series year_began. A store date counts only when it sits
+ * within two years of one of those, or when both are missing.
+ */
+function catalogPublicationYears(candidate: MatchCandidate): number[] {
   const cover = yearOf(candidate.coverYear);
-  const release = yearOf(candidate.releaseYear);
   const series = yearOf(candidate.seriesYear);
-  if (kind !== "regular") {
-    if (release != null) return release;
-    if (series != null && cover != null && Math.abs(series - cover) >= DECADE_YEARS) return series;
-    if (series != null && cover == null) return series;
+  const store = yearOf(candidate.releaseYear);
+  const years: number[] = [];
+  if (cover != null) years.push(cover);
+  if (series != null && series !== cover) years.push(series);
+  const near = years.some((year) => store != null && Math.abs(year - store) <= 2);
+  if (store != null && (near || years.length === 0) && !years.includes(store)) years.push(store);
+  return years;
+}
+
+function closestYearGap(shelf: number[], catalog: number[]): number | null {
+  if (shelf.length === 0 || catalog.length === 0) return null;
+  let best = Number.POSITIVE_INFINITY;
+  for (const left of shelf) {
+    for (const right of catalog) best = Math.min(best, Math.abs(left - right));
   }
-  return release ?? cover ?? series;
+  return best;
+}
+
+function yearGapDetail(copy: EditionCopy, candidate: MatchCandidate): string {
+  const parts: string[] = [];
+  const cover = yearOf(copy.coverYear);
+  const release = yearOf(copy.releaseYear) ?? yearFromDay(calendarDay(copy.releaseDate));
+  const catalogCover = yearOf(candidate.coverYear);
+  const series = yearOf(candidate.seriesYear);
+  const store = yearOf(candidate.releaseYear);
+  if (cover != null) parts.push(`shelf cover ${cover}`);
+  if (release != null) parts.push(`shelf release ${release}`);
+  if (catalogCover != null) parts.push(`catalog cover ${catalogCover}`);
+  if (series != null) parts.push(`catalog series ${series}`);
+  if (store != null && store !== catalogCover) parts.push(`catalog store ${store}`);
+  return parts.join(", ");
 }
 
 function variantOverlap(copy: EditionCopy, candidate: MatchCandidate): boolean {
@@ -499,13 +532,20 @@ function yearFromDay(day: string | null): number | null {
   return yearOf(Number(day.slice(0, 4)));
 }
 
-function sameIssueNumber(left: string, right: string): boolean {
-  const a = left.trim().toLowerCase();
-  const b = right.trim().toLowerCase();
+/** "1", "01", and "1A" are the same issue. The letter is the CLZ variant suffix. */
+export function sameIssueNumber(left: string, right: string): boolean {
+  const a = issueNumberKey(left);
+  const b = issueNumberKey(right);
   if (!a || !b) return false;
-  if (a === b) return true;
-  if (!/^\d+(?:\.0+)?$/.test(a) || !/^\d+(?:\.0+)?$/.test(b)) return false;
-  return Number(a) === Number(b);
+  return a === b;
+}
+
+function issueNumberKey(value: string): string {
+  const trimmed = value.trim().toLowerCase().replace(/^#\s*/, "");
+  if (!trimmed) return "";
+  const match = trimmed.match(/^(\d+)(?:\.0+)?[a-z]*$/);
+  if (!match?.[1]) return trimmed;
+  return String(Number(match[1]));
 }
 
 function digitsOnly(value: string | null): string {

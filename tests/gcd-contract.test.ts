@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseGcdIssue, parseGcdSeries, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
+import { mergeShelfSeries } from "@/lib/catalog/link-issue";
 import { gcdCollectedQueries, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { seriesNamesMatch } from "@/lib/shelf-format";
 
@@ -205,6 +206,53 @@ describe("Rite of Spring query forms", () => {
       "Rite of Spring",
       "Beneath the Trees",
     ]);
+  });
+
+  it("searches the shelf series for a barcode with an empty query", async () => {
+    const asked: string[] = [];
+    const hits = await searchGcdMatches("", "70985300001100111", "barcode", null, {
+      catalog: {
+        async seriesByName(name) {
+          asked.push(name);
+          return [];
+        },
+        async issue() {
+          return null;
+        },
+        async issuesByBarcode() {
+          return [];
+        },
+      },
+      shelfSeries: "Spawn",
+    });
+    expect(hits).toEqual([]);
+    expect(asked[0]).toBe("Spawn");
+  });
+
+  it("makes no GCD request when a barcode search has no shelf series", async () => {
+    let called = false;
+    const hits = await searchGcdMatches("", "70985300001100111", "barcode", null, {
+      catalog: {
+        async seriesByName() {
+          called = true;
+          return [];
+        },
+        async issue() {
+          return null;
+        },
+        async issuesByBarcode() {
+          return [];
+        },
+      },
+    });
+    expect(hits).toEqual([]);
+    expect(called).toBe(false);
+  });
+
+  it("keeps a passed shelf series and fills a missing one from the stored comic", () => {
+    expect(mergeShelfSeries("Spawn", "Ewoks")).toBe("Spawn");
+    expect(mergeShelfSeries("  ", "The Ewoks")).toBe("The Ewoks");
+    expect(mergeShelfSeries(null, null)).toBe("");
   });
 
   it("finds 2853617 from the ISBN alone by falling back to the shelf series", async () => {

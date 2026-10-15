@@ -290,6 +290,67 @@ describe("Metron cover matching", () => {
         "barcode",
       ),
     ).toMatchObject({ status: "matched", issue: { id: "a" } });
+
+    expect(
+      chooseIssue(
+        [
+          issue({ id: "b2", seriesName: "BRZRKR", number: "2", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+          issue({ id: "b6", seriesName: "BRZRKR", number: "6", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+        ],
+        query({ series: "BRZRKR", issueNo: "2A", issue: "2A", coverYear: 2021, publisher: "Boom", barcode: "79394500001100121" }),
+        "2A",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "b2" } });
+
+    expect(
+      chooseIssue(
+        [
+          issue({ id: "b2", seriesName: "BRZRKR", number: "2", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+          issue({
+            id: "b2a",
+            seriesName: "BRZRKR",
+            number: "2",
+            coverYear: 2021,
+            publisher: "Boom",
+            upc: "793945000011",
+            upcs: ["79394500001100121"],
+            covers: [{ label: "Cover A", imageUrl: image, upc: "79394500001100121" }],
+          }),
+        ],
+        query({ series: "BRZRKR", issueNo: "2A", issue: "2A", coverYear: 2021, publisher: "Boom", barcode: "79394500001100121" }),
+        "2A",
+        "barcode",
+      ),
+    ).toMatchObject({ status: "matched", issue: { id: "b2a", imageUrl: image } });
+  });
+
+  it("matches Ewoks on the series year when the catalog store date is decades off, and logs both years when it still refuses", () => {
+    const ewoks = issue({
+      id: "ew",
+      seriesName: "The Ewoks",
+      coverYear: 1985,
+      seriesYear: 1985,
+      releaseYear: 2024,
+      publisher: "Marvel",
+    });
+    expect(
+      chooseIssue([ewoks], query({ series: "Ewoks", coverYear: 1985, releaseYear: null, publisher: "Marvel", barcode: null }), "1", "series"),
+    ).toMatchObject({ status: "matched", issue: { id: "ew" } });
+
+    const refused = chooseIssue(
+      [ewoks],
+      query({ series: "Ewoks", coverYear: null, releaseYear: 2024, publisher: "Marvel", barcode: null }),
+      "1",
+      "series",
+    );
+    expect(refused.status).toBe("unmatched");
+    if (refused.status === "unmatched") {
+      expect(refused.reason).toContain("39");
+      expect(refused.reason).toContain("shelf release 2024");
+      expect(refused.reason).toContain("catalog cover 1985");
+      expect(refused.reason).toContain("catalog series 1985");
+    }
   });
 });
 
@@ -553,12 +614,77 @@ describe("Metron rate limit", () => {
         cvId: null,
         gcdId: null,
         storeDate: null,
-        covers: [{ label: "Cover", imageUrl: image }],
+        covers: [{ label: "Cover", imageUrl: image, upc: null }],
+        upcs: [],
       }),
     ]);
     expect(urls[0]).toBe("https://metron.cloud/api/issue/?upc=07596060000100001");
     expect(waits).toContain(30_000);
     expect(calls).toBe(2);
+  });
+
+  it("reads the detail UPC when a shared-prefix list leaves it off", async () => {
+    const cover = "https://static.metron.cloud/media/issue/spawn-1.jpg";
+    const list = (id: number, number: string, coverDate: string) => ({
+      id,
+      series: { id: 8, name: "Spawn", volume: 1, year_began: 1992 },
+      number,
+      issue: `Spawn (1992) #${number}`,
+      cover_date: coverDate,
+      image: cover,
+    });
+    const urls: string[] = [];
+    const { store } = memoryStore();
+    const transport: MetronTransport = {
+      limiter: new MetronLimiter(store, () => 0, async () => undefined, () => "2026-10-15"),
+      username: "cody",
+      password: "secret",
+      baseUrl: "https://metron.cloud/api",
+      now: () => 0,
+      fetch: async (url) => {
+        const path = String(url);
+        urls.push(path);
+        if (path.includes("upc_starts_with=")) {
+          return Response.json({
+            results: [list(101, "1", "1992-05-01"), list(122, "22", "1994-08-01"), list(123, "23", "1994-09-01")],
+          });
+        }
+        if (path.endsWith("/issue/101/")) {
+          return Response.json({
+            ...list(101, "1", "1992-05-01"),
+            upc: "709853000011",
+            variants: [{ name: "Cover A", image: cover, upc: "70985300001100111" }],
+          });
+        }
+        if (path.endsWith("/issue/122/")) return Response.json({ ...list(122, "22", "1994-08-01"), upc: "70985300001102211" });
+        if (path.endsWith("/issue/123/")) return Response.json({ ...list(123, "23", "1994-09-01"), upc: "70985300001102311" });
+        return Response.json({ results: [] });
+      },
+    };
+    const decision = await resolveCover(
+      query({ series: "Spawn", issueNo: "1", coverYear: 1992, publisher: "Image", barcode: "70985300001100111" }),
+      createMetronCoverLookup(transport),
+    );
+    expect(decision).toMatchObject({ status: "matched", via: "barcode", issue: { id: "101" } });
+    expect(urls.some((url) => url.includes("/issue/?upc=70985300001100111"))).toBe(true);
+    expect(urls.some((url) => url.includes("upc_starts_with=709853000011"))).toBe(true);
+    expect(urls.some((url) => url.endsWith("/issue/101/"))).toBe(true);
+
+    const prefixOnly = await resolveCover(
+      query({ series: "BRZRKR", issueNo: "2B", issue: "2B", coverYear: 2021, publisher: "Boom", barcode: "79394500001100211" }),
+      lookup({
+        async issuesByUpc() {
+          return [];
+        },
+        async issuesByUpcPrefix() {
+          return [
+            issue({ id: "b2", seriesName: "BRZRKR", number: "2", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+            issue({ id: "b6", seriesName: "BRZRKR", number: "6", coverYear: 2021, publisher: "Boom", upc: "793945000011" }),
+          ];
+        },
+      }),
+    );
+    expect(prefixOnly).toMatchObject({ status: "matched", issue: { id: "b2" } });
   });
 
   it("reads Expected available in N seconds when Retry-After is missing", async () => {

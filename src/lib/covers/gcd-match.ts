@@ -81,11 +81,12 @@ export async function searchGcdMatches(
     const collected = await collectGcdCollectedIssues({ ...probe, shelfFormat: isCollected(format) ? format : "tp" }, isCollected(format) ? format : "tp", catalog);
     return collected.map(gcdHit);
   }
-  if (!parsed.series) return [];
+  const wanted = parsed.series || series;
+  if (!wanted.trim()) return [];
   let seriesRows: GcdSeriesRow[] = [];
-  for (const name of uniqueNames([parsed.series], catalogNameQueries(parsed.series))) {
+  for (const name of uniqueNames([wanted], catalogNameQueries(wanted))) {
     const rows = await catalog.seriesByName(name);
-    const named = rows.filter((row) => seriesNamesMatch(parsed.series, row.name));
+    const named = rows.filter((row) => seriesNamesMatch(wanted, row.name));
     if (named.length > 0) {
       seriesRows = named;
       break;

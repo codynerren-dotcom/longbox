@@ -22,6 +22,7 @@ let inflight: Promise<void> | null = null;
 let finishedForProcess = false;
 let nextAttemptAt = 0;
 let metronClosedUntil = 0;
+let gcdClosedUntil = 0;
 let resumeTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function armJobResume(waitMs: number, fire: () => void, schedule?: (ms: number, fn: () => void) => void): void {
@@ -179,20 +180,16 @@ async function closeMetron(error: MetronBudgetError): Promise<void> {
   wakeLater(pause.resumeAt);
 }
 
-async function pauseForGcd(error: GcdBudgetError): Promise<void> {
-  const pause = await recordBudgetPause("Edition re-match", error);
-  const job = readEditionJob();
-  const metronAt = metronClosedUntil > Date.now() ? metronClosedUntil : null;
-  const resumeAt = metronAt != null ? Math.min(metronAt, pause.resumeAt) : pause.resumeAt;
-  writeEditionJob({
-    state: "paused",
-    message: budgetPauseMessage("Edition re-match", pause),
-    resumeAt: new Date(resumeAt).toISOString(),
-    metronResumeAt: metronAt != null ? new Date(metronAt).toISOString() : (job?.metronResumeAt ?? null),
-    matched: job?.matched ?? 0,
-    unmatched: job?.unmatched ?? 0,
+async function noteGcdPause(error: GcdBudgetError): Promise<void> {
+  const resumeAt = error.pause.resumeAt > Date.now() ? error.pause.resumeAt : Date.now() + 30_000;
+  if (resumeAt <= gcdClosedUntil) return;
+  gcdClosedUntil = resumeAt;
+  await writeLog({
+    level: "info",
+    source: "gcd",
+    message: "GCD is paused. Metron matching continues.",
+    details: { resumeAt: new Date(resumeAt).toISOString(), budget: error.pause.budget },
   });
-  wakeLater(resumeAt);
 }
 
 export async function rematchShelfCopy(
@@ -225,22 +222,40 @@ export async function rematchShelfCopy(
   const needsCredentials = !metronReady && !metronSkipped;
 
   const linkGcd = async (): Promise<{ ok: true; message: string } | { ok: false; reason: string }> => {
-    const gcd = await resolveGcdCover(query, createGcdCatalog());
+    if (Date.now() < gcdClosedUntil) return { ok: false, reason: "GCD is paused. Metron matching continues." };
+    let gcd;
+    try {
+      gcd = await resolveGcdCover(query, createGcdCatalog());
+    } catch (error) {
+      if (error instanceof GcdBudgetError) {
+        await noteGcdPause(error);
+        return { ok: false, reason: "GCD is paused. Metron matching continues." };
+      }
+      throw error;
+    }
     if (gcd.status !== "matched") return { ok: false, reason: gcd.reason };
-    const { gcdDetails } = await import("@/lib/covers/gcd-match");
-    const issue = await createGcdCatalog().issue(gcd.issue.id);
-    const detail = issue ? gcdDetails(issue) : null;
-    await clearAutomaticLink(comicId, "Re-matching.", { keepCover: keepPrintingCover });
-    const confirmedPrinting = edition.kind === "printing" && edition.printing != null && !gcd.coverReview;
-    await applyGcdLink(comicId, gcd.issue.id, gcd.issue.seriesId, gcd.score, detail, {
-      coverReview: gcd.coverReview ?? null,
-      printing: edition.kind === "printing" ? (confirmedPrinting ? edition.printing : null) : undefined,
-    });
-    await writeCatalogYear(comicId, catalogYear(gcd.issue));
-    const review = gcd.coverReview ? ` ${needsReviewNote(gcd.coverReview)}` : "";
-    const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.${review}`;
-    await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score } });
-    return { ok: true, message };
+    try {
+      const { gcdDetails } = await import("@/lib/covers/gcd-match");
+      const issue = await createGcdCatalog().issue(gcd.issue.id);
+      const detail = issue ? gcdDetails(issue) : null;
+      await clearAutomaticLink(comicId, "Re-matching.", { keepCover: keepPrintingCover });
+      const confirmedPrinting = edition.kind === "printing" && edition.printing != null && !gcd.coverReview;
+      await applyGcdLink(comicId, gcd.issue.id, gcd.issue.seriesId, gcd.score, detail, {
+        coverReview: gcd.coverReview ?? null,
+        printing: edition.kind === "printing" ? (confirmedPrinting ? edition.printing : null) : undefined,
+      });
+      await writeCatalogYear(comicId, catalogYear(gcd.issue));
+      const review = gcd.coverReview ? ` ${needsReviewNote(gcd.coverReview)}` : "";
+      const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.${review}`;
+      await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score } });
+      return { ok: true, message };
+    } catch (error) {
+      if (error instanceof GcdBudgetError) {
+        await noteGcdPause(error);
+        return { ok: false, reason: "GCD is paused. Metron matching continues." };
+      }
+      throw error;
+    }
   };
 
   const finish = async (matchedMessage: string | null): Promise<{ ok: boolean; message: string; outcome: RematchOutcome }> => {
@@ -324,8 +339,9 @@ export async function rematchShelfCopy(
     }
   } catch (error) {
     if (error instanceof GcdBudgetError) {
-      await pauseForGcd(error);
-      throw error;
+      await noteGcdPause(error);
+      reason = "GCD is paused. Metron matching continues.";
+      return finish(null);
     }
     throw error;
   }
@@ -397,7 +413,9 @@ export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message:
         continue;
       }
       if (error instanceof GcdBudgetError) {
-        return { ok: false, message: `${error.message} Re-matched ${matched} before stopping.` };
+        await noteGcdPause(error);
+        unmatched += 1;
+        continue;
       }
       unmatched += 1;
     }
@@ -456,7 +474,10 @@ async function runStoredFacsimileRematch(): Promise<boolean> {
           await closeMetron(error);
           return "deferred";
         }
-        if (error instanceof GcdBudgetError) return "stopped";
+        if (error instanceof GcdBudgetError) {
+          await noteGcdPause(error);
+          return "unmatched";
+        }
         await writeLog({
           level: "warn",
           source: "covers/backfill",

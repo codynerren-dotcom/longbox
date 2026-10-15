@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-plan";
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
-import { manualLinkJson, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
+import { manualLinkJson, matchQuery, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
 import { linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
@@ -84,6 +84,10 @@ function storedLink(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNul
   return manualLinkJson(value) ?? Prisma.DbNull;
 }
 
+export function mergeShelfSeries(given: string | null | undefined, stored: string | null | undefined): string {
+  return given?.trim() || stored?.trim() || "";
+}
+
 export async function searchIssueCatalog(args: {
   source: CatalogSource;
   query: string;
@@ -92,19 +96,26 @@ export async function searchIssueCatalog(args: {
   shelfFormat?: string | null;
   shelfSeries?: string | null;
   facsimile?: boolean;
+  comicId?: string | null;
 }): Promise<MatchSearchResult> {
   const needle = args.mode === "barcode" ? args.barcode.trim() : args.query.trim();
   if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue." };
+  const stored = await storedShelf(args);
+  const shelfSeries = mergeShelfSeries(args.shelfSeries, stored?.series);
+  const query =
+    args.mode === "barcode" && !args.query.trim() && shelfSeries
+      ? matchQuery({ series: shelfSeries, issueNo: stored?.issueNo, year: null })
+      : args.query;
   try {
     const hits =
       args.source === "metron"
-        ? await searchMetron(args)
+        ? await searchMetron({ ...args, query })
         : args.source === "gcd"
-          ? await searchGcdMatches(args.query, args.barcode, args.mode, args.shelfFormat, {
+          ? await searchGcdMatches(query, args.barcode, args.mode, args.shelfFormat ?? stored?.shelfFormat, {
               facsimile: args.facsimile,
-              shelfSeries: args.shelfSeries,
+              shelfSeries,
             })
-          : await searchComicVine(args);
+          : await searchComicVine({ ...args, query });
     if ("ok" in hits) return hits;
     await writeLog({
       level: "info",
@@ -118,6 +129,25 @@ export async function searchIssueCatalog(args: {
     await writeLog({ level: "warn", source: logSource(args.source), message, details: { mode: args.mode } });
     return { ok: false, message };
   }
+}
+
+async function storedShelf(args: {
+  comicId?: string | null;
+  shelfSeries?: string | null;
+  query: string;
+  mode: "query" | "barcode";
+}): Promise<{ series: string; issueNo: string | null; shelfFormat: string | null } | null> {
+  const id = args.comicId?.trim() ?? "";
+  if (!id) return null;
+  const needsSeries = !args.shelfSeries?.trim();
+  const needsIssue = args.mode === "barcode" && !args.query.trim();
+  if (!needsSeries && !needsIssue) return null;
+  const comic = await prisma.comic.findUnique({
+    where: { id },
+    select: { series: true, issueNo: true, issue: true, shelfFormat: true },
+  });
+  if (!comic) return null;
+  return { series: comic.series, issueNo: comic.issueNo || comic.issue, shelfFormat: comic.shelfFormat };
 }
 
 async function searchMetron(args: {

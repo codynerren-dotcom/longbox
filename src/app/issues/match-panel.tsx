@@ -153,6 +153,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
         shelfFormat: props.shelfFormat ?? null,
         shelfSeries: props.shelfSeries ?? null,
         facsimile: props.facsimile,
+        comicId: props.comicId,
       });
       if (!result.ok) {
         setHits([]);
@@ -171,6 +172,7 @@ function MatchSheet(props: Props & { onClose: () => void; onLinked: (message: st
           shelfFormat: props.shelfFormat ?? null,
           shelfSeries: props.shelfSeries ?? null,
           facsimile: props.facsimile,
+          comicId: props.comicId,
         });
         if (!gcd.ok) {
           setError(gcd.message);

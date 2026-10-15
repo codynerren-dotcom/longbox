@@ -61,7 +61,7 @@ export async function backfillCovers(args: {
     stoppedReason: null,
   };
 
-  let gcdOpen = Boolean(args.gcd && args.markGcd);
+  let gcdClosedUntil = 0;
   let lastGcdReason = "";
 
   function heldPrintingCover(comic: CoverRecord, metronIssueId: string, note: string | null) {
@@ -70,32 +70,44 @@ export async function backfillCovers(args: {
   }
 
   async function stopForBudget(error: unknown): Promise<boolean> {
-    if (!(error instanceof MetronBudgetError || error instanceof GcdBudgetError)) return false;
+    if (!(error instanceof MetronBudgetError)) return false;
     const pause = await recordBudgetPause("Cover backfill", error);
     summary.stoppedReason = budgetPauseMessage("Cover backfill", pause);
     args.onProgress?.(summary);
     return true;
   }
 
+  function holdGcd(resumeAt: number): void {
+    gcdClosedUntil = resumeAt > Date.now() ? resumeAt : Number.POSITIVE_INFINITY;
+    args.log?.("GCD is paused. Metron matching continues.");
+  }
+
   async function acceptGcd(comic: CoverRecord, issueNo: string): Promise<"matched" | "miss" | "budget" | "closed"> {
-    if (!gcdOpen || !args.markGcd) return "closed";
-    const gcdDecision = await tryGcd(gcdOpen, args.gcd, comic);
-    if (gcdDecision === "budget") {
-      gcdOpen = false;
-      args.log?.("GCD rate limit reached. Later copies will stay unmatched.");
+    if (!args.markGcd || Date.now() < gcdClosedUntil) return "closed";
+    const gcdDecision = await tryGcd(args.gcd, comic);
+    if (gcdDecision && "budget" in gcdDecision) {
+      holdGcd(gcdDecision.resumeAt);
       return "budget";
     }
     if (gcdDecision && gcdDecision.status === "unmatched") lastGcdReason = gcdDecision.reason;
     if (gcdDecision && gcdDecision.status === "matched") {
       const printingEdition = detectEdition(comic);
       const confirmedPrinting = printingEdition.kind === "printing" && printingEdition.printing != null && !gcdDecision.coverReview;
-      await args.markGcd(comic.id, {
-        gcdIssueId: gcdDecision.issue.id,
-        gcdSeriesId: gcdDecision.issue.seriesId,
-        score: gcdDecision.score,
-        coverReview: gcdDecision.coverReview ?? null,
-        printing: printingEdition.kind === "printing" ? (confirmedPrinting ? printingEdition.printing : null) : undefined,
-      });
+      try {
+        await args.markGcd(comic.id, {
+          gcdIssueId: gcdDecision.issue.id,
+          gcdSeriesId: gcdDecision.issue.seriesId,
+          score: gcdDecision.score,
+          coverReview: gcdDecision.coverReview ?? null,
+          printing: printingEdition.kind === "printing" ? (confirmedPrinting ? printingEdition.printing : null) : undefined,
+        });
+      } catch (error) {
+        if (error instanceof GcdBudgetError) {
+          holdGcd(error.pause.resumeAt);
+          return "budget";
+        }
+        throw error;
+      }
       summary.matched += 1;
       args.log?.(`${comic.series} #${issueNo} matched GCD ${gcdDecision.issue.id}, score ${gcdDecision.score}. Cover stays on GCD.`);
       return "matched";
@@ -387,6 +399,10 @@ export async function backfillCovers(args: {
       }
       args.onProgress?.(summary);
     } catch (error) {
+      if (error instanceof GcdBudgetError) {
+        holdGcd(error.pause.resumeAt);
+        continue;
+      }
       if (await stopForBudget(error)) break;
       summary.stoppedReason = error instanceof Error ? error.message : "Cover backfill stopped.";
       args.log?.(summary.stoppedReason);
@@ -399,15 +415,14 @@ export async function backfillCovers(args: {
 }
 
 async function tryGcd(
-  open: boolean,
   gcd: ((comic: CoverRecord) => Promise<CoverDecision>) | undefined,
   comic: CoverRecord,
-): Promise<CoverDecision | "budget" | null> {
-  if (!open || !gcd) return null;
+): Promise<CoverDecision | { budget: true; resumeAt: number } | null> {
+  if (!gcd) return null;
   try {
     return await gcd(comic);
   } catch (error) {
-    if (error instanceof GcdBudgetError) return "budget";
+    if (error instanceof GcdBudgetError) return { budget: true, resumeAt: error.pause.resumeAt };
     return { status: "unmatched", reason: error instanceof Error ? error.message : "GCD lookup failed.", score: 0 };
   }
 }

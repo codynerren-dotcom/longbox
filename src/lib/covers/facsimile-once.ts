@@ -2,8 +2,9 @@ export type RematchOutcome = "matched" | "unmatched" | "skipped" | "stopped" | "
 
 /**
  * Walk linked copies once. A Metron budget does not stop the pass: the current copy is retried
- * on GCD when that lookup has not run yet, and later copies stay on GCD. A GCD budget still stops.
- * Deferred copies are left for the resume timer, so the pass is not marked done.
+ * on GCD when that lookup has not run yet, and later copies stay on GCD. A GCD budget skips GCD
+ * for a short window and leaves Metron running. Deferred copies are left for the resume timer,
+ * so the pass is not marked done.
  */
 export async function runFacsimilePass(deps: {
   already: () => Promise<boolean>;

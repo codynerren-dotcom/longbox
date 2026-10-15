@@ -98,6 +98,8 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
   const series = record(row.series);
   const seriesName = text(series?.name) ?? text(series?.series) ?? (typeof row.series === "string" ? text(row.series) : null);
   const variant = text(row.variant) ?? text(record(row.variant)?.name);
+  const covers = coversWithUpc(row);
+  const upcs = uniqueCodes([text(row.upc), ...covers.map((cover) => cover.upc)]);
   return {
     id: String(row.id),
     seriesId: series?.id != null ? String(series.id) : null,
@@ -109,13 +111,40 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     releaseYear: coverYearOf(text(row.store_date)),
     seriesYear: whole(series?.year_began),
     upc: text(row.upc),
+    upcs,
     publisher: text(record(series?.publisher)?.name) ?? (typeof series?.publisher === "string" ? text(series.publisher) : null),
     variant,
     cvId: externalDigits(row.cv_id),
     gcdId: externalDigits(row.gcd_id),
     storeDate: isoDay(text(row.store_date)),
-    covers: variantCoversFrom(row),
+    covers,
   };
+}
+
+function uniqueCodes(values: Array<string | null | undefined>): string[] {
+  const codes: string[] = [];
+  for (const value of values) {
+    const code = value?.trim();
+    if (!code || codes.includes(code)) continue;
+    codes.push(code);
+  }
+  return codes;
+}
+
+/** List results omit `upc`. Detail results put the add-on on the issue or on a variant cover. */
+function coversWithUpc(row: Record<string, unknown>): Array<{ label: string; imageUrl: string; upc: string | null }> {
+  const byImage = new Map<string, string>();
+  for (const list of [row.variants, row.variant_covers, row.alt_covers, row.associated_images]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      const entry = record(item);
+      if (!entry) continue;
+      const image = httpsUrl(text(entry.image) ?? text(entry.cover));
+      const upc = text(entry.upc);
+      if (image && upc) byImage.set(image, upc);
+    }
+  }
+  return variantCoversFrom(row).map((cover) => ({ ...cover, upc: byImage.get(cover.imageUrl) ?? null }));
 }
 
 function isoDay(value: string | null): string | null {
@@ -216,15 +245,49 @@ async function collect(transport: MetronTransport, path: string, map: (value: un
   return hits;
 }
 
+const BARCODE_DETAIL_CAP = 8;
+
+/** The list endpoint has no `upc`. Shared-prefix hits need the detail record before a tie-break. */
+async function hydrateBarcodeHits(transport: MetronTransport, hits: MetronIssueHit[]): Promise<MetronIssueHit[]> {
+  if (hits.length < 2) return hits;
+  const needsDetail = hits.some((hit) => !hit.upc && !(hit.upcs && hit.upcs.length > 0));
+  if (!needsDetail) return hits;
+  const detailed: MetronIssueHit[] = [];
+  let fetched = 0;
+  for (const hit of hits) {
+    if (hit.upc || (hit.upcs && hit.upcs.length > 0) || fetched >= BARCODE_DETAIL_CAP) {
+      detailed.push(hit);
+      continue;
+    }
+    fetched += 1;
+    const body = await fetchMetronIssueBody(transport, hit.id);
+    const mapped = body ? mapIssue(body) : null;
+    if (!mapped) {
+      detailed.push(hit);
+      continue;
+    }
+    detailed.push({
+      ...hit,
+      ...mapped,
+      imageUrl: mapped.imageUrl || hit.imageUrl,
+      coverYear: mapped.coverYear ?? hit.coverYear,
+      seriesYear: mapped.seriesYear ?? hit.seriesYear,
+      publisher: mapped.publisher ?? hit.publisher,
+      number: mapped.number || hit.number,
+    });
+  }
+  return detailed;
+}
+
 export function createMetronCoverLookup(transport: MetronTransport): CoverLookup {
   return {
     async issuesByUpc(upc) {
       const hits = await collect(transport, `/issue/?upc=${encodeURIComponent(upc)}`, mapIssue);
-      return hits as MetronIssueHit[];
+      return hydrateBarcodeHits(transport, hits as MetronIssueHit[]);
     },
     async issuesByUpcPrefix(upc) {
       const hits = await collect(transport, `/issue/?upc_starts_with=${encodeURIComponent(upc)}`, mapIssue);
-      return hits as MetronIssueHit[];
+      return hydrateBarcodeHits(transport, hits as MetronIssueHit[]);
     },
     async searchSeries(name, query?: MetronSeriesQuery) {
       const params = new URLSearchParams({ name });

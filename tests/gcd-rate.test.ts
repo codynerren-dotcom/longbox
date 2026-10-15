@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GcdBudgetError, createGcdCatalog, gcdRatePauseMessage, gcdRetryDelay, resetGcdBudget } from "@/lib/catalog/gcd";
+import { GcdBudgetError, createGcdCatalog, gcdHourlyHold, gcdRatePauseMessage, gcdRetryDelay, resetGcdBudget, seedGcdRequests } from "@/lib/catalog/gcd";
 import * as logWrite from "@/lib/log/write";
 
 describe("GCD 429 backoff", () => {
@@ -23,10 +23,51 @@ describe("GCD 429 backoff", () => {
     expect(gcdRatePauseMessage(600_000, 0)).toContain("Pausing for 10m");
   });
 
-  it("keeps a Retry-After or an expected-available hint ahead of the fallback", () => {
+  it("keeps a short Retry-After ahead of the fallback and caps a long one", () => {
     resetGcdBudget();
     expect(gcdRetryDelay(15_000)).toBe(15_000);
     expect(gcdRetryDelay(null)).toBe(30_000);
+    resetGcdBudget();
+    expect(gcdRetryDelay(3_258_000)).toBe(30_000);
+    expect(gcdRetryDelay(3_258_000)).toBe(60_000);
+  });
+
+  it("logs 30s when Retry-After asks for most of an hour", async () => {
+    resetGcdBudget();
+    const logs: string[] = [];
+    vi.spyOn(logWrite, "writeLog").mockImplementation(async (input) => {
+      logs.push(input.message);
+    });
+    const catalog = createGcdCatalog(
+      async () => new Response("slow down", { status: 429, headers: { "retry-after": "3258", "content-type": "text/plain" } }),
+    );
+    const started = Date.now();
+    let pauseAt = 0;
+    try {
+      await catalog.seriesByName("Spawn");
+    } catch (error) {
+      pauseAt = error instanceof GcdBudgetError ? error.pause.resumeAt : 0;
+    }
+    expect(pauseAt - started).toBeGreaterThanOrEqual(29_000);
+    expect(pauseAt - started).toBeLessThan(35_000);
+    expect(logs.some((line) => line.includes("Pausing for 30s"))).toBe(true);
+    expect(logs.some((line) => line.includes("3258"))).toBe(false);
+  });
+
+  it("opens the next hourly slot when the oldest request ages out, and never waits more than 10 minutes", () => {
+    const now = 1_700_000_000_000;
+    resetGcdBudget(now);
+    seedGcdRequests(Array.from({ length: 30 }, () => now - 55 * 60 * 1000));
+    const soon = gcdHourlyHold(now);
+    expect(soon).not.toBeNull();
+    expect((soon ?? 0) - now).toBeGreaterThan(4 * 60 * 1000);
+    expect((soon ?? 0) - now).toBeLessThanOrEqual(5 * 60 * 1000 + 1000);
+
+    resetGcdBudget(now);
+    seedGcdRequests(Array.from({ length: 30 }, () => now - 60_000));
+    const capped = gcdHourlyHold(now);
+    expect(capped).not.toBeNull();
+    expect((capped ?? 0) - now).toBe(10 * 60 * 1000);
   });
 
   it("logs a 30s pause when comics.org returns 429 with no Retry-After", async () => {

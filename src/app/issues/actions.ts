@@ -89,6 +89,7 @@ export async function searchMatchesAction(args: {
   shelfFormat?: string | null;
   shelfSeries?: string | null;
   facsimile?: boolean;
+  comicId?: string | null;
 }): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
   return searchIssueCatalog(args);
 }

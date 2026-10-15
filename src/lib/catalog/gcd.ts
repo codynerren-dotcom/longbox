@@ -111,12 +111,13 @@ export type GcdCatalog = {
 
 const MIN_GAP_MS = 2_000;
 const HOURLY_CAP = 30;
+const GCD_HOUR_MS = 60 * 60 * 1000;
 const GCD_DEFAULT_TIMEOUT_MS = 8_000;
 const GCD_BACKOFF_MS = [30_000, 60_000, 120_000, 300_000] as const;
 const GCD_BACKOFF_CAP_MS = 10 * 60 * 1000;
 let nextGcdAt = 0;
-let gcdWindowStarted = 0;
-let gcdWindowCount = 0;
+/** Request times inside the sliding hour. A burst does not freeze the whole window. */
+let gcdHits: number[] = [];
 let gcdRateStrikes = 0;
 
 export class GcdBudgetError extends Error {
@@ -135,9 +136,13 @@ export class GcdBudgetError extends Error {
 
 export function resetGcdBudget(now = Date.now()): void {
   nextGcdAt = now;
-  gcdWindowStarted = now;
-  gcdWindowCount = 0;
+  gcdHits = [];
   gcdRateStrikes = 0;
+}
+
+/** Test hook. The sliding hour counts these timestamps as requests already made. */
+export function seedGcdRequests(times: number[]): void {
+  gcdHits = times.slice().sort((a, b) => a - b);
 }
 
 /** Fallback wait after a 429 with no Retry-After: 30s, 1m, 2m, 5m, then 10m. */
@@ -147,11 +152,11 @@ export function gcdBackoffMs(priorPauses: number): number {
 }
 
 /**
- * Delay for one HTTP 429. A Retry-After header or an "expected available" body wins.
- * Otherwise the wait climbs and stays at 10 minutes.
+ * Delay for one HTTP 429. A Retry-After or "expected available" hint is used only
+ * when it is within 10 minutes. A longer hint, or no hint, climbs 30s, 1m, 2m, 5m, then 10m.
  */
 export function gcdRetryDelay(explicitMs: number | null): number {
-  if (explicitMs != null) return explicitMs;
+  if (explicitMs != null && explicitMs <= GCD_BACKOFF_CAP_MS) return explicitMs;
   const delay = gcdBackoffMs(gcdRateStrikes);
   gcdRateStrikes += 1;
   return delay;
@@ -179,26 +184,36 @@ async function pauseForRateLimit(response: Response, now = Date.now()): Promise<
   });
   throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
     budget: "GCD rate limit",
-    count: gcdWindowCount,
+    count: gcdHits.length,
     resumeAt,
   });
 }
 
-async function gcdPause(now = Date.now()): Promise<void> {
-  if (now - gcdWindowStarted >= 60 * 60 * 1000) {
-    gcdWindowStarted = now;
-    gcdWindowCount = 0;
+/**
+ * Reserve one request in the sliding hour. Returns the capped resume time when the hour is full.
+ * The wait is when the oldest request ages out, and never longer than 10 minutes.
+ */
+export function gcdHourlyHold(now: number): number | null {
+  gcdHits = gcdHits.filter((time) => now - time < GCD_HOUR_MS);
+  if (gcdHits.length < HOURLY_CAP) {
+    gcdHits.push(now);
+    return null;
   }
-  if (gcdWindowCount >= HOURLY_CAP) {
+  const oldest = gcdHits[0] ?? now;
+  return Math.min(oldest + GCD_HOUR_MS, now + GCD_BACKOFF_CAP_MS);
+}
+
+async function gcdPause(now = Date.now()): Promise<void> {
+  const resumeAt = gcdHourlyHold(now);
+  if (resumeAt != null) {
     throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
       budget: "GCD hourly",
-      count: gcdWindowCount,
-      resumeAt: gcdWindowStarted + 60 * 60 * 1000,
+      count: gcdHits.length,
+      resumeAt,
     });
   }
   const wait = Math.max(0, nextGcdAt - now);
   nextGcdAt = Math.max(nextGcdAt, now) + MIN_GAP_MS;
-  gcdWindowCount += 1;
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 }
 

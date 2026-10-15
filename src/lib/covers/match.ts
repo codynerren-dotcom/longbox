@@ -5,6 +5,7 @@ import {
   printingArtistHint,
   printingOrdinal,
   printingNumberFromText,
+  sameIssueNumber,
   scoreCandidate,
   stripIssueVariant,
   type EditionProfile,
@@ -34,15 +35,6 @@ export function coverYearOf(value: string | null | undefined): number | null {
   if (!match) return null;
   const year = Number.parseInt(match[0], 10);
   return Number.isFinite(year) ? year : null;
-}
-
-export function sameIssueNumber(left: string, right: string): boolean {
-  const a = left.trim().toLowerCase();
-  const b = right.trim().toLowerCase();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  if (!/^\d+(?:\.0+)?$/.test(a) || !/^\d+(?:\.0+)?$/.test(b)) return false;
-  return Number(a) === Number(b);
 }
 
 function normName(value: string): string {
@@ -167,12 +159,27 @@ function sameUpc(barcode: string | null | undefined, upc: string | null | undefi
   return left.length >= 12 && left === right;
 }
 
-/** The copy's UPC plus its 5-digit add-on. A 12-digit prefix does not count. */
-function carriesFullBarcode(barcode: string | null | undefined, upc: string | null | undefined): boolean {
+function hitBarcodes(hit: MetronIssueHit): string[] {
+  const codes = [hit.upc, ...(hit.upcs ?? []), ...(hit.covers ?? []).map((cover) => cover.upc)];
+  return codes.filter((code): code is string => Boolean(code && code.trim()));
+}
+
+/** The copy's UPC plus its 5-digit add-on, on the issue or on one of its variant covers. A 12-digit prefix does not count. */
+function carriesFullBarcode(barcode: string | null | undefined, hit: MetronIssueHit): boolean {
   const parsed = barcode ? parseComicBarcode(barcode) : null;
   if (!parsed?.addon || parsed.addon.length !== 5) return false;
-  const digits = digitsOf(upc);
-  return digits.length >= parsed.combined.length && digits.startsWith(parsed.combined);
+  return hitBarcodes(hit).some((upc) => {
+    const digits = digitsOf(upc);
+    return digits.length >= parsed.combined.length && digits.startsWith(parsed.combined);
+  });
+}
+
+function coverForFullBarcode(barcode: string | null | undefined, hit: MetronIssueHit): MetronIssueHit {
+  const parsed = barcode ? parseComicBarcode(barcode) : null;
+  if (!parsed?.addon) return hit;
+  const cover = (hit.covers ?? []).find((item) => item.upc && digitsOf(item.upc).startsWith(parsed.combined));
+  if (!cover?.imageUrl) return hit;
+  return { ...hit, imageUrl: cover.imageUrl, variant: hit.variant ?? cover.label, label: cover.label };
 }
 
 /** Both codes are long enough to compare, and neither is the other plus an add-on. */
@@ -292,20 +299,23 @@ export function chooseIssue(
   }
 
   if (via === "barcode" && hits.length > 1) {
-    const full = hits.filter((hit) => carriesFullBarcode(comic.barcode, hit.upc));
+    const full = hits.filter((hit) => carriesFullBarcode(comic.barcode, hit));
     if (full.length === 1 && full[0]?.imageUrl) {
-      const scored = scoreCandidate({ ...comic, issueNo: full[0].number || issueNo }, candidateFrom(full[0]));
+      const chosen = coverForFullBarcode(comic.barcode, full[0]);
+      const scored = scoreCandidate({ ...comic, issueNo: chosen.number || issueNo }, candidateFrom(chosen));
       if (!scored.blocked) {
-        return { status: "matched", via, issue: full[0], score: scored.score };
+        return { status: "matched", via, issue: chosen, score: scored.score };
       }
     }
     if (issueNo) {
       const numbered = hits.filter((hit) => sameIssueNumber(hit.number, issueNo));
       if (numbered.length === 1 && numbered[0]?.imageUrl) {
-        const scored = scoreCandidate({ ...comic, issueNo }, candidateFrom(numbered[0]));
+        const scored = scoreCandidate({ ...comic, issueNo: numbered[0].number || issueNo }, candidateFrom(numbered[0]));
         if (!scored.blocked) {
           return { status: "matched", via, issue: numbered[0], score: scored.score };
         }
+        const why = scored.blocked ?? `score ${scored.score} is below the match line`;
+        return { status: "unmatched", reason: `${name}: ${why}.`, score: scored.score };
       }
     }
   }
@@ -588,7 +598,6 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
   const editionNames = (edition.searchNames.length > 0 ? edition.searchNames : [comic.series]).map((entry) => parseShelfSeries(entry).name);
   const names = uniqueSearchNames(editionNames, catalogNameQueries(parsed.name || comic.series));
   let best: CoverDecision = { status: "unmatched", reason: `No Metron series named ${comic.series}.`, score: 0 };
-  let sawSeries = false;
 
   const consider = async (name: string): Promise<CoverDecision | null> => {
     const query = seriesFilters && !/\b(?:facsimile|reprint|omnibus|anniversary|believers)\b/i.test(name) ? seriesFilters : undefined;
@@ -598,7 +607,6 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
     let candidates = narrowSeries(found, { ...comic, series: name, coverYear: year }, hints);
     if (candidates.length === 0 && edition.reprint) candidates = narrowSeries(found, { ...comic, series: name, coverYear: null }, hints);
     if (candidates.length === 0) return null;
-    sawSeries = true;
     if (candidates.length > 4) {
       best = { status: "unmatched", reason: `Several Metron series named ${name}.`, score: best.score };
       return null;
@@ -631,9 +639,10 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
     const decision = await consider(name);
     if (decision) return decision;
   }
-  // "Ewoks" does not prefix-match a catalog title "The Ewoks".
-  if (!sawSeries && parsed.name && !/\s/.test(parsed.name)) {
-    const decision = await consider(`The ${parsed.name}`);
+  // A one-word name does not prefix-match "The Ewoks", and a longer title that fails the year check must not hide it.
+  const titled = parsed.name && !/\s/.test(parsed.name) ? `The ${parsed.name}` : "";
+  if (titled && !names.some((name) => name.toLowerCase() === titled.toLowerCase())) {
+    const decision = await consider(titled);
     if (decision) return decision;
   }
   return best;
