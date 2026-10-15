@@ -5,8 +5,9 @@ import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "no
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
-import { normalizeMetronBudget } from "@/lib/catalog/rate-limit";
-import { emptyBudget, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
+import { noteCoverPause, reserveCoverDownload } from "@/lib/catalog/rate-gate";
+import { normalizeMetronBudget, pauseLabel } from "@/lib/catalog/rate-limit";
+import { emptyBudget, retryAfterFromMessage, retryAfterMs, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
 const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
 const CATALOG_FILE = "(?:metron|cv)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
@@ -201,6 +202,7 @@ export async function downloadCover(
   if (parsed.protocol === "http:") parsed.protocol = "https:";
   if (parsed.protocol !== "https:") throw new Error("Cover image URL is not https.");
 
+  await reserveCoverDownload();
   const started = Date.now();
   let response: Response;
   try {
@@ -216,6 +218,13 @@ export async function downloadCover(
     throw error;
   }
   await recordFetch({ source: "covers/backfill", url: parsed.toString(), startedAt: started, status: response.status });
+  if (response.status === 429 || response.status === 420) {
+    const body = await response.text().catch(() => "");
+    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60_000;
+    const resumeAt = Date.now() + delay;
+    await noteCoverPause(resumeAt);
+    throw new Error(pauseLabel("Cover download", resumeAt));
+  }
   if (!response.ok) throw new Error(`Cover image returned ${response.status}.`);
   const ext = extensionFor(response.headers.get("content-type") ?? "", parsed.toString());
   if (!ext) throw new Error("Cover image is not a jpeg, png, webp, or gif.");

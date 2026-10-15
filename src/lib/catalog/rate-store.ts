@@ -6,14 +6,17 @@ import {
   emptyComicVineRate,
   emptyGcdRate,
   emptyMetronBudget,
+  emptyPace,
   gcdUsage,
   metronUsage,
   normalizeMetronBudget,
+  normalizePace,
   type ComicVineRateState,
   type GcdRateState,
   type JobCursor,
   type JobName,
   type MetronBudget,
+  type PaceWindow,
   type UsageWindow,
 } from "@/lib/catalog/rate-limit";
 
@@ -23,6 +26,7 @@ type MemoryShape = {
   comicvine: ComicVineRateState;
   circuit: { failures: number; openUntil: number; pauseMs: number } | null;
   jobs: Partial<Record<JobName, JobCursor>>;
+  paces: Record<string, PaceWindow>;
 };
 
 const memory: MemoryShape = {
@@ -31,6 +35,7 @@ const memory: MemoryShape = {
   comicvine: emptyComicVineRate(),
   circuit: null,
   jobs: {},
+  paces: {},
 };
 
 let hydrated = process.env.VITEST === "true";
@@ -44,6 +49,7 @@ function remember(key: string, payload: unknown): void {
     memory.circuit = normalizeCircuit(payload);
     if (memory.circuit) hydrateMetronCircuit(memory.circuit);
   }
+  else if (key.startsWith("pace:")) memory.paces[key.slice("pace:".length)] = normalizePace(payload);
   else if (key === "job:backfill" || key === "job:enrich") {
     const job = key === "job:backfill" ? "backfill" : "enrich";
     const cursor = normalizeJob(payload, job);
@@ -111,6 +117,14 @@ export function readCircuitWindow(): { failures: number; openUntil: number; paus
 
 export async function saveCircuitWindow(state: { failures: number; openUntil: number; pauseMs: number }): Promise<void> {
   await writeWindow("metron-circuit", state);
+}
+
+export function readPaceWindow(name: string): PaceWindow {
+  return { ...(memory.paces[name] ?? emptyPace()) };
+}
+
+export async function savePaceWindow(name: string, state: PaceWindow): Promise<void> {
+  await writeWindow(`pace:${name}`, state);
 }
 
 export function readJobWindow(job: JobName): JobCursor | null {

@@ -1,5 +1,6 @@
-import { GcdBudgetError, reserveGcdRequest } from "@/lib/catalog/gcd";
+import { GcdBudgetError, rememberGcdPause, reserveGcdRequest } from "@/lib/catalog/gcd";
 import { pauseComicVineUntil, reserveComicVineRequest } from "@/lib/catalog/match-search";
+import { noteEbayPause, reserveEbayRequest } from "@/lib/catalog/rate-gate";
 import { pauseLabel } from "@/lib/catalog/rate-limit";
 import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { assertMetronCircuit, isMetronTransportFailure, recordMetronTransportFailure, recordMetronTransportSuccess } from "@/lib/covers/metron-circuit";
@@ -120,7 +121,13 @@ export async function probeGcd(config: IntegrationConfig, fetchImpl: typeof fetc
       headers,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (response.status === 429) return { ok: false, message: pauseLabel("GCD", Date.now() + 60_000) };
+    if (response.status === 429) {
+      const body = await response.text().catch(() => "");
+      const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60_000;
+      const resumeAt = Date.now() + delay;
+      await rememberGcdPause(resumeAt);
+      return { ok: false, message: pauseLabel("GCD", resumeAt) };
+    }
     if (response.status === 401 || response.status === 403) return { ok: false, message: "GCD rejected the username or password." };
     if (!response.ok) return { ok: false, message: `GCD returned ${response.status}.` };
     return { ok: true, message: authed ? "GCD accepted the username and password." : "GCD answered." };
@@ -133,6 +140,11 @@ export async function probeEbay(config: IntegrationConfig, fetchImpl: typeof fet
   if (!config.ebay.clientId || !config.ebay.clientSecret) return { ok: false, message: "eBay client id and secret are not set." };
   const header = `Basic ${Buffer.from(`${config.ebay.clientId}:${config.ebay.clientSecret}`).toString("base64")}`;
   try {
+    await reserveEbayRequest();
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "eBay is paused." };
+  }
+  try {
     const response = await loggedFetch(fetchImpl, "ebay/pricing", "https://api.ebay.com/identity/v1/oauth2/token", {
       method: "POST",
       headers: {
@@ -143,6 +155,13 @@ export async function probeEbay(config: IntegrationConfig, fetchImpl: typeof fet
       body: "grant_type=client_credentials&scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    if (response.status === 429) {
+      const body = await response.text().catch(() => "");
+      const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60_000;
+      const resumeAt = Date.now() + delay;
+      await noteEbayPause(resumeAt);
+      return { ok: false, message: pauseLabel("eBay", resumeAt) };
+    }
     if (response.ok) return { ok: true, message: "eBay accepted the client id and secret." };
     if (response.status === 401 || response.status === 403) return { ok: false, message: "eBay rejected the client id or secret." };
     return { ok: false, message: `eBay returned ${response.status}.` };

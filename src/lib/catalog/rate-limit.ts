@@ -421,6 +421,53 @@ export function noteComicVinePause(state: ComicVineRateState, resumeAt: number):
   return { ...state, pausedUntil: resumeAt };
 }
 
+/**
+ * Gap for hosts whose published docs do not cover this particular request.
+ * Cover files are not the Metron API (RATELIMIT.md) and not a Comic Vine resource,
+ * so they keep their own persisted gap. eBay's token route is the same idea:
+ * the Analytics getRateLimits method is how an app reads its own Browse caps
+ * (https://developer.ebay.com/api-docs/developer/analytics/resources/rate_limit/methods/getRateLimits),
+ * and this shelf does not call that yet. Both still wait out Retry-After.
+ */
+export const COVER_MIN_GAP_MS = 1_000;
+export const EBAY_MIN_GAP_MS = 2_000;
+
+export type PaceWindow = {
+  lastSentAt: number | null;
+  pausedUntil: number | null;
+};
+
+export function emptyPace(): PaceWindow {
+  return { lastSentAt: null, pausedUntil: null };
+}
+
+export function normalizePace(value: unknown): PaceWindow {
+  const row = value && typeof value === "object" ? (value as Partial<PaceWindow>) : {};
+  return {
+    lastSentAt: typeof row.lastSentAt === "number" && row.lastSentAt > 0 ? row.lastSentAt : null,
+    pausedUntil: typeof row.pausedUntil === "number" && row.pausedUntil > 0 ? row.pausedUntil : null,
+  };
+}
+
+export function planPaceAcquire(
+  state: PaceWindow,
+  now: number,
+  minGapMs: number,
+): { kind: "send"; waitMs: number; state: PaceWindow } | { kind: "pause"; hold: RateHold; state: PaceWindow } {
+  const pausedUntil = state.pausedUntil != null && state.pausedUntil > now ? state.pausedUntil : null;
+  const next: PaceWindow = { lastSentAt: state.lastSentAt, pausedUntil };
+  if (pausedUntil != null) {
+    return { kind: "pause", state: next, hold: { resumeAt: pausedUntil, budget: "pace", count: 0 } };
+  }
+  const waitMs = next.lastSentAt == null ? 0 : Math.max(0, minGapMs - (now - next.lastSentAt));
+  next.lastSentAt = now + waitMs;
+  return { kind: "send", waitMs, state: next };
+}
+
+export function notePacePause(state: PaceWindow, resumeAt: number): PaceWindow {
+  return { ...state, pausedUntil: resumeAt };
+}
+
 export type JobName = "backfill" | "enrich";
 
 export type JobCursor = {

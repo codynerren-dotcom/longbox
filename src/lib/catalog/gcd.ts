@@ -258,6 +258,12 @@ export async function reserveGcdRequest(now = Date.now()): Promise<void> {
   await gcdPause(now);
 }
 
+/** Store a Retry-After so the next GCD call, including after a restart, waits it out. */
+export async function rememberGcdPause(resumeAt: number, now = Date.now()): Promise<void> {
+  const delay = Math.max(0, resumeAt - now);
+  await takeGcdRetry(delay > 0 ? delay : 0, now);
+}
+
 async function gcdRateMode(): Promise<GcdRateMode> {
   const creds = await gcdCredentials();
   return creds ? "authenticated" : "anonymous";
