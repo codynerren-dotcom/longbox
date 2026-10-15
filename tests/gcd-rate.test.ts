@@ -23,16 +23,16 @@ describe("GCD 429 backoff", () => {
     expect(gcdRatePauseMessage(600_000, 0)).toContain("Pausing for 10m");
   });
 
-  it("keeps a short Retry-After ahead of the fallback and caps a long one", () => {
+  it("honors a server Retry-After in full and keeps the ladder for a missing hint", () => {
     resetGcdBudget();
     expect(gcdRetryDelay(15_000)).toBe(15_000);
     expect(gcdRetryDelay(null)).toBe(30_000);
     resetGcdBudget();
-    expect(gcdRetryDelay(3_258_000)).toBe(30_000);
-    expect(gcdRetryDelay(3_258_000)).toBe(60_000);
+    expect(gcdRetryDelay(3_258_000)).toBe(3_258_000);
+    expect(gcdRetryDelay(null)).toBe(30_000);
   });
 
-  it("logs 30s when Retry-After asks for most of an hour", async () => {
+  it("logs the full Retry-After and its resume time", async () => {
     resetGcdBudget();
     const logs: string[] = [];
     vi.spyOn(logWrite, "writeLog").mockImplementation(async (input) => {
@@ -48,10 +48,26 @@ describe("GCD 429 backoff", () => {
     } catch (error) {
       pauseAt = error instanceof GcdBudgetError ? error.pause.resumeAt : 0;
     }
-    expect(pauseAt - started).toBeGreaterThanOrEqual(29_000);
-    expect(pauseAt - started).toBeLessThan(35_000);
-    expect(logs.some((line) => line.includes("Pausing for 30s"))).toBe(true);
-    expect(logs.some((line) => line.includes("3258"))).toBe(false);
+    expect(pauseAt - started).toBeGreaterThanOrEqual(3_258_000);
+    expect(pauseAt - started).toBeLessThan(3_258_000 + 2_000);
+    expect(logs.some((line) => line.includes("Pausing for 3258s"))).toBe(true);
+    expect(logs.some((line) => line.includes("Resumes at"))).toBe(true);
+  });
+
+  it("honors a long body hint when Retry-After is missing", async () => {
+    resetGcdBudget();
+    const catalog = createGcdCatalog(
+      async () => new Response("Expected available in 3258 seconds", { status: 429, headers: { "content-type": "text/plain" } }),
+    );
+    const started = Date.now();
+    let pauseAt = 0;
+    try {
+      await catalog.seriesByName("Spawn");
+    } catch (error) {
+      pauseAt = error instanceof GcdBudgetError ? error.pause.resumeAt : 0;
+    }
+    expect(pauseAt - started).toBeGreaterThanOrEqual(3_258_000);
+    expect(pauseAt - started).toBeLessThan(3_258_000 + 2_000);
   });
 
   it("opens the next hourly slot when the oldest request ages out, and never waits more than 10 minutes", () => {

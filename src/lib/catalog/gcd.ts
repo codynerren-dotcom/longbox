@@ -73,6 +73,8 @@ export type GcdSeriesRow = {
   yearEnded: number | null;
   format: string | null;
   issues: Array<{ id: string; descriptor: string }>;
+  /** From `issue_count` when the payload sends it. Absent on older rows. */
+  issueCount?: number | null;
 };
 
 export type GcdIssueRow = {
@@ -152,11 +154,11 @@ export function gcdBackoffMs(priorPauses: number): number {
 }
 
 /**
- * Delay for one HTTP 429. A Retry-After or "expected available" hint is used only
- * when it is within 10 minutes. A longer hint, or no hint, climbs 30s, 1m, 2m, 5m, then 10m.
+ * Delay for one HTTP 429. A Retry-After header or an "expected available" body hint
+ * is waited out in full. The 30s, 1m, 2m, 5m, 10m ladder is only for a 429 with no hint.
  */
 export function gcdRetryDelay(explicitMs: number | null): number {
-  if (explicitMs != null && explicitMs <= GCD_BACKOFF_CAP_MS) return explicitMs;
+  if (explicitMs != null) return explicitMs;
   const delay = gcdBackoffMs(gcdRateStrikes);
   gcdRateStrikes += 1;
   return delay;
@@ -283,6 +285,7 @@ export function parseGcdSeries(value: unknown): GcdSeriesRow | null {
     yearEnded: yearFrom(row.year_ended),
     format: text(row.publishing_format),
     issues,
+    issueCount: catalogIssueCount(row.issue_count),
   };
 }
 

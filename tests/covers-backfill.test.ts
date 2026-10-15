@@ -352,6 +352,15 @@ describe("Metron cover matching", () => {
       expect(refused.reason).toContain("catalog series 1985");
     }
   });
+
+  it("keeps a one-issue Special and skips that title when the series is longer", () => {
+    const special = series({ id: "s", name: "Doom Force Special", yearBegan: 1992, publisher: "DC", issueCount: 1 });
+    const ongoing = series({ id: "o", name: "Doom Force Special", yearBegan: 1992, publisher: "DC", issueCount: 12 });
+    const comic = query({ series: "Doom Force", publisher: "DC", coverYear: 1992, barcode: null });
+    expect(narrowSeries([special], comic).map((hit) => hit.id)).toEqual(["s"]);
+    expect(narrowSeries([ongoing], comic)).toEqual([]);
+    expect(mapSeries({ id: 9, name: "Doom Force Special", issue_count: 1, year_began: 1992 })?.issueCount).toBe(1);
+  });
 });
 
 describe("cover backfill", () => {
@@ -755,6 +764,7 @@ describe("Metron rate limit", () => {
       yearEnd: null,
       volume: null,
       publisher: "Marvel",
+      issueCount: null,
     });
     expect(mapSeries({ id: 2, series: "Ghost Rider (1990-1998)", year_began: 1990, year_end: 1998, volume: 2, publisher: "Marvel" })).toEqual({
       id: "2",
@@ -763,6 +773,7 @@ describe("Metron rate limit", () => {
       yearEnd: 1998,
       volume: 2,
       publisher: "Marvel",
+      issueCount: null,
     });
     expect(mapIssue({ id: 50, number: "1", cover_date: "2012-03-01", image: "http://static.metron.cloud/a.jpg", series: { id: 15, name: "Saga" } })?.imageUrl).toBe(
       "https://static.metron.cloud/a.jpg",

@@ -3,7 +3,7 @@ import { catalogIssueCount } from "@/lib/series-view";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { fetchMetronIssueBody, listMetronIssueRows, type MetronTransport } from "@/lib/covers/metron-client";
 import { recordFetch } from "@/lib/log/api";
-import { catalogNameQueries, isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, seriesNamesMatch, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
+import { catalogNameQueries, isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
 
 const CV_BASE = "https://comicvine.gamespot.com/api";
 
@@ -41,7 +41,9 @@ export async function searchMetronMatches(
         `/series/?${new URLSearchParams({ name, series_type: typeName }).toString()}`,
       );
       for (const row of seriesRows) {
-        if (!seriesNamesMatch(seriesName, rowName(row))) continue;
+        const count = catalogIssueCount((row as { issue_count?: unknown }).issue_count);
+        const title = rowName(row);
+        if (!seriesNamesMatch(seriesName, title) && !(count === 1 && seriesSoloTitle(seriesName, title))) continue;
         const seriesId = idOf(row);
         if (!seriesId) continue;
         const params = new URLSearchParams({ series_id: seriesId });

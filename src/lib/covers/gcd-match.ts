@@ -3,7 +3,7 @@ import { createGcdCatalog } from "@/lib/catalog/gcd";
 import type { MatchHit } from "@/lib/catalog/match-hits";
 import { parseMatchQuery } from "@/lib/catalog/manual-link";
 import { parseComicBarcode } from "@/lib/barcode";
-import { calendarDay, daysApart, detectEdition, normName, scoreCandidate, seriesMentionsIssue, type MatchCandidate } from "@/lib/covers/edition";
+import { calendarDay, daysApart, detectEdition, normName, sameIssueNumber, scoreCandidate, seriesMentionsIssue, type MatchCandidate } from "@/lib/covers/edition";
 import { chooseFacsimileIssue, choosePrintingIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
@@ -16,6 +16,7 @@ import {
   resolveShelfFormat,
   sameIsbn,
   seriesNamesMatch,
+  seriesSoloTitle,
   tradeSearchSeries,
   volumeNumber,
   type ShelfFormat,
@@ -86,15 +87,20 @@ export async function searchGcdMatches(
   let seriesRows: GcdSeriesRow[] = [];
   for (const name of uniqueNames([wanted], catalogNameQueries(wanted))) {
     const rows = await catalog.seriesByName(name);
-    const named = rows.filter((row) => seriesNamesMatch(wanted, row.name));
-    if (named.length > 0) {
-      seriesRows = named;
+    const named = rows.filter((row) => seriesNamesMatch(name, row.name) || seriesNamesMatch(wanted, row.name));
+    const solos =
+      named.length > 0
+        ? []
+        : rows.filter((row) => knownIssueCount(row) === 1 && (seriesSoloTitle(name, row.name) || seriesSoloTitle(wanted, row.name)));
+    const picked = named.length > 0 ? named : solos;
+    if (picked.length > 0) {
+      seriesRows = picked;
       break;
     }
   }
   const hits: MatchHit[] = [];
   for (const series of seriesRows.slice(0, 3)) {
-    const ids = (parsed.issueNo ? issuesFor(series, parsed.issueNo, true) : series.issues.map((issue) => issue.id)).slice(0, 4);
+    const ids = issueIdsFor(series, parsed.issueNo, parsed.year, true).slice(0, 4);
     for (const id of ids) {
       const issue = await catalog.issue(id);
       if (!issue) continue;
@@ -134,7 +140,7 @@ export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): P
     const decision = chooseGcd(hits, comic, issueNo);
     if (decision.status === "matched") return decision;
   }
-  if (!comic.series.trim() || !issueNo) {
+  if (!comic.series.trim() || (!issueNo && comic.coverYear == null)) {
     return { status: "unmatched", reason: "GCD needs a series and issue number.", score: 0 };
   }
   const names = uniqueNames(edition.searchNames.length > 0 ? edition.searchNames : [comic.series], catalogNameQueries(comic.series));
@@ -144,14 +150,14 @@ export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): P
     const seriesRows = await catalog.seriesByName(name);
     const picked = pickSeries(seriesRows, name, edition.reprint ? (comic.releaseYear ?? comic.coverYear) : comic.coverYear);
     for (const series of picked) {
-      const issueIds = issuesFor(series, issueNo, edition.reprint).slice(0, 2);
+      const issueIds = issueIdsFor(series, issueNo, comic.coverYear, edition.reprint).slice(0, 2);
       for (const id of issueIds) {
         if (fetched >= 4) return best;
         fetched += 1;
         const issue = await catalog.issue(id);
         if (!issue) continue;
         issue.seriesYear = issue.seriesYear ?? series.yearBegan;
-        const decision = chooseGcd([issue], comic, issueNo);
+        const decision = chooseGcd([issue], scoringCopy(comic, series), scoredIssueNo(issueNo, issue.number, comic.coverYear));
         if (decision.status === "matched") return decision;
         if (decision.score > best.score) best = decision;
       }
@@ -589,13 +595,57 @@ function publisherAgrees(wanted: string, found: string): boolean {
   return left === right || left.includes(right) || right.includes(left);
 }
 
+function knownIssueCount(series: GcdSeriesRow): number | null {
+  if (series.issueCount != null) return series.issueCount;
+  return series.issues.length > 0 ? series.issues.length : null;
+}
+
+/** A one-issue Special, Annual, or One-Shot is scored under its own title. */
+function scoringCopy(comic: CoverQuery, series: GcdSeriesRow): CoverQuery {
+  if (knownIssueCount(series) === 1 && seriesSoloTitle(comic.series, series.name)) return { ...comic, series: series.name };
+  return comic;
+}
+
+/**
+ * Issue 1, or a blank issue, may be the cover year on a series numbered by year.
+ * The catalog number is what the scorer compares.
+ */
+function scoredIssueNo(shelfIssue: string, catalogNumber: string, coverYear: number | null): string {
+  const shelf = shelfIssue.trim();
+  if (coverYear != null && (shelf === "" || sameIssueNumber(shelf, "1")) && sameIssueNumber(catalogNumber, String(coverYear))) {
+    return catalogNumber;
+  }
+  return shelfIssue;
+}
+
+function issueIdsFor(series: GcdSeriesRow, issueNo: string | null, coverYear: number | null, reprint: boolean): string[] {
+  const raw = (issueNo ?? "").trim();
+  const open = raw === "" || sameIssueNumber(raw, "1");
+  if (!open) return issuesFor(series, raw, reprint);
+  const direct = raw ? issuesFor(series, raw, reprint) : [];
+  if (direct.length > 0) return direct;
+  if (coverYear != null) {
+    const byYear = issuesFor(series, String(coverYear), reprint);
+    if (byYear.length > 0) return byYear;
+  }
+  if (!raw) return series.issues.map((issue) => issue.id);
+  return [];
+}
+
 function pickSeries(rows: GcdSeriesRow[], name: string, year: number | null): GcdSeriesRow[] {
   const wanted = norm(name);
   const named = rows.filter((row) => {
     const got = norm(row.name);
-    return seriesNamesMatch(name, row.name) || got === wanted || got.includes(wanted) || wanted.includes(got);
+    return (
+      seriesNamesMatch(name, row.name) ||
+      (knownIssueCount(row) === 1 && seriesSoloTitle(name, row.name)) ||
+      got === wanted ||
+      got.includes(wanted) ||
+      wanted.includes(got)
+    );
   });
-  const pool = named.length > 0 ? named : [];
+  const exact = named.filter((row) => seriesNamesMatch(name, row.name) || norm(row.name) === wanted);
+  const pool = exact.length > 0 ? exact : named;
   if (year == null) return pool.slice(0, 2);
   const dated = pool.filter((row) => (row.yearBegan == null || row.yearBegan <= year) && (row.yearEnded == null || row.yearEnded >= year));
   const chosen = (dated.length > 0 ? dated : pool).slice().sort((a, b) => (b.yearBegan ?? 0) - (a.yearBegan ?? 0));

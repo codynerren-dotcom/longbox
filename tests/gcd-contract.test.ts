@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseGcdIssue, parseGcdSeries, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
 import { mergeShelfSeries } from "@/lib/catalog/link-issue";
-import { gcdCollectedQueries, searchGcdMatches } from "@/lib/covers/gcd-match";
+import { gcdCollectedQueries, resolveGcdCover, searchGcdMatches } from "@/lib/covers/gcd-match";
+import type { CoverQuery } from "@/lib/covers/types";
 import { seriesNamesMatch } from "@/lib/shelf-format";
 
 const baneQuery = "Batman: Vengeance of Bane Facsimile Edition #1 2023";
@@ -276,5 +277,143 @@ describe("Rite of Spring query forms", () => {
     expect(asked[0]).toBe(firstAsk);
     expect(fetched).not.toContain("2574374");
     expect(fetched).toContain("2853617");
+  });
+});
+
+describe("short catalog title follow-ups", () => {
+  function gcdIssue(overrides: Partial<GcdIssueRow>): GcdIssueRow {
+    return {
+      id: "1",
+      seriesId: "10",
+      seriesName: "Doom Force Special",
+      number: "1",
+      variant: null,
+      title: null,
+      coverDate: "July 1992",
+      coverYear: 1992,
+      onSaleYear: 1992,
+      onSaleDate: null,
+      price: null,
+      pageCount: null,
+      barcode: null,
+      publisher: "DC",
+      writer: null,
+      artist: null,
+      coverArtist: null,
+      characters: null,
+      seriesYear: 1992,
+      comicvineIssueId: null,
+      metronIssueId: null,
+      ...overrides,
+    };
+  }
+
+  function copy(overrides: Partial<CoverQuery>): CoverQuery {
+    return {
+      series: "Doom Force",
+      issueNo: "1",
+      issue: "1",
+      coverYear: 1992,
+      barcode: null,
+      variant: null,
+      publisher: "DC",
+      ...overrides,
+    };
+  }
+
+  it("links a one-issue Special and leaves a longer series unmatched", async () => {
+    const one: GcdSeriesRow = {
+      id: "10",
+      name: "Doom Force Special",
+      yearBegan: 1992,
+      yearEnded: 1992,
+      format: "one-shot",
+      issueCount: 1,
+      issues: [{ id: "100", descriptor: "1" }],
+    };
+    const many: GcdSeriesRow = { ...one, id: "11", issueCount: 12, issues: [{ id: "100", descriptor: "1" }, { id: "101", descriptor: "2" }] };
+    const catalog = (row: GcdSeriesRow): GcdCatalog => ({
+      async seriesByName() {
+        return [row];
+      },
+      async issue(id) {
+        return id === "100" ? gcdIssue({ id }) : null;
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    });
+    const matched = await resolveGcdCover(copy({}), catalog(one));
+    expect(matched).toMatchObject({ status: "matched", issue: { id: "100" } });
+    const refused = await resolveGcdCover(copy({}), catalog(many));
+    expect(refused.status).toBe("unmatched");
+  });
+
+  it("uses the cover year as the GCD issue number when the shelf issue is 1 or blank", async () => {
+    const series: GcdSeriesRow = {
+      id: "20",
+      name: "Marvel Annual Report",
+      yearBegan: 1991,
+      yearEnded: 1995,
+      format: "ongoing series",
+      issueCount: 5,
+      issues: [
+        { id: "1991", descriptor: "1991" },
+        { id: "1993", descriptor: "1993" },
+      ],
+    };
+    const catalog: GcdCatalog = {
+      async seriesByName() {
+        return [series];
+      },
+      async issue(id) {
+        return gcdIssue({
+          id,
+          seriesId: "20",
+          seriesName: "Marvel Annual Report",
+          number: id,
+          coverYear: Number(id),
+          coverDate: id,
+          seriesYear: 1991,
+          publisher: "Marvel",
+        });
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    };
+    const shelf = { series: "Marvel Annual Report", publisher: "Marvel", coverYear: 1993, barcode: null };
+    expect(await resolveGcdCover(copy({ ...shelf, issueNo: "1", issue: "1" }), catalog)).toMatchObject({ status: "matched", issue: { id: "1993" } });
+    expect(await resolveGcdCover(copy({ ...shelf, issueNo: null, issue: null }), catalog)).toMatchObject({ status: "matched", issue: { id: "1993" } });
+    expect((await resolveGcdCover(copy({ ...shelf, issueNo: "2", issue: "2" }), catalog)).status).toBe("unmatched");
+  });
+
+  it("asks GCD for the slash parts and Free Comic Book Day", async () => {
+    const asked: string[] = [];
+    const series: GcdSeriesRow = {
+      id: "jb",
+      name: "Just Beyond: Monstrosity Free Comic Book Day Special 2021",
+      yearBegan: 2021,
+      yearEnded: 2021,
+      format: "one-shot",
+      issueCount: 1,
+      issues: [{ id: "jb1", descriptor: "1" }],
+    };
+    const hits = await searchGcdMatches("FCBD 2021 Just Beyond/Monstrosity #1", "", "query", null, {
+      catalog: {
+        async seriesByName(name) {
+          asked.push(name);
+          return /free comic book day/i.test(name) ? [series] : [];
+        },
+        async issue(id) {
+          return gcdIssue({ id, seriesName: series.name, number: "1", coverYear: 2021, publisher: "Boom! Studios", seriesYear: 2021 });
+        },
+        async issuesByBarcode() {
+          return [];
+        },
+      },
+    });
+    expect(asked).toContain("Just Beyond: Monstrosity Free Comic Book Day");
+    expect(hits.map((hit) => hit.id)).toEqual(["jb1"]);
   });
 });

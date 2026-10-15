@@ -19,6 +19,7 @@ import {
   seriesHeaderFormat,
   parseShelfSeries,
   seriesNamesMatch,
+  seriesSoloTitle,
   tradeSearchSeries,
   volumeLabel,
 } from "@/lib/shelf-format";
@@ -272,6 +273,14 @@ describe("Rite of Spring trade paperback", () => {
     expect(parseShelfSeries("Ewoks")).toEqual({ name: "Ewoks", volume: null, yearBegan: null, yearEnd: null });
     expect(parseShelfSeries("Amazing Spider-Man (1963)")).toEqual({ name: "Amazing Spider-Man", volume: null, yearBegan: 1963, yearEnd: null });
     expect(catalogNameQueries(clzSeries, { broad: true })).toContain("Beneath the Trees");
+    const fcbd = catalogNameQueries("FCBD 2021 Just Beyond/Monstrosity");
+    expect(fcbd[0]).toBe("Just Beyond: Monstrosity Free Comic Book Day");
+    expect(fcbd).toEqual(expect.arrayContaining(["Just Beyond", "Monstrosity", "Just Beyond Free Comic Book Day"]));
+    expect(fcbd.some((name) => /fcbd/i.test(name))).toBe(false);
+    expect(seriesSoloTitle("Doom Force", "Doom Force Special")).toBe(true);
+    expect(seriesSoloTitle("Doom Force", "Doom Force Annual")).toBe(true);
+    expect(seriesSoloTitle("Doom Force", "Doom Force One-Shot")).toBe(true);
+    expect(seriesSoloTitle("Doom Force", "Doom Force Special Edition")).toBe(false);
     expect(issue?.id).toBe("2853617");
     expect(issue?.isbn).toBe("979-8-88724-384-9");
     expect(issue?.number).toBe("[nn]");

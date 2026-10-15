@@ -28,6 +28,8 @@ export type MetronSeriesHit = {
   /** Metron series volume. Absent on older payloads. */
   volume?: number | null;
   publisher: string | null;
+  /** Present when the series payload includes `issue_count`. */
+  issueCount?: number | null;
 };
 
 export type MetronSeriesQuery = {

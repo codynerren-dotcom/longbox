@@ -23,6 +23,7 @@ import {
   resolveShelfFormat,
   seriesLooksCollected,
   seriesNamesMatch,
+  seriesSoloTitle,
   seriesTitleFits,
   tradeSearchSeries,
   volumeNumber,
@@ -68,7 +69,12 @@ export function narrowSeries(
 ): MetronSeriesHit[] {
   const wanted = normName(comic.series);
   if (!wanted) return [];
-  const exact = hits.filter((hit) => normName(hit.name) === wanted || seriesNamesMatch(comic.series, hit.name));
+  const exact = hits.filter(
+    (hit) =>
+      normName(hit.name) === wanted ||
+      seriesNamesMatch(comic.series, hit.name) ||
+      (hit.issueCount === 1 && seriesSoloTitle(comic.series, hit.name)),
+  );
   let rows = exact;
   if (rows.length === 0) {
     const trailing = hits.filter((hit) => seriesTitleFits(comic.series, hit.name));

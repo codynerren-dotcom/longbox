@@ -155,9 +155,29 @@ export function seriesTitleFits(wanted: string | null | undefined, found: string
   return got.endsWith(` ${want}`);
 }
 
+/** The catalog title is the query plus one trailing Special, Annual, or One-Shot. */
+export function seriesSoloTitle(wanted: string | null | undefined, found: string | null | undefined): boolean {
+  const want = normalizeSeriesName(wanted);
+  const got = normalizeSeriesName(found);
+  if (!want || !got || !got.startsWith(`${want} `)) return false;
+  return /^(?:special|annual|one shot|oneshot)$/.test(got.slice(want.length).trim());
+}
+
+function stripFcbdYear(value: string): { text: string; droppedFcbd: boolean } {
+  const withoutYear = value.replace(/\bfcbd\s+(?:18|19|20)\d{2}\b/gi, " ");
+  const text = withoutYear.replace(/\bfcbd\b/gi, " ").replace(/\s+/g, " ").trim();
+  return { text, droppedFcbd: text !== value.replace(/\s+/g, " ").trim() };
+}
+
 /** Queries to send a catalog. Punctuation variants first, then a short prefix for long trade titles. */
 export function catalogNameQueries(series: string | null | undefined, options?: { broad?: boolean }): string[] {
-  const base = tradeSearchSeries(series);
+  const traded = tradeSearchSeries(series);
+  const { text: stripped, droppedFcbd } = stripFcbdYear(traded);
+  const pieces = stripped
+    .split("/")
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter((part) => part.length >= 3);
+  const base = pieces.length > 0 ? pieces.join(" ") : stripped;
   const queries: string[] = [];
   const add = (value: string) => {
     const trimmed = value.replace(/\s+/g, " ").trim();
@@ -165,16 +185,25 @@ export function catalogNameQueries(series: string | null | undefined, options?: 
     if (queries.some((query) => query.toLowerCase() === trimmed.toLowerCase())) return;
     queries.push(trimmed);
   };
+  if (droppedFcbd && pieces.length > 0) {
+    add(`${pieces.join(": ")} Free Comic Book Day`);
+    add(`${base} Free Comic Book Day`);
+    if (pieces.length > 1 && pieces[0]) add(`${pieces[0]} Free Comic Book Day`);
+  }
   const colon = base.indexOf(":");
   if (colon >= 0) add(`${base.slice(0, colon)} ${base.slice(colon + 1)}`);
   add(base.replace(/\s+[-–—]\s+/g, ": "));
   add(base.replace(/[:\-–—'`.]/g, " "));
   add(base);
+  if (pieces.length > 1) {
+    add(pieces.join(": "));
+    for (const piece of pieces) add(piece);
+  }
   if (options?.broad) {
     const words = base.replace(/[:\-–—'`.]/g, " ").split(/\s+/).filter(Boolean);
     if (words.length >= 5) add(words.slice(0, 3).join(" "));
   }
-  return queries.slice(0, 5);
+  return queries.slice(0, droppedFcbd || pieces.length > 1 ? 8 : 5);
 }
 
 /** True when a Metron collected series title ends in TPB, HC, or the format word. */

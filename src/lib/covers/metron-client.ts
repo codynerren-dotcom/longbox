@@ -172,6 +172,7 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
     yearEnd: whole(row.year_end),
     volume: whole(row.volume),
     publisher: text(publisher?.name) ?? (typeof row.publisher === "string" ? text(row.publisher) : null),
+    issueCount: catalogIssueCount(row.issue_count),
   };
 }
 
