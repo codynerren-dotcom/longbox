@@ -26,6 +26,8 @@ export type MetronIssueHit = {
   detailFetched?: boolean;
   /** Series `issue_count` when the search that found this issue knows it. */
   oneIssue?: boolean;
+  /** Metron series type name, such as Trade Paperback, when the payload includes one. */
+  seriesType?: string | null;
 };
 
 export type MetronSeriesHit = {
@@ -54,6 +56,8 @@ export type CoverLookup = {
   issuesByIsbn?: (isbn: string) => Promise<MetronIssueHit[]>;
   /** Series search limited to a Metron series type such as Trade Paperback. */
   searchSeriesByType?: (name: string, seriesType: string) => Promise<MetronSeriesHit[]>;
+  /** One issue list: series name, series type, and volume number. No follow-up. */
+  issuesBySeriesType?: (name: string, seriesType: string, number: string) => Promise<MetronIssueHit[]>;
   /**
    * One list request: `series_name`, `number`, and `series_year_began` or `volume`.
    * A miss on a legacy number retries `alt_number`. A miss with no year retries `series_q`.

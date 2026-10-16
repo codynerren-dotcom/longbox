@@ -160,6 +160,7 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     releaseYear: coverYearOf(text(row.store_date)),
     seriesYear: whole(series?.year_began),
     ...(seriesVolume != null ? { seriesVolume } : {}),
+    ...(seriesTypeName(series?.series_type) ? { seriesType: seriesTypeName(series?.series_type) } : {}),
     upc: text(row.upc),
     upcs,
     publisher:
@@ -176,6 +177,11 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
 }
 
 /** Issue `number`, then a leading number in `alt_number` or the display label. */
+function seriesTypeName(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return text(record(value)?.name);
+}
+
 function issueNumberText(row: Record<string, unknown>): string {
   const direct = text(row.number);
   if (direct) return direct;
@@ -463,6 +469,7 @@ export function metronIssueQuery(
   seriesYearBegan: number | null,
   kind: "primary" | "alt-number" | "alt-series",
   volume?: number | null,
+  seriesType?: string | null,
 ): string | null {
   const params = new URLSearchParams();
   const name = seriesName.trim();
@@ -475,6 +482,7 @@ export function metronIssueQuery(
   } else if (issue) params.set("number", issue);
   if (seriesYearBegan != null) params.set("series_year_began", String(seriesYearBegan));
   else if (kind === "primary" && volume != null) params.set("volume", String(volume));
+  if (kind === "primary" && seriesType?.trim()) params.set("series_type", seriesType.trim());
   if ([...params.keys()].length === 0) return null;
   return `/issue/?${params.toString()}`;
 }
@@ -526,6 +534,11 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
       const hits = await collect(transport, `/series/?${params.toString()}`, mapSeries);
       return hits as MetronSeriesHit[];
     },
+    async issuesBySeriesType(name, seriesType, number) {
+      const path = metronIssueQuery(name, number, null, "primary", null, seriesType);
+      if (!path) return [];
+      return (await collect(transport, path, mapIssue)) as MetronIssueHit[];
+    },
     async issuesForSeries(seriesId, number, coverYear) {
       const params = new URLSearchParams({ series_id: seriesId, number });
       if (coverYear != null) params.set("cover_year", String(coverYear));
@@ -541,8 +554,9 @@ export async function metronIssuesByNameOnce(
   seriesName: string,
   number: string,
   seriesYearBegan: number | null,
+  seriesType?: string | null,
 ): Promise<MetronIssueHit[]> {
-  const path = metronIssueQuery(seriesName, number, seriesYearBegan, "primary");
+  const path = metronIssueQuery(seriesName, number, seriesYearBegan, "primary", null, seriesType);
   if (!path) return [];
   const body = await requestMetronJson(transport, path);
   const hits: MetronIssueHit[] = [];

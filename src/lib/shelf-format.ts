@@ -280,7 +280,24 @@ export function metronCollectedTitle(name: string, format: ShelfFormat): boolean
   return /\btpb\b|\btrade paperback\b|\btp\b/.test(text);
 }
 
-/** The volume digits from `1`, `Vol. 1`, or `Volume 1`. */
+/**
+ * CLZ files a collected copy as `TP`, `TP-A`, `HC`, or `Omnibus` on the floppy series.
+ * The letter is a cover. A bare token, or a token with only a letter, is volume 1.
+ * `TP-2` is volume 2.
+ */
+const COLLECTED_ISSUE = /^(tpb?|hc|omnibus)(?:\s*[- ]\s*([a-z]|\d+))?$/i;
+
+export function collectedIssueToken(value: string | null | undefined): { format: ShelfFormat; number: string } | null {
+  const match = COLLECTED_ISSUE.exec((value ?? "").trim());
+  if (!match) return null;
+  const kind = match[1].toLowerCase();
+  const suffix = match[2];
+  const format: ShelfFormat = kind === "hc" ? "hc" : kind === "omnibus" ? "omnibus" : "tp";
+  const number = suffix && /^\d+$/.test(suffix) ? String(Number(suffix)) : "1";
+  return { format, number };
+}
+
+/** The volume digits from `1`, `Vol. 1`, `TP`, or `TP-A`. */
 export function volumeNumber(issueNo: string | null | undefined, issue?: string | null): string | null {
   for (const raw of [issueNo, issue]) {
     const text = (raw ?? "").trim();
@@ -288,8 +305,36 @@ export function volumeNumber(issueNo: string | null | undefined, issue?: string 
     const vol = VOLUME_TEXT.exec(text);
     if (vol) return String(Number(vol[1]));
     if (/^\d+$/.test(text)) return String(Number(text));
+    const collected = collectedIssueToken(text);
+    if (collected) return collected.number;
   }
   return null;
+}
+
+/**
+ * Issue number and format to send a catalog. A stored trade wins.
+ * `TP-A` is still volume 1 of a trade when the format column says Comic.
+ */
+export function catalogMatchIssue(input: {
+  shelfFormat?: string | null;
+  issueNo?: string | null;
+  issue?: string | null;
+}): { format: ShelfFormat; number: string | null } {
+  const stored = resolveShelfFormat(input);
+  const token = collectedIssueToken(input.issueNo) ?? collectedIssueToken(input.issue);
+  if (isCollected(stored)) return { format: stored, number: volumeNumber(input.issueNo, input.issue) };
+  if (token) return token;
+  const raw = (input.issueNo ?? input.issue ?? "").trim();
+  return { format: "single", number: raw || null };
+}
+
+/** Names for a collected series. The plain name first, then one `TPB`, `HC`, or `Omnibus` suffix. */
+export function collectedSearchNames(series: string, format: ShelfFormat): string[] {
+  const names = catalogNameQueries(series, { broad: true });
+  const suffix = format === "hc" ? "HC" : format === "omnibus" ? "Omnibus" : format === "gn" ? "GN" : "TPB";
+  const first = names[0];
+  if (first && !new RegExp(`\\b${suffix}\\b`, "i").test(first)) names.push(`${first} ${suffix}`);
+  return names.slice(0, 6);
 }
 
 export function volumeLabel(issueNo: string | null | undefined, issue?: string | null): string {
@@ -443,12 +488,9 @@ function isVolumeNumber(value: string | null | undefined): boolean {
   return VOLUME_TEXT.test((value ?? "").trim());
 }
 
-/** CLZ stores a collected copy as issue TP, HC, or TPB in the same series as the singles. */
+/** CLZ stores a collected copy as issue TP, TP-A, HC, or Omnibus in the same series as the singles. */
 function tradeIssueToken(value: string | null | undefined): ShelfFormat | null {
-  const text = (value ?? "").trim();
-  if (/^hc$/i.test(text)) return "hc";
-  if (/^tpb?$/i.test(text)) return "tp";
-  return null;
+  return collectedIssueToken(value)?.format ?? null;
 }
 
 function proseCollected(value: unknown): string | null {
