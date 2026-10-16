@@ -182,30 +182,32 @@ export async function searchGcdMatches(
   const hits: MatchHit[] = [];
   for (const seriesRow of seriesRows.slice(0, 1)) {
     const familyIds = new Set(gcdMatchIssueIds(seriesRow, parsed.issueNo, year));
-    // The series payload already lists every cover. A known issue number loads that family only.
-    // A barcode with no issue number keeps scanning the list, and stops at the exact code.
-    const ids =
-      parsed.issueNo || !(mode === "barcode" && fullBarcode) ? [...familyIds] : gcdBarcodeIssueIds(seriesRow, familyIds);
-    const family: MatchHit[] = [];
-    let matchedBarcode = false;
-    for (const id of ids) {
+    const fetchOrder = mode === "barcode" && fullBarcode ? gcdBarcodeIssueIds(seriesRow, familyIds) : [...familyIds];
+    const loaded = new Map<string, MatchHit>();
+    for (const id of fetchOrder) {
       const issue = await catalog.issue(id);
       if (!issue) continue;
       issue.seriesYear = issue.seriesYear ?? seriesRow.yearBegan;
       const descriptor = seriesRow.issues.find((item) => item.id === id)?.descriptor ?? "";
       const hit = gcdHit(withDescriptor(issue, descriptor));
-      if (mode === "barcode" && fullBarcode && !familyIds.has(id) && !exactBarcodeMatch(barcode, hit.barcode)) continue;
-      family.push(hit);
-      if (mode === "barcode" && fullBarcode && exactBarcodeMatch(barcode, hit.barcode)) {
-        matchedBarcode = true;
-        break;
-      }
+      const outsideFamily = mode === "barcode" && fullBarcode && !familyIds.has(id) && !exactBarcodeMatch(barcode, hit.barcode);
+      if (!outsideFamily) loaded.set(id, hit);
+      if (mode === "barcode" && fullBarcode && exactBarcodeMatch(barcode, hit.barcode)) break;
     }
-    hits.push(...orderGcdMatchHits(family, barcode));
-    if (matchedBarcode) break;
-    if (hits.length >= MATCH_VARIANT_CAP) break;
+    const rows: MatchHit[] = [];
+    const seen = new Set<string>();
+    const listed = mode === "barcode" && fullBarcode ? seriesRow.issues : seriesRow.issues.filter((item) => familyIds.has(item.id));
+    for (const item of listed) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      rows.push(loaded.get(item.id) ?? listedIssueHit(seriesRow, item));
+    }
+    for (const [id, hit] of loaded) {
+      if (!seen.has(id)) rows.push(hit);
+    }
+    hits.push(...orderGcdMatchHits(rows, barcode));
   }
-  return orderGcdMatchHits(hits, barcode).slice(0, MATCH_VARIANT_CAP);
+  return orderGcdMatchHits(hits, barcode);
 }
 
 /**
@@ -277,6 +279,52 @@ export function gcdVariantSiblingIds(series: GcdSeriesRow, issueId: string): str
   if (!self) return [];
   const key = gcdIssueFamilyKey(self.descriptor);
   return series.issues.filter((item) => item.id !== issueId && gcdIssueFamilyKey(item.descriptor) === key).map((item) => item.id);
+}
+
+/** A series-list row. Barcode and price stay empty until an issue detail is loaded. */
+function listedIssueHit(series: GcdSeriesRow, item: { id: string; descriptor: string }): MatchHit {
+  const parsed = listedDescriptor(item.descriptor);
+  const parent = parsed.variant
+    ? series.issues.find((issue) => {
+        const other = listedDescriptor(issue.descriptor);
+        return other.variant == null && other.number === parsed.number;
+      })?.id ?? null
+    : null;
+  return gcdHit({
+    id: item.id,
+    seriesId: series.id,
+    seriesName: series.name,
+    number: parsed.number,
+    variant: parsed.variant,
+    variantOf: parent,
+    title: null,
+    coverDate: null,
+    coverYear: series.yearBegan,
+    onSaleYear: null,
+    onSaleDate: null,
+    price: null,
+    pageCount: null,
+    barcode: null,
+    isbn: null,
+    publisher: series.publisher ?? null,
+    writer: null,
+    artist: null,
+    coverArtist: null,
+    characters: null,
+    seriesYear: series.yearBegan,
+    comicvineIssueId: null,
+    metronIssueId: null,
+    coverUrl: null,
+  });
+}
+
+function listedDescriptor(descriptor: string): { number: string; variant: string | null } {
+  const trimmed = descriptor.trim();
+  const bracket = trimmed.match(/^(.*?)\s*\[(.+)\]\s*$/);
+  if (!bracket) return { number: trimmed, variant: null };
+  const head = bracket[1].trim();
+  const note = bracket[2].trim();
+  return { number: head || note, variant: note || null };
 }
 
 /**

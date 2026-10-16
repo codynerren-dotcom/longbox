@@ -8,6 +8,7 @@ import type { MatchHit } from "@/lib/catalog/match-hits";
 import { imagePaceName } from "@/lib/catalog/rate-limit";
 import { gcdDetails, gcdHit, gcdMatchIssueIds, orderGcdMatchHits, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { coverContentType, coverFilename, downloadCover } from "@/lib/covers/files";
+import { MetronBudgetError } from "@/lib/covers/types";
 
 function coverRow(id: string, variant: string, barcode: string, variantOf: string | null): GcdIssueRow {
   return {
@@ -307,6 +308,39 @@ describe("GCD covers from another catalog", () => {
     const picked = await findAlternateCover(wanted, search);
     expect(calls).toEqual(["metron-barcode", "cv-barcode"]);
     expect(picked?.imageUrl).toBe(METRON_VARIANT);
+  });
+
+  it("keeps a GCD accept going when Metron's circuit is open", async () => {
+    const calls: string[] = [];
+    const search: AlternateCoverSearch = {
+      async metronBarcode() {
+        calls.push("metron-barcode");
+        throw new MetronBudgetError("Metron is paused after connect failures.", {
+          budget: "Metron connect",
+          count: 3,
+          resumeAt: Date.now() + 60_000,
+        });
+      },
+      async metronQuery() {
+        calls.push("metron-name");
+        throw new MetronBudgetError("Metron is paused after connect failures.", {
+          budget: "Metron connect",
+          count: 3,
+          resumeAt: Date.now() + 60_000,
+        });
+      },
+      async comicVineBarcode() {
+        calls.push("cv-barcode");
+        return [];
+      },
+      async comicVineQuery() {
+        calls.push("cv-name");
+        return [hit({ source: "comicvine", id: "400", coverUrl: CV_COVER, variant: "Todd McFarlane Variant Cover" })];
+      },
+    };
+    const picked = await findAlternateCover(wanted, search);
+    expect(calls).toEqual(["metron-barcode", "cv-barcode", "metron-name", "cv-name"]);
+    expect(picked).toMatchObject({ source: "comicvine", issueId: "400", imageUrl: CV_COVER });
   });
 
   it("reports no other cover when every candidate is empty", async () => {

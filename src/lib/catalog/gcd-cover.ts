@@ -1,4 +1,5 @@
 import type { MatchHit } from "@/lib/catalog/match-hits";
+import { limitBlockFromError } from "@/lib/catalog/limit-notice";
 import { exactBarcodeMatch, isGcdScanHost } from "@/lib/catalog/match-row";
 import { matchQuery } from "@/lib/catalog/manual-link";
 import { seriesNamesMatch, seriesTitleFits } from "@/lib/shelf-format";
@@ -100,7 +101,14 @@ async function nameCandidates(wanted: CoverWanted, search: AlternateCoverSearch)
 
 async function push(search: CoverSearch, query: string, via: "barcode" | "name", hits: TaggedHit[]): Promise<void> {
   if (!search) return;
-  const rows = await search(query);
+  let rows: MatchHit[];
+  try {
+    rows = await search(query);
+  } catch (error) {
+    // A paused Metron (circuit open or rate limit) must not fail the GCD accept or queue a relink.
+    if (limitBlockFromError(error)) return;
+    throw error;
+  }
   for (const hit of rows) hits.push({ ...hit, via });
 }
 

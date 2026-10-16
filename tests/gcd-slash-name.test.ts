@@ -196,8 +196,8 @@ describe("GCD series names that contain a slash", () => {
     expect(hits[0]?.seriesId).toBe("203583");
     expect(hits[0]?.barcode).toBe(barcode);
     expect(hits[0]?.variant).toMatch(/McFarlane/i);
-    expect(hits.map((hit) => hit.id)).toContain("2430010");
-    expect(hits.map((hit) => hit.id)).not.toContain("2430088");
+    expect(hits.map((hit) => hit.id)).toEqual(["2430001", "2430010", "2430088"]);
+    expect(hits[2]?.barcode ?? null).toBeNull();
     expect(fetched).toContain("2430001");
     expect(fetched).toContain("2430010");
     expect(fetched).not.toContain("2430088");
@@ -219,6 +219,77 @@ describe("GCD series names that contain a slash", () => {
     expect(fromShelf[0]?.id).toBe("2430001");
     expect(fromShelf[0]?.barcode).toBe(barcode);
     expect(fromShelf[0]?.variant).toMatch(/McFarlane/i);
+  });
+
+  it("lists every variant of the top series from the cached issue list", async () => {
+    const barcode = "76194137888600134";
+    const exactId = "3004";
+    const issues = Array.from({ length: 19 }, (_, index) => ({
+      id: String(3000 + index),
+      descriptor: index === 0 ? "1" : `1 [Cover ${index}]`,
+    }));
+    const fetched: string[] = [];
+    const full: GcdSeriesRow = {
+      id: "203583",
+      name: "Batman / Spawn",
+      yearBegan: 2022,
+      yearEnded: 2022,
+      format: "one-shot",
+      issueCount: 19,
+      issues,
+      publisher: "DC",
+      country: "us",
+      language: "en",
+    };
+    const catalog: GcdCatalog = {
+      async seriesByName() {
+        return [full];
+      },
+      async issue(id) {
+        fetched.push(id);
+        return {
+          id,
+          seriesId: full.id,
+          seriesName: full.name,
+          number: "1",
+          variant: id === exactId ? "Todd McFarlane Variant Cover" : null,
+          variantOf: id === "3000" ? null : "3000",
+          title: null,
+          coverDate: null,
+          coverYear: 2022,
+          onSaleYear: 2022,
+          onSaleDate: null,
+          price: null,
+          pageCount: null,
+          barcode: id === exactId ? barcode : "00000000000000000",
+          publisher: "DC",
+          writer: null,
+          artist: null,
+          coverArtist: null,
+          characters: null,
+          seriesYear: 2022,
+          comicvineIssueId: null,
+          metronIssueId: null,
+        };
+      },
+      async issuesByBarcode() {
+        return [];
+      },
+    };
+    const hits = await searchGcdMatches("Batman / Spawn #1", barcode, "barcode", null, {
+      catalog,
+      publisher: "DC",
+      country: "United States",
+      language: "English",
+      year: 2022,
+    });
+    expect(hits).toHaveLength(19);
+    expect(hits[0]?.id).toBe(exactId);
+    expect(hits[0]?.barcode).toBe(barcode);
+    expect(new Set(hits.map((hit) => hit.id)).size).toBe(19);
+    expect(fetched.at(-1)).toBe(exactId);
+    expect(fetched.length).toBeLessThan(19);
+    expect(fetched).not.toContain("3018");
   });
 
   it("pages the slash-safe Spawn search when the barcode is the only query", async () => {

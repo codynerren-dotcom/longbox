@@ -151,13 +151,13 @@ export function copyCountLabel(comics: CopyIdentity[]): string {
   return `${comicLabel} · ${copyLabel}`;
 }
 
-/** Owned numeric span, `Have: 1-12`, or `Have: 5` when only one number is on the shelf. */
+const RANGE_DASH = "\u2013";
+
+/** Owned numbers only, collapsed into ranges: `Have: #1–3, #5–6`, or `Have: #5`. */
 export function haveRange(comics: SeriesCopy[]): string | null {
   const numbers = ownedIssueNumbers(comics);
   if (numbers.length === 0) return null;
-  const min = numbers[0];
-  const max = numbers[numbers.length - 1];
-  return min === max ? `Have: ${min}` : `Have: ${min}-${max}`;
+  return `Have: ${collapseNumbers(numbers).parts.join(", ")}`;
 }
 
 /** A catalog run. `numbers` wins when it is non-empty; otherwise issues are `1..issueCount`. */
@@ -167,7 +167,7 @@ export type CatalogRun = {
 };
 
 export type MissingChip = {
-  kind: "missing" | "gaps";
+  kind: "missing";
   count: number;
   parts: string[];
 };
@@ -285,15 +285,40 @@ function issueKey(label: string): string {
 }
 
 /**
- * Missing issues against a catalog run, or holes between the lowest and highest
- * owned number when no run is known. Variants of one number count as owned.
+ * One Missing list: holes between owned numbers, plus anything the catalog run
+ * still doesn't have. Variants of one number count as owned.
  * Null when nothing is missing, so the header can omit the clause.
  */
 export function seriesMissing(comics: SeriesCopy[], run: CatalogRun | null): MissingChip | null {
-  if (run && run.numbers.length > 0) return missingFromLabels(comics, run.numbers);
-  const count = catalogIssueCount(run?.issueCount);
-  if (count != null) return missingFromCount(comics, count);
-  return gapsBetweenOwned(comics);
+  const numeric = new Set<number>();
+  const text: string[] = [];
+  const owned = ownedKeys(comics);
+  if (run && run.numbers.length > 0) {
+    for (const label of distinctIssueLabels(run.numbers)) {
+      const value = issueNumberValue(label);
+      if (value != null && value > 0) {
+        if (!owned.has(`n:${value}`)) numeric.add(value);
+      } else if (!owned.has(issueKey(label))) {
+        text.push(label);
+      }
+    }
+  } else {
+    const count = catalogIssueCount(run?.issueCount);
+    if (count != null) {
+      const present = new Set(ownedIssueNumbers(comics));
+      for (let issue = 1; issue <= count; issue += 1) {
+        if (!present.has(issue)) numeric.add(issue);
+      }
+    }
+  }
+  const ownedNumbers = ownedIssueNumbers(comics);
+  for (let index = 0; index < ownedNumbers.length - 1; index += 1) {
+    for (let hole = ownedNumbers[index] + 1; hole < ownedNumbers[index + 1]; hole += 1) numeric.add(hole);
+  }
+  const collapsed = collapseNumbers([...numeric]);
+  const count = collapsed.count + text.length;
+  if (count === 0) return null;
+  return { kind: "missing", count, parts: [...collapsed.parts, ...text] };
 }
 
 export function seriesHeaderSummary(comics: SeriesCopy[], run: CatalogRun | null): string {
@@ -306,8 +331,7 @@ export function seriesHeaderSummary(comics: SeriesCopy[], run: CatalogRun | null
 }
 
 export function missingClause(missing: MissingChip, parts = missing.parts): string {
-  const word = missing.kind === "gaps" ? "Gaps" : "Missing";
-  return `${word} ${missing.count}: ${parts.join(", ")}`;
+  return `Missing ${missing.count}: ${parts.join(", ")}`;
 }
 
 /** Keep the first collapsed parts that fit, so a long list can offer "show all". */
@@ -323,65 +347,6 @@ export function truncateMissingParts(parts: string[], maxChars = 56): { shown: s
     length = next;
   }
   return { shown, rest: parts.length - shown.length };
-}
-
-function missingFromLabels(comics: SeriesCopy[], labels: string[]): MissingChip | null {
-  const owned = ownedKeys(comics);
-  const numeric: number[] = [];
-  const text: string[] = [];
-  for (const label of distinctIssueLabels(labels)) {
-    const value = issueNumberValue(label);
-    if (value != null && value > 0) {
-      if (!owned.has(`n:${value}`)) numeric.push(value);
-    } else if (!owned.has(issueKey(label))) {
-      text.push(label);
-    }
-  }
-  const collapsed = collapseNumbers(numeric);
-  const count = collapsed.count + text.length;
-  if (count === 0) return null;
-  return { kind: "missing", count, parts: [...collapsed.parts, ...text] };
-}
-
-function missingFromCount(comics: SeriesCopy[], max: number): MissingChip | null {
-  const present = ownedIssueNumbers(comics).filter((value) => value >= 1 && value <= max);
-  const collapsed = missingThrough(max, present);
-  if (collapsed.count === 0) return null;
-  return { kind: "missing", count: collapsed.count, parts: collapsed.parts };
-}
-
-function gapsBetweenOwned(comics: SeriesCopy[]): MissingChip | null {
-  const owned = ownedIssueNumbers(comics);
-  if (owned.length === 0) return null;
-  const parts: string[] = [];
-  let count = 0;
-  for (let index = 0; index < owned.length - 1; index += 1) {
-    const from = owned[index] + 1;
-    const to = owned[index + 1] - 1;
-    if (from > to) continue;
-    count += to - from + 1;
-    parts.push(from === to ? `#${from}` : `#${from}-${to}`);
-  }
-  if (count === 0) return null;
-  return { kind: "gaps", count, parts };
-}
-
-function missingThrough(max: number, present: number[]): { count: number; parts: string[] } {
-  const parts: string[] = [];
-  let count = 0;
-  let cursor = 1;
-  for (const value of present) {
-    if (value > cursor) {
-      count += value - cursor;
-      parts.push(cursor === value - 1 ? `#${cursor}` : `#${cursor}-${value - 1}`);
-    }
-    cursor = value + 1;
-  }
-  if (cursor <= max) {
-    count += max - cursor + 1;
-    parts.push(cursor === max ? `#${cursor}` : `#${cursor}-${max}`);
-  }
-  return { count, parts };
 }
 
 function collapseNumbers(values: number[]): { count: number; parts: string[] } {
@@ -400,13 +365,13 @@ function collapseNumbers(values: number[]): { count: number; parts: string[] } {
       prev = value;
       continue;
     }
-    parts.push(start === prev ? `#${start}` : `#${start}-${prev}`);
+    parts.push(start === prev ? `#${start}` : `#${start}${RANGE_DASH}${prev}`);
     count += prev - start + 1;
     start = value;
     prev = value;
   }
   if (start != null && prev != null) {
-    parts.push(start === prev ? `#${start}` : `#${start}-${prev}`);
+    parts.push(start === prev ? `#${start}` : `#${start}${RANGE_DASH}${prev}`);
     count += prev - start + 1;
   }
   return { count, parts };
