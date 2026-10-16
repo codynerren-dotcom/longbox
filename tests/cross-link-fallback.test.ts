@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseGcdIssue } from "@/lib/catalog/gcd";
 import { matchHitFromIssue } from "@/lib/catalog/match-hits";
 import { backfillCovers } from "@/lib/covers/backfill";
-import { classifyCrossNameHits, crossCollectedQuery, crossForeignFromComicVine, crossLinkLine, crossNameQuery, lookupCrossIssue, type CrossForeign, type CrossLookup } from "@/lib/covers/cross-link";
+import { classifyCrossNameHits, crossForeignFromComicVine, crossLinkLine, crossNameQuery, lookupCrossIssue, type CrossForeign, type CrossLookup } from "@/lib/covers/cross-link";
 import { crossMissKey, setCrossMissCacheForTests, type CrossMissCache, type StoredCrossMiss } from "@/lib/covers/cross-miss";
 import { emptyBudget, MetronLimiter, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
-import { clearMetronDetailCache, metronIssueQuery, metronIssuesByCrossId, metronIssuesByNameOnce, type MetronTransport } from "@/lib/covers/metron-client";
+import { clearMetronDetailCache, metronIssuesByCrossId, metronIssuesByNameOnce, type MetronTransport } from "@/lib/covers/metron-client";
 import { resetMetronCircuit } from "@/lib/covers/metron-circuit";
 import type { CoverLookup, CoverRecord, MetronIssueHit } from "@/lib/covers/types";
 
@@ -240,40 +240,6 @@ describe("name fallback after an empty cross-id", () => {
     expect(nameCalls).toBe(1);
     expect(decision).toMatchObject({ status: "miss", reason: "not on Metron" });
     expect(crossLinkLine({ id: "1", series: "Get Along Gang", issueNo: "1", issue: "1", metronIssueId: null }, decision)).toBe("Get Along Gang #1: not on Metron");
-  });
-
-  it("asks for the Trade Paperback series when a GCD trade id has no Metron cross-link", async () => {
-    const queries: Array<{ name: string; number: string; seriesType?: string | null }> = [];
-    const decision = await lookupCrossIssue(
-      {
-        id: "god",
-        series: "God Country",
-        issueNo: "TP-A",
-        issue: "TP-A",
-        shelfFormat: "tp",
-        metronIssueId: null,
-        gcdIssueId: "2113149",
-      },
-      {
-        byComicVine: async () => [],
-        byGcd: async () => [],
-        foreignIssue: async () => ({ seriesName: "God Country", number: "1", seriesYear: 2017, barcode: null }),
-        byName: async (query) => {
-          queries.push(query);
-          return [];
-        },
-      },
-    );
-    expect(crossCollectedQuery({ shelfFormat: "tp", issueNo: "TP-A", issue: "TP-A" }, { seriesName: "God Country", number: "[nn]", seriesYear: 2017, barcode: null })).toMatchObject({
-      name: "God Country",
-      number: "1",
-      seriesType: "Trade Paperback",
-    });
-    expect(queries[0]).toMatchObject({ name: "God Country", number: "1", seriesType: "Trade Paperback" });
-    expect(metronIssueQuery("God Country", "1", 2017, "primary", null, "Trade Paperback")).toBe(
-      "/issue/?series_name=God+Country&number=1&series_year_began=2017&series_type=Trade+Paperback",
-    );
-    expect(decision.status).toBe("miss");
   });
 
   it("caches a miss for seven days and skips Metron on the next lookup", async () => {

@@ -152,13 +152,12 @@ export function parseMatchQuery(query: string): { series: string; issueNo: strin
     text = text.replace(yearMatch[0], " ").replace(/\s+/g, " ").trim();
   }
   let issueNo: string | null = null;
-  const collected = text.match(/#\s*((?:tpb?|hc|omnibus)(?:\s*[- ]\s*[a-z0-9]+)?)/i);
-  const hashed = collected ? null : text.match(/#\s*([0-9]+[A-Za-z]?)/);
-  const bare = collected || hashed ? null : text.match(/(?:^|\s)([0-9]+[A-Za-z]?)(?:\s|$)/);
-  const found = collected?.[1] ?? hashed?.[1] ?? bare?.[1] ?? null;
+  const hashed = text.match(/#\s*([0-9]+[A-Za-z]?)/);
+  const bare = hashed ? null : text.match(/(?:^|\s)([0-9]+[A-Za-z]?)(?:\s|$)/);
+  const found = hashed?.[1] ?? bare?.[1] ?? null;
   if (found) {
     issueNo = found;
-    text = text.replace(collected?.[0] ?? hashed?.[0] ?? bare?.[0] ?? found, " ").replace(/\s+/g, " ").trim();
+    text = text.replace(hashed?.[0] ?? bare?.[0] ?? found, " ").replace(/\s+/g, " ").trim();
   }
   return { series: text, issueNo, year };
 }

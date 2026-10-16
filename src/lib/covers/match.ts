@@ -14,10 +14,8 @@ import {
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit, MetronSeriesQuery } from "@/lib/covers/types";
 import { writeLog } from "@/lib/log/write";
 import {
-  catalogMatchIssue,
   catalogNameQueries,
   catalogSeriesQuery,
-  collectedSearchNames,
   isbnDigits,
   isCollected,
   metronCollectedTitle,
@@ -25,6 +23,7 @@ import {
   normalizeSeriesName,
   parseShelfSeries,
   preferredSeriesHits,
+  resolveShelfFormat,
   seriesLooksCollected,
   seriesNamesMatch,
   seriesSoloTitle,
@@ -565,8 +564,8 @@ async function resolvePrintingCover(comic: CoverQuery, edition: EditionProfile, 
 
 async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, lookup: CoverLookup): Promise<CoverDecision> {
   const seriesName = catalogSeriesQuery(tradeSearchSeries(comic.series) || comic.series.trim()).name || comic.series.trim();
+  const scored = { ...comic, series: seriesName };
   const issueNo = volumeNumber(comic.issueNo, comic.issue) || "";
-  const scored = { ...comic, series: seriesName, issueNo: issueNo || comic.issueNo };
   const typeName = metronSeriesType(format);
   const isbn = isbnDigits(comic.barcode);
 
@@ -597,19 +596,8 @@ async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, loo
     return { status: "unmatched", reason: "A collected edition needs a series name.", score: 0 };
   }
 
-  if (typeName && issueNo && lookup.issuesBySeriesType) {
-    for (const name of collectedSearchNames(seriesName, format)) {
-      const hits = (await lookup.issuesBySeriesType(name, typeName, issueNo)).filter(
-        (hit) => !hit.seriesType || hit.seriesType.toLowerCase() === typeName.toLowerCase(),
-      );
-      const named = hits.filter((hit) => seriesNamesMatch(seriesName, hit.seriesName) || metronCollectedTitle(hit.seriesName, format));
-      const decision = chooseIssue(named, scored, issueNo, "series");
-      if (decision.status === "matched") return decision;
-    }
-  }
-
   let found: MetronSeriesHit[] = [];
-  for (const name of collectedSearchNames(seriesName, format)) {
+  for (const name of catalogNameQueries(seriesName, { broad: true })) {
     const rows = typeName && lookup.searchSeriesByType
       ? await lookup.searchSeriesByType(name, typeName)
       : (await lookup.searchSeries(name)).filter((row) => seriesLooksCollected(row.name, format) || metronCollectedTitle(row.name, format));
@@ -682,8 +670,8 @@ async function logBarcodeStep(label: string, code: string, hits: MetronIssueHit[
 }
 
 export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Promise<CoverDecision> {
-  const match = catalogMatchIssue(comic);
-  if (isCollected(match.format)) return resolveCollectedCover({ ...comic, issueNo: match.number, shelfFormat: match.format }, match.format, lookup);
+  const shelf = resolveShelfFormat(comic);
+  if (isCollected(shelf)) return resolveCollectedCover(comic, shelf, lookup);
   const edition = detectEdition(comic);
   if (edition.kind === "facsimile") return resolveFacsimileCover(comic, edition, lookup);
   if (edition.kind === "printing") return resolvePrintingCover(comic, edition, lookup);

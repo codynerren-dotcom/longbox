@@ -7,13 +7,10 @@ import { resolveCover } from "@/lib/covers/match";
 import { resolveGcdCover, searchGcdMatches } from "@/lib/covers/gcd-match";
 import type { MetronTransport } from "@/lib/covers/metron-client";
 import type { CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit } from "@/lib/covers/types";
-import { matchQuery } from "@/lib/catalog/manual-link";
 import { issueBadge } from "@/lib/series-view";
 import { mapMetronDetails } from "@/lib/covers/enrich";
 import {
-  catalogMatchIssue,
   catalogNameQueries,
-  collectedSearchNames,
   detectShelfFormat,
   formatCollectedList,
   metronSeriesType,
@@ -78,8 +75,6 @@ describe("shelf format detection", () => {
     expect(detectShelfFormat({ issue: "Vol. 1", issueNo: "Vol. 1" })).toBe("tp");
     expect(detectShelfFormat({ barcode: "9781534318331" })).toBe("tp");
     expect(volumeLabel("1")).toBe("Vol. 1");
-    expect(volumeLabel("TP-A")).toBe("Vol. 1");
-    expect(volumeLabel("TP")).toBe("Vol. 1");
     expect(issueBadge("1", "A", "tp")).toBe("Vol. 1");
     expect(issueBadge("1", "A")).toBe("#1A");
   });
@@ -161,74 +156,7 @@ describe("collected catalog search", () => {
     const empty: CoverLookup = { ...lookup, async searchSeriesByType() { calls.push("typed-empty"); return []; } };
     const missed = await resolveCover(query(), empty);
     expect(missed.status).toBe("unmatched");
-    expect(calls[0]).toBe("typed-empty");
-  });
-
-  it("searches God Country TP-A and Department of Truth TP as volume 1 trades", async () => {
-    expect(catalogMatchIssue({ shelfFormat: "single", issueNo: "TP-A", issue: "TP-A" })).toEqual({
-      format: "tp",
-      number: "1",
-    });
-    expect(matchQuery({ series: "God Country", issueNo: "1", year: null })).toBe("God Country #1");
-    expect(matchQuery({ series: tradeSearchSeries("The Department of Truth TP"), issueNo: "1", year: 2021 })).toBe(
-      "The Department of Truth #1 2021",
-    );
-    expect(collectedSearchNames("God Country", "tp")).toEqual(expect.arrayContaining(["God Country", "God Country TPB"]));
-
-    const paths: string[] = [];
-    const god = await searchMetronMatches(
-      metronTransport(async (url) => {
-        paths.push(String(url));
-        if (String(url).includes("series_name=God+Country+TPB")) {
-          return Response.json({
-            results: [
-              {
-                id: 88,
-                number: "1",
-                series: { id: 20, name: "God Country TPB", series_type: { name: "Trade Paperback" } },
-                image: "https://example.com/god.jpg",
-              },
-            ],
-          });
-        }
-        return Response.json({ results: [] });
-      }),
-      "God Country #TP-A",
-      "",
-      "query",
-      "single",
-    );
-    expect(paths[0]).toContain("series_name=God+Country");
-    expect(paths[0]).toContain("series_type=Trade+Paperback");
-    expect(paths[0]).toContain("number=1");
-    expect(paths.some((path) => path.includes("number=TP-A"))).toBe(false);
-    expect(paths.some((path) => path.includes("series_name=God+Country+TPB"))).toBe(true);
-    expect(god[0]?.id).toBe("88");
-
-    const numbers: string[] = [];
-    const lookup: CoverLookup = {
-      async issuesByUpc() {
-        return [];
-      },
-      async issuesByUpcPrefix() {
-        return [];
-      },
-      async searchSeries() {
-        return [];
-      },
-      async searchSeriesByType(name, seriesType) {
-        numbers.push(`typed:${name}:${seriesType}`);
-        return [seriesHit("2", "The Department of Truth")];
-      },
-      async issuesForSeries(_id, number) {
-        numbers.push(`issues:${number}`);
-        return [issueHit("40", "The Department of Truth")];
-      },
-    };
-    const truth = await resolveCover(query({ series: "The Department of Truth TP", issueNo: "TP", issue: "TP", barcode: null }), lookup);
-    expect(truth.status).toBe("matched");
-    expect(numbers).toContain("issues:1");
-    expect(numbers.some((call) => call.includes("TP"))).toBe(false);
+    expect(calls).toEqual(["typed-empty"]);
   });
 
   it("asks Metron for series_type and isbn", async () => {
@@ -244,11 +172,9 @@ describe("collected catalog search", () => {
       });
     });
     const hits = await searchMetronMatches(transport, "Saga TP #1", "", "query", "tp");
-    expect(paths[0]).toContain("/issue/?");
-    expect(paths[0]).toContain("series_name=Saga");
     expect(paths[0]).toContain("series_type=Trade+Paperback");
-    expect(paths[0]).toContain("number=1");
-    expect(paths.some((path) => path.includes("number=TP"))).toBe(false);
+    expect(paths[0]).toContain("name=Saga");
+    expect(paths[1]).toContain("series_id=15");
     expect(hits[0]?.id).toBe("40");
 
     paths.length = 0;

@@ -47,7 +47,6 @@ const copySelect = {
   pageCount: true,
   coverPrice: true,
   barcode: true,
-  shelfFormat: true,
   variant: true,
   variantDescription: true,
   format: true,
@@ -80,7 +79,6 @@ function toCopy(row: CopyRow, embeddedMetronIssueId?: string | null): CrossCopy 
     gcdIssueId: row.gcdIssueId,
     embeddedMetronIssueId,
     barcode: row.barcode,
-    shelfFormat: row.shelfFormat,
     userCover: link.userCover,
     coverFile: row.coverFile,
     coverStatus: row.coverStatus,
@@ -92,7 +90,7 @@ export function createCrossLookup(transport: MetronTransport): CrossLookup {
     byComicVine: (id: string) => metronIssuesByCrossId(transport, "cv_id", id),
     byGcd: (id: string) => metronIssuesByCrossId(transport, "gcd_id", id),
     foreignIssue: (via, id) => (via === "gcd_id" ? loadGcdForeign(id) : loadComicVineForeign(id)),
-    byName: (query) => metronIssuesByNameOnce(transport, query.name, query.number, query.year, query.seriesType),
+    byName: (query) => metronIssuesByNameOnce(transport, query.name, query.number, query.year),
   };
 }
 

@@ -4,7 +4,7 @@ import { readManualLink } from "@/lib/catalog/manual-link";
 import { readCrossMiss, writeCrossMiss, type StoredCrossMiss } from "@/lib/covers/cross-miss";
 import { sameIssueNumber } from "@/lib/covers/edition";
 import type { MetronIssueHit } from "@/lib/covers/types";
-import { catalogMatchIssue, catalogSeriesQuery, isCollected, metronSeriesType, volumeNumber } from "@/lib/shelf-format";
+import { catalogSeriesQuery } from "@/lib/shelf-format";
 
 export type CrossVia = "cv_id" | "gcd_id";
 
@@ -20,7 +20,6 @@ export type CrossCopy = {
   /** Metron id named on a GCD record. Used before the Metron gcd_id filter. */
   embeddedMetronIssueId?: string | null;
   barcode?: string | null;
-  shelfFormat?: string | null;
   userCover?: boolean;
   coverFile?: string | null;
   coverStatus?: string | null;
@@ -38,8 +37,6 @@ export type CrossNameQuery = {
   name: string;
   number: string;
   year: number | null;
-  /** Set for a trade, hardcover, or omnibus so the name search does not land on the floppy. */
-  seriesType?: string | null;
 };
 
 export type CrossLookup = {
@@ -161,21 +158,6 @@ export function crossLinkLine(copy: CrossCopy, result: CrossResult): string | nu
 }
 
 /** Name, number, and series year sent on the one follow-up. The volume stays off the name. */
-/** A collected shelf copy adds series_type and uses volume 1 when the foreign number is `TP` or blank. */
-export function crossCollectedQuery(
-  copy: { shelfFormat?: string | null; issueNo?: string | null; issue?: string | null },
-  record: CrossForeign,
-): CrossNameQuery {
-  const base = crossNameQuery(record);
-  const match = catalogMatchIssue(copy);
-  if (!isCollected(match.format)) return base;
-  return {
-    ...base,
-    number: volumeNumber(record.number) ?? match.number ?? base.number,
-    seriesType: metronSeriesType(match.format),
-  };
-}
-
 export function crossNameQuery(record: CrossForeign): CrossNameQuery {
   const parsed = catalogSeriesQuery(record.seriesName);
   return {
@@ -250,7 +232,7 @@ async function searchByName(copy: CrossCopy, lookup: CrossLookup, via: CrossVia,
     if (isBudgetError(error)) throw error;
     record = null;
   }
-  const query = record ? crossCollectedQuery(copy, record) : null;
+  const query = record ? crossNameQuery(record) : null;
   if (!record || !query?.name || !query.number) {
     return { status: "miss", via, foreignId, reason: "not on Metron", nameSearched: false };
   }

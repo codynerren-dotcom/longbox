@@ -13,7 +13,7 @@ import {
 import { fetchMetronIssueBody, legacyMetronNumber, listMetronIssueRows, metronIssueFollowUp, type MetronTransport } from "@/lib/covers/metron-client";
 import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
-import { catalogNameQueries, catalogSeriesQuery, collectedIssueToken, collectedSearchNames, isbnDigits, isCollected, metronSeriesType, rankSeriesHits, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
+import { catalogNameQueries, catalogSeriesQuery, isbnDigits, isCollected, metronSeriesType, rankSeriesHits, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
 
 const CV_BASE = "https://comicvine.gamespot.com/api";
 
@@ -40,24 +40,13 @@ export async function searchMetronMatches(
   }
   const parsed = parseMatchQuery(query);
   if (!parsed.series && !parsed.issueNo) return [];
-  const token = collectedIssueToken(parsed.issueNo);
-  const effective = isCollected(format) ? format : token?.format ?? format;
-  const typeName = isCollected(effective) ? metronSeriesType(effective) : null;
+  const typeName = isCollected(format) ? metronSeriesType(format) : null;
   if (typeName) {
     const seriesName = catalogSeriesQuery(tradeSearchSeries(parsed.series) || parsed.series, shelfSeries).name || parsed.series;
-    const number = volumeNumber(parsed.issueNo) ?? token?.number ?? null;
+    const number = volumeNumber(parsed.issueNo);
     if (!seriesName) return [];
     const hits: MatchHit[] = [];
-    for (const name of collectedSearchNames(seriesName, effective)) {
-      const direct = new URLSearchParams({ series_name: name, series_type: typeName });
-      if (number) direct.set("number", number);
-      const listed = await listMetronIssueRows(transport, `/issue/?${direct.toString()}`);
-      for (const issue of listed) {
-        if (!collectedIssueFits(issue, typeName, seriesName)) continue;
-        const hit = mapMetronMatchHit(issue);
-        if (hit && !hits.some((item) => item.id === hit.id)) hits.push(hit);
-      }
-      if (hits.length > 0) break;
+    for (const name of catalogNameQueries(seriesName, { broad: true })) {
       const seriesRows = await listMetronIssueRows(
         transport,
         `/series/?${new URLSearchParams({ name, series_type: typeName }).toString()}`,
@@ -108,24 +97,6 @@ export async function searchMetronMatches(
 }
 
 /** Volume when the title has one. Otherwise the series start year, then the shelf year. One of those, on the same request. */
-function collectedIssueFits(row: unknown, typeName: string, seriesName: string): boolean {
-  if (!row || typeof row !== "object") return false;
-  const series = (row as { series?: unknown }).series;
-  const record = series && typeof series === "object" ? (series as { name?: unknown; series_type?: unknown }) : null;
-  const name = typeof record?.name === "string" ? record.name : typeof series === "string" ? series : "";
-  if (name && !seriesNamesMatch(seriesName, name)) return false;
-  const type = seriesTypeLabel(record?.series_type);
-  if (type && type.toLowerCase() !== typeName.toLowerCase()) return false;
-  return true;
-}
-
-function seriesTypeLabel(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (!value || typeof value !== "object") return null;
-  const name = (value as { name?: unknown }).name;
-  return typeof name === "string" && name.trim() ? name.trim() : null;
-}
-
 function metronNameParams(
   name: string,
   issueNo: string | null,

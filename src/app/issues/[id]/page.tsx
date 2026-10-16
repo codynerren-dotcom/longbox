@@ -25,7 +25,7 @@ import { getPreferences, getSettings } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
 import { copiesOf, type ShelfCopy } from "@/lib/shelf-copies";
 import { groupQuantity } from "@/lib/series-view";
-import { catalogMatchIssue, isCollected, shelfFormatOf, tradeSearchSeries, volumeLabel } from "@/lib/shelf-format";
+import { isCollected, shelfFormatOf, tradeSearchSeries, volumeLabel, volumeNumber } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
@@ -55,8 +55,6 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
   const sourced = (field: string) => fieldCredit(comic.fieldSources, field);
   const edition = detectEdition(comic);
-  const matchIssue = catalogMatchIssue(comic);
-  const collected = isCollected(matchIssue.format);
   const matchYear = edition.reprint ? (comic.releaseYear ?? comic.coverYear ?? comic.seriesYear) : (comic.coverYear ?? comic.releaseYear ?? comic.seriesYear);
   const spent = costBasis(comic.purchasePrice, comic.quantity);
   const boxes = boxRows.map((row) => row.storageBox).filter((name): name is string => Boolean(name));
@@ -97,12 +95,12 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
       <div className="relative">
         <CoverTile
           title={comic.series}
-          issue={collected ? volumeLabel(comic.issueNo, comic.issue) : comic.issueNo}
+          issue={isCollected(shelfFormatOf(comic.shelfFormat)) ? volumeLabel(comic.issueNo, comic.issue) : comic.issueNo}
           coverUrl={comic.coverUrl}
           keyLevel={comic.keyLevel}
           slab={comic.rawOrSlabbed === "Slabbed"}
           variant={comic.variant}
-          shelfFormat={matchIssue.format}
+          shelfFormat={comic.shelfFormat}
         />
         <CoverControls comicId={comic.id} hasCover={hasCover} canRevert={canRevert} placement={hasCover ? "menu" : "overlay"} />
         <p className="mt-3 text-sm text-mist">
@@ -135,12 +133,14 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         {comic.metronIssueId || comic.metronSeriesId || citesMetron(comic.fieldSources) ? <MetronCredit /> : null}
         <MatchPanel
           comicId={comic.id}
-          shelfFormat={matchIssue.format}
+          shelfFormat={comic.shelfFormat}
           shelfSeries={comic.series}
           query={matchQuery({
-            series: collected ? tradeSearchSeries(comic.series) || comic.series : edition.searchNames[0] || comic.series,
-            issueNo: collected
-              ? matchIssue.number
+            series: isCollected(shelfFormatOf(comic.shelfFormat))
+              ? tradeSearchSeries(comic.series) || comic.series
+              : edition.searchNames[0] || comic.series,
+            issueNo: isCollected(shelfFormatOf(comic.shelfFormat))
+              ? volumeNumber(comic.issueNo, comic.issue)
               : edition.kind === "facsimile" || edition.kind === "printing"
                 ? edition.issueNo
                 : comic.issueNo,
