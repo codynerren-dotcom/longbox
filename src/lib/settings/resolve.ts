@@ -1,5 +1,5 @@
 export const PLAIN_KEYS = ["metron.username", "gcd.username", "ebay.clientId"] as const;
-export const SECRET_KEYS = ["metron.password", "gcd.password", "comicvine.apiKey", "ebay.clientSecret"] as const;
+export const SECRET_KEYS = ["metron.token", "metron.password", "gcd.password", "comicvine.apiKey", "ebay.clientSecret"] as const;
 export const CREDENTIAL_KEYS = [...PLAIN_KEYS, ...SECRET_KEYS] as const;
 
 export type PlainKey = (typeof PLAIN_KEYS)[number];
@@ -37,7 +37,7 @@ export type FieldView =
   | { kind: "secret"; source: ValueSource; value: null; mask: typeof SECRET_MASK | null };
 
 export type SettingsView = {
-  metron: { username: FieldView; password: FieldView };
+  metron: { token: FieldView; username: FieldView; password: FieldView };
   gcd: { username: FieldView; password: FieldView };
   comicvine: { apiKey: FieldView };
   ebay: { clientId: FieldView; clientSecret: FieldView };
@@ -51,6 +51,7 @@ export type IntegrationConfig = {
     token: string | null;
     baseUrl: string;
     configured: boolean;
+    tokenSource: ValueSource;
     usernameSource: ValueSource;
     passwordSource: ValueSource;
   };
@@ -139,7 +140,7 @@ function secretView(source: ValueSource): FieldView {
 export function buildConfig(stored: StoredSettings, env: EnvSnapshot): IntegrationConfig {
   const username = resolveString(stored.secrets["metron.username"], env.metronUsername);
   const password = resolveString(stored.secrets["metron.password"], env.metronPassword);
-  const token = env.metronToken.trim();
+  const token = resolveString(stored.secrets["metron.token"], env.metronToken);
   const gcdUsername = resolveString(stored.secrets["gcd.username"], env.gcdUsername);
   const gcdPassword = resolveString(stored.secrets["gcd.password"], env.gcdPassword);
   const comicvine = resolveString(stored.secrets["comicvine.apiKey"], env.comicvineApiKey);
@@ -150,9 +151,10 @@ export function buildConfig(stored: StoredSettings, env: EnvSnapshot): Integrati
     metron: {
       username: username.value ?? "",
       password: password.value ?? "",
-      token: token || null,
+      token: token.value,
       baseUrl: (env.metronBase || "https://metron.cloud/api").replace(/\/$/, ""),
-      configured: Boolean((username.value && password.value) || token),
+      configured: Boolean(token.value || (username.value && password.value)),
+      tokenSource: token.source,
       usernameSource: username.source,
       passwordSource: password.source,
     },
@@ -182,6 +184,7 @@ export function buildConfig(stored: StoredSettings, env: EnvSnapshot): Integrati
 export function toSettingsView(config: IntegrationConfig): SettingsView {
   return {
     metron: {
+      token: secretView(config.metron.tokenSource),
       username: plainView(config.metron.usernameSource, config.metron.username),
       password: secretView(config.metron.passwordSource),
     },
@@ -209,6 +212,7 @@ export function applyCredentialOverrides(
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
   };
+  const token = typed("metron.token");
   const username = typed("metron.username");
   const password = typed("metron.password");
   const gcdUsername = typed("gcd.username");
@@ -216,6 +220,7 @@ export function applyCredentialOverrides(
   const apiKey = typed("comicvine.apiKey");
   const clientId = typed("ebay.clientId");
   const clientSecret = typed("ebay.clientSecret");
+  const nextToken = token ?? config.metron.token;
   const nextUsername = username ?? config.metron.username;
   const nextPassword = password ?? config.metron.password;
   const nextGcdUsername = gcdUsername ?? config.gcd.username;
@@ -227,9 +232,11 @@ export function applyCredentialOverrides(
     ...config,
     metron: {
       ...config.metron,
+      token: nextToken,
       username: nextUsername,
       password: nextPassword,
-      configured: Boolean((nextUsername && nextPassword) || config.metron.token),
+      configured: Boolean(nextToken || (nextUsername && nextPassword)),
+      tokenSource: token ? "database" : config.metron.tokenSource,
       usernameSource: username ? "database" : config.metron.usernameSource,
       passwordSource: password ? "database" : config.metron.passwordSource,
     },

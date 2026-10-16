@@ -177,6 +177,38 @@ describe("settings resolution", () => {
     expect((await service.get()).comicvine.apiKey).toBe("cv-live-key");
   });
 
+  it("stores a Metron API token as ciphertext and sends it as Bearer ahead of a password", async () => {
+    const repo = memoryRepo();
+    const service = createSettingsService({
+      repo,
+      key,
+      env: env({ metronUsername: "cody", metronPassword: "secret", metronToken: "env-token" }),
+    });
+    await service.saveSecret("metron.token", "saved-token");
+    const row = repo.rows.find((item) => item.key === "metron.token");
+    expect(row?.secret?.startsWith("v1.")).toBe(true);
+    expect(row?.secret).not.toContain("saved-token");
+    const saved = await service.get();
+    expect(saved.metron.token).toBe("saved-token");
+    expect(saved.metron.tokenSource).toBe("database");
+    expect(metronAuthorization(saved)?.header).toBe("Bearer saved-token");
+    const view = await service.view();
+    expect(view.metron.token).toEqual({ kind: "secret", source: "database", value: null, mask: SECRET_MASK });
+    expect(JSON.stringify(view)).not.toContain("saved-token");
+    expect(JSON.stringify(view)).not.toContain("env-token");
+
+    const headers: string[] = [];
+    const result = await probeMetron(
+      applyCredentialOverrides(saved, { "metron.token": "typed-token", "metron.password": "typed-pass" }),
+      async (_url, init) => {
+        headers.push(String((init?.headers as { Authorization?: string }).Authorization));
+        return new Response("{}", { status: 200 });
+      },
+    );
+    expect(headers[0]).toBe("Bearer typed-token");
+    expect(result).toEqual({ ok: true, message: "Metron accepted the API token." });
+  });
+
   it("sends a Bearer token when a token is saved, even if a username and password are also set", () => {
     const config = buildConfig(emptyStored(), env({ metronUsername: "cody", metronPassword: "secret", metronToken: "token-value" }));
     expect(metronAuthorization(config)?.header).toBe("Bearer token-value");
