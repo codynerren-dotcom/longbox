@@ -1,16 +1,27 @@
 import type { Prisma } from "@prisma/client";
+import { comicVineIssue, comicVineVolumeStartYear } from "@/lib/catalog/match-search";
+import { matchHitFromIssue, type MatchHit } from "@/lib/catalog/match-hits";
 import { readManualLink, stripLockedCover } from "@/lib/catalog/manual-link";
+import { createGcdCatalog, GcdBudgetError } from "@/lib/catalog/gcd";
 import { coverPublicPath } from "@/lib/covers/backfill";
-import { blankCrossIds, crossLinkDownloadsCover, crossLinkLine, lookupCrossIssue, type CrossCopy, type CrossVia } from "@/lib/covers/cross-link";
+import { blankCrossIds, crossForeignFromComicVine, crossLinkDownloadsCover, crossLinkLine, lookupCrossIssue, type CrossCopy, type CrossForeign, type CrossLookup, type CrossResult, type CrossVia } from "@/lib/covers/cross-link";
 import { writePrintingCover } from "@/lib/covers/facsimile-years";
 import { savedPrintingCover } from "@/lib/covers/match";
 import { planEnrichment, type MetronDetails } from "@/lib/covers/enrich";
 import { downloadCover } from "@/lib/covers/files";
-import { fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
+import { fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronIssuesByNameOnce, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
 import { MetronBudgetError, type MetronIssueHit } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
 import { writeLog } from "@/lib/log/write";
-import { getPreferences } from "@/lib/settings/service";
+import { getPreferences, getSettings } from "@/lib/settings/service";
+
+export type ForeignLinkOutcome = {
+  line: string | null;
+  hits: MatchHit[];
+  candidateNote: string | null;
+};
+
+const emptyOutcome: ForeignLinkOutcome = { line: null, hits: [], candidateNote: null };
 
 const copySelect = {
   id: true,
@@ -67,17 +78,48 @@ function toCopy(row: CopyRow, embeddedMetronIssueId?: string | null): CrossCopy 
     comicvineIssueId: row.comicvineIssueId,
     gcdIssueId: row.gcdIssueId,
     embeddedMetronIssueId,
+    barcode: row.barcode,
     userCover: link.userCover,
     coverFile: row.coverFile,
     coverStatus: row.coverStatus,
   };
 }
 
-function lookupFor(transport: MetronTransport) {
+export function createCrossLookup(transport: MetronTransport): CrossLookup {
   return {
     byComicVine: (id: string) => metronIssuesByCrossId(transport, "cv_id", id),
     byGcd: (id: string) => metronIssuesByCrossId(transport, "gcd_id", id),
+    foreignIssue: (via, id) => (via === "gcd_id" ? loadGcdForeign(id) : loadComicVineForeign(id)),
+    byName: (query) => metronIssuesByNameOnce(transport, query.name, query.number, query.year),
   };
+}
+
+async function loadGcdForeign(id: string): Promise<CrossForeign | null> {
+  try {
+    const issue = await createGcdCatalog().issue(id);
+    if (!issue?.seriesName || !issue.number) return null;
+    return { seriesName: issue.seriesName, number: issue.number, seriesYear: issue.seriesYear, barcode: issue.barcode };
+  } catch (error) {
+    if (error instanceof GcdBudgetError) throw error;
+    return null;
+  }
+}
+
+async function loadComicVineForeign(id: string): Promise<CrossForeign | null> {
+  try {
+    const settings = await getSettings();
+    const apiKey = settings.comicvine.apiKey?.trim() ?? "";
+    if (!apiKey) return null;
+    const body = await comicVineIssue(apiKey, id);
+    const foreign = body ? crossForeignFromComicVine(body) : null;
+    if (!foreign) return null;
+    if (foreign.seriesYear != null || !foreign.volumeId) return foreign;
+    const year = await comicVineVolumeStartYear(apiKey, foreign.volumeId);
+    return year == null ? foreign : { ...foreign, seriesYear: year };
+  } catch (error) {
+    if (error instanceof Error && error.name === "ComicVineBudgetError") throw error;
+    return null;
+  }
 }
 
 /** Walk every copy that already has a Comic Vine or GCD id and no Metron id. */
@@ -94,30 +136,41 @@ export async function crossLinkShelf(log: (line: string) => void = () => undefin
   });
   log(`Cross-link pass: ${rows.length} ${rows.length === 1 ? "copy has" : "copies have"} a Comic Vine or GCD id and no Metron id.`);
   for (const row of rows) {
-    const line = await linkRow(row, transport);
-    if (line) log(line);
+    const outcome = await linkRow(row, transport);
+    if (outcome.line) log(outcome.line);
   }
 }
 
 /** After a Comic Vine or GCD link, store the matching Metron issue when there isn't one yet. */
-export async function linkMetronFromForeignIds(comicId: string, embeddedMetronIssueId?: string | null): Promise<string | null> {
-  if (!(await metronBasicAuth())) return null;
+export async function linkMetronFromForeignIds(comicId: string, embeddedMetronIssueId?: string | null): Promise<ForeignLinkOutcome> {
+  if (!(await metronBasicAuth())) return emptyOutcome;
   const row = await prisma.comic.findUnique({ where: { id: comicId }, select: copySelect });
-  if (!row) return null;
+  if (!row) return emptyOutcome;
   const transport = await metronTransport();
   return linkRow(row, transport, embeddedMetronIssueId);
 }
 
-async function linkRow(row: CopyRow, transport: MetronTransport, embeddedMetronIssueId?: string | null): Promise<string | null> {
+async function linkRow(row: CopyRow, transport: MetronTransport, embeddedMetronIssueId?: string | null): Promise<ForeignLinkOutcome> {
   const copy = toCopy(row, embeddedMetronIssueId);
-  const result = await lookupCrossIssue(copy, lookupFor(transport));
-  if (result.status !== "linked") return crossLinkLine(copy, result);
+  const lookup = createCrossLookup(transport);
+  const result = await lookupCrossIssue(copy, lookup);
+  if (result.status !== "linked") return outcomeFrom(copy, result);
   const saved = await saveCrossLink(row, result.hit, result.via, result.foreignId, transport, Boolean(embeddedMetronIssueId) && result.hit.seriesId == null && result.hit.imageUrl == null);
-  if (saved) return saved;
-  if (!embeddedMetronIssueId) return null;
-  const retry = await lookupCrossIssue(toCopy(row), lookupFor(transport));
-  if (retry.status !== "linked") return crossLinkLine(copy, retry);
-  return saveCrossLink(row, retry.hit, retry.via, retry.foreignId, transport, false);
+  if (saved) return { line: saved, hits: [], candidateNote: null };
+  if (!embeddedMetronIssueId) return emptyOutcome;
+  const retry = await lookupCrossIssue(toCopy(row), lookup);
+  if (retry.status !== "linked") return outcomeFrom(copy, retry);
+  const line = await saveCrossLink(row, retry.hit, retry.via, retry.foreignId, transport, false);
+  return { line, hits: [], candidateNote: null };
+}
+
+function outcomeFrom(copy: CrossCopy, result: CrossResult): ForeignLinkOutcome {
+  const hits = result.status === "candidates" ? result.hits.map(matchHitFromIssue).filter((hit): hit is MatchHit => hit !== null) : [];
+  return {
+    line: crossLinkLine(copy, result),
+    hits,
+    candidateNote: result.status === "candidates" ? result.reason : null,
+  };
 }
 
 async function saveCrossLink(

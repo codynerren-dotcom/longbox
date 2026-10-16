@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { linkMatchAction, loadGcdMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
+import { useEffect, useState, useTransition } from "react";
+import { linkMatchAction, loadCrossCandidatesAction, loadGcdMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
 import { queueSearchAction } from "@/app/logs/queue-actions";
 import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
 import { MetronCredit } from "@/components/metron-credit";
@@ -171,6 +171,22 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
     : "Metron may not list this trade, try GCD.";
   const visibleCovers = covers.filter((cover) => !isGcdScanHost(cover.imageUrl));
 
+  useEffect(() => {
+    if (props.metronIssueId || (!props.gcdIssueId && !props.comicvineIssueId)) return;
+    let cancel = false;
+    start(async () => {
+      const cached = await loadCrossCandidatesAction(props.comicId);
+      if (cancel || !cached || cached.hits.length === 0) return;
+      setSource("metron");
+      setHits(cached.hits);
+      setSelected(null);
+      setNote(cached.message);
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [props.comicId, props.comicvineIssueId, props.gcdIssueId, props.metronIssueId, start]);
+
   function selectSource(next: CatalogSource) {
     setSource(next);
     setHits([]);
@@ -333,6 +349,14 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
         setError(result.notice ? "" : result.message);
         setNote(result.notice ?? "");
         return;
+      }
+      if (result.hits && result.hits.length > 0) {
+        setSource("metron");
+        setHits(result.hits);
+        setSelected(null);
+        setCovers([]);
+        setCoverUrl(null);
+        setNote(result.candidateNote ?? "");
       }
       props.onLinked(result.message, result.notice);
     });

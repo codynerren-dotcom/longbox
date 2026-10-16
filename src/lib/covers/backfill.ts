@@ -300,6 +300,7 @@ export async function backfillCovers(args: {
             comicvineIssueId: comic.comicvineIssueId,
             gcdIssueId: comic.gcdIssueId,
             embeddedMetronIssueId: comic.embeddedMetronIssueId,
+            barcode: comic.barcode,
             userCover: comic.userCover,
             coverFile: comic.coverFile,
             coverStatus: comic.coverStatus,
@@ -310,7 +311,7 @@ export async function backfillCovers(args: {
           { id: comic.id, series: comic.series, issueNo: comic.issueNo, issue: comic.issue, metronIssueId: comic.metronIssueId },
           cross,
         );
-        if (cross.status === "many") {
+        if (cross.status === "many" || cross.status === "candidates" || (cross.status === "miss" && cross.nameSearched)) {
           await args.markUnmatched(comic.id, cross.reason);
           summary.unmatched += 1;
           if (line) args.log?.(line);

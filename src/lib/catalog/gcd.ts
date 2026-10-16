@@ -373,6 +373,13 @@ function idFromApiUrl(value: unknown): string | null {
   return match?.[1] && match[1] !== "0" ? match[1] : null;
 }
 
+function seriesYearFromName(name: string): number | null {
+  const match = name.match(/\(((?:18|19|20)\d{2})\s+series\)\s*$/i);
+  if (!match?.[1]) return null;
+  const year = Number.parseInt(match[1], 10);
+  return Number.isFinite(year) ? year : null;
+}
+
 function yearFrom(value: unknown): number | null {
   const raw = text(value);
   if (!raw) return null;
@@ -483,6 +490,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
   const id = idFromApiUrl(row.api_url) ?? text(row.id);
   const seriesName = text(row.series_name);
   if (!id || !seriesName) return null;
+  const namedYear = seriesYearFromName(seriesName);
   const stories = Array.isArray(row.story_set) ? row.story_set.map(asRecord).filter((story): story is UnknownRecord => story !== null) : [];
   const story = stories.find((item) => text(item.type) === "comic story") ?? stories.find((item) => text(item.type) !== "cover") ?? null;
   const cover = stories.find((item) => text(item.type) === "cover") ?? null;
@@ -508,7 +516,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     artist: creditText(story?.pencils),
     coverArtist: creditText(cover?.pencils),
     characters: creditText(story?.characters),
-    seriesYear,
+    seriesYear: seriesYear ?? namedYear,
     comicvineIssueId: foreignDigits(row, ["cv_id", "comicvine_id", "comicvine_issue_id"]),
     metronIssueId: foreignDigits(row, ["metron_id", "metron_issue_id"]),
     collects: readCollectedIssues(row),

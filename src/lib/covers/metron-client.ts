@@ -535,6 +535,27 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
   };
 }
 
+/** One list request: series name, issue number, and series year. No `alt_number`, `series_q`, or next page. */
+export async function metronIssuesByNameOnce(
+  transport: MetronTransport,
+  seriesName: string,
+  number: string,
+  seriesYearBegan: number | null,
+): Promise<MetronIssueHit[]> {
+  const path = metronIssueQuery(seriesName, number, seriesYearBegan, "primary");
+  if (!path) return [];
+  const body = await requestMetronJson(transport, path);
+  const hits: MetronIssueHit[] = [];
+  const rows = Array.isArray(body.results) ? body.results : [];
+  for (const row of rows) {
+    const hit = mapIssue(row);
+    if (!hit) continue;
+    hits.push(hit);
+    if (hits.length >= 12) break;
+  }
+  return hits;
+}
+
 /** Metron filters an issue list by Comic Vine id (`cv_id`) or GCD id (`gcd_id`). */
 export async function metronIssuesByCrossId(transport: MetronTransport, key: "cv_id" | "gcd_id", id: string): Promise<MetronIssueHit[]> {
   const digits = externalDigits(id);

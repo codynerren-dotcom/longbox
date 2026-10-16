@@ -4,6 +4,8 @@ import { unlink } from "node:fs/promises";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { linkIssueToCatalog, loadIssueCovers, repullLinkedCover, searchIssueCatalog, unlinkIssueCatalog, type MatchSearchResult } from "@/lib/catalog/link-issue";
+import { readCrossMiss } from "@/lib/covers/cross-miss";
+import { matchHitFromIssue } from "@/lib/catalog/match-hits";
 import { hintFromBlocks, type QueueHint } from "@/lib/catalog/search-queue";
 import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
 import { loadGcdIssueHits } from "@/lib/covers/gcd-match";
@@ -136,10 +138,32 @@ export async function linkMatchAction(args: {
   overwrite?: boolean;
   replaceExisting?: boolean;
   coverImageUrl: string | null;
-}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null }> {
+}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null; hits?: MatchHit[]; candidateNote?: string | null }> {
   const result = await linkIssueToCatalog(args);
   if (result.ok) await refreshIssue(args.comicId);
   return result;
+}
+
+export async function loadCrossCandidatesAction(comicId: string): Promise<{ message: string; hits: MatchHit[] } | null> {
+  const comic = await prisma.comic.findUnique({
+    where: { id: comicId },
+    select: { metronIssueId: true, comicvineIssueId: true, gcdIssueId: true },
+  });
+  if (!comic || comic.metronIssueId) return null;
+  const cv = digitsId(comic.comicvineIssueId);
+  const gcd = digitsId(comic.gcdIssueId);
+  if (!cv && !gcd) return null;
+  const stored = await readCrossMiss(cv, gcd);
+  if (!stored || stored.hits.length === 0) return null;
+  const hits = stored.hits.map(matchHitFromIssue).filter((hit): hit is MatchHit => hit !== null);
+  if (hits.length === 0) return null;
+  return { message: stored.reason, hits };
+}
+
+function digitsId(value: string | null): string | null {
+  const text = value?.trim() ?? "";
+  if (!/^\d{1,12}$/.test(text) || text === "0") return null;
+  return text;
 }
 
 export async function unlinkMatchAction(comicId: string, source: CatalogSource): Promise<{ ok: boolean; message: string }> {

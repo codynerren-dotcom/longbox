@@ -26,7 +26,8 @@ import { pauseLabel, sliceAfterCursor } from "@/lib/catalog/rate-limit";
 import { ensureRateHydrated, readJobWindow, saveJobWindow } from "@/lib/catalog/rate-store";
 import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
-import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, nextMetronQueueAt, type MetronTransport } from "@/lib/covers/metron-client";
+import { createCrossLookup } from "@/lib/covers/cross-link-run";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, type MetronTransport } from "@/lib/covers/metron-client";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
@@ -419,10 +420,7 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
       });
     },
     gcd: (comic) => resolveGcdCover(comic, createGcdCatalog()),
-    crossLookup: {
-      byComicVine: (id) => metronIssuesByCrossId(transport, "cv_id", id),
-      byGcd: (id) => metronIssuesByCrossId(transport, "gcd_id", id),
-    },
+    crossLookup: createCrossLookup(transport),
     markGcd: async (id, update) => {
       const issue = await createGcdCatalog().issue(update.gcdIssueId);
       const detail = issue ? gcdDetails(issue) : null;
@@ -610,10 +608,7 @@ export async function refetchOneCover(comicId: string): Promise<string> {
         });
       },
       gcd: (row) => resolveGcdCover(row, createGcdCatalog()),
-      crossLookup: {
-        byComicVine: (id) => metronIssuesByCrossId(transport, "cv_id", id),
-        byGcd: (id) => metronIssuesByCrossId(transport, "gcd_id", id),
-      },
+      crossLookup: createCrossLookup(transport),
       markGcd: async (id, update) => {
         const issue = await createGcdCatalog().issue(update.gcdIssueId);
         const detail = issue ? gcdDetails(issue) : null;

@@ -353,7 +353,7 @@ export async function linkIssueToCatalog(args: {
   overwrite?: boolean;
   replaceExisting?: boolean;
   coverImageUrl: string | null;
-}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null }> {
+}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null; hits?: MatchHit[]; candidateNote?: string | null }> {
   if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish.", notice: null, queue: null };
   const comic = await comicForLink(args.comicId);
   if (!comic) return { ok: false, message: "That issue is not on the shelf.", notice: null, queue: null };
@@ -406,10 +406,14 @@ export async function linkIssueToCatalog(args: {
       if (typeof update.data.comicvineIssueId === "string") message += ` Stored Comic Vine ${update.data.comicvineIssueId}.`;
       if (typeof update.data.gcdIssueId === "string") message += ` Stored GCD ${update.data.gcdIssueId}.`;
     }
+    let candidateHits: MatchHit[] = [];
+    let candidateNote: string | null = null;
     if ((args.source === "comicvine" || args.source === "gcd") && !comic.metronIssueId && !readManualLink(comic.manualLink).metronIssueId) {
       try {
         const follow = await linkMetronFromForeignIds(comic.id, loaded.embeddedMetronIssueId);
-        if (follow) message = `${message} ${follow}`;
+        if (follow.line) message = `${message} ${follow.line}`;
+        candidateHits = follow.hits;
+        candidateNote = follow.candidateNote;
       } catch (error) {
         const note = error instanceof Error ? error.message : "Metron cross-link failed.";
         const block = limitBlocks(error);
@@ -423,7 +427,7 @@ export async function linkIssueToCatalog(args: {
       message,
       details: { comicId: comic.id, externalId: args.hit.id, useCover: args.useCover, fillMissing: args.fillMissing, filled: update.filled },
     });
-    return { ok: true, message, notice: crossNotice, queue: null };
+    return { ok: true, message, notice: crossNotice, queue: null, hits: candidateHits, candidateNote };
   } catch (error) {
     const block = limitBlocks(error);
     const notice = block ? noticeText([block], []) : null;

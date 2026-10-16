@@ -1,3 +1,5 @@
+import type { MetronIssueHit } from "@/lib/covers/types";
+
 export type MatchCover = {
   label: string;
   imageUrl: string;
@@ -100,6 +102,27 @@ export function variantCoversFrom(value: unknown): MatchCover[] {
     }
   }
   return dedupeCovers(covers);
+}
+
+export function matchHitFromIssue(hit: MetronIssueHit): MatchHit | null {
+  if (!/^\d{1,12}$/.test(hit.id) || !hit.seriesName.trim()) return null;
+  const covers = (hit.covers ?? []).filter((cover) => cover.imageUrl).map((cover) => ({ label: cover.label, imageUrl: cover.imageUrl }));
+  if (hit.imageUrl && !covers.some((cover) => cover.imageUrl === hit.imageUrl)) covers.unshift({ label: "Cover", imageUrl: hit.imageUrl });
+  return {
+    source: "metron",
+    id: hit.id,
+    seriesId: hit.seriesId && /^\d{1,12}$/.test(hit.seriesId) ? hit.seriesId : null,
+    series: hit.seriesName.trim(),
+    issueNo: hit.number,
+    variant: hit.variant ?? null,
+    coverDate: hit.storeDate ?? (hit.coverYear != null ? String(hit.coverYear) : null),
+    publisher: hit.publisher ?? null,
+    coverUrl: hit.imageUrl,
+    covers,
+    barcode: hit.upc ?? null,
+    ...(hit.seriesYear != null ? { seriesYear: hit.seriesYear } : {}),
+    ...(hit.seriesVolume != null ? { seriesVolume: hit.seriesVolume } : {}),
+  };
 }
 
 export function mapMetronMatchHit(value: unknown): MatchHit | null {

@@ -354,6 +354,12 @@ export async function fetchComicVineIssueCount(apiKey: string, volumeId: string,
   return parseComicVineIssueCount(result);
 }
 
+export async function comicVineVolumeStartYear(apiKey: string, volumeId: string, fetchImpl: typeof fetch = fetch): Promise<number | null> {
+  if (!apiKey.trim() || !/^\d+$/.test(volumeId) || volumeId === "0") return null;
+  const result = await comicVineGet(fetchImpl, apiKey, `/volume/4050-${volumeId}/`, { field_list: "start_year" });
+  return volumeStartYear(result);
+}
+
 export async function comicVineIssue(apiKey: string, issueId: string, fetchImpl: typeof fetch = fetch): Promise<unknown | null> {
   if (!/^\d+$/.test(issueId)) return null;
   return comicVineGet(fetchImpl, apiKey, `/issue/4000-${issueId}/`, {
