@@ -11,6 +11,8 @@ export function apiEvent(args: {
   status: number | null;
   error?: string | null;
   now?: number;
+  /** Metron requests already counted today, including this one. */
+  dayCount?: number;
 }): LogInput {
   const method = (args.method ?? "GET").toUpperCase();
   const url = safeUrl(args.url);
@@ -26,6 +28,7 @@ export function apiEvent(args: {
       url,
       status,
       latencyMs,
+      ...(args.dayCount != null ? { dayCount: args.dayCount } : {}),
       ...(error ? { error } : {}),
     },
   };
@@ -39,6 +42,7 @@ export async function recordFetch(args: {
   status: number | null;
   error?: string | null;
   now?: number;
+  dayCount?: number;
 }): Promise<void> {
   await writeLog(apiEvent(args));
 }

@@ -1,12 +1,6 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
-import { currentLane } from "@/lib/catalog/rate-lane";
-import { pauseLabel } from "@/lib/catalog/rate-limit";
-import { assertMetronCircuit, isMetronTransportFailure, recordMetronTransportFailure, recordMetronTransportSuccess } from "@/lib/covers/metron-circuit";
-import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
-import { sharedMetronLimiter } from "@/lib/covers/metron-client";
-import { MetronBudgetError } from "@/lib/covers/types";
-import { recordFetch } from "@/lib/log/api";
+import { metronTransport, requestMetronJson } from "@/lib/covers/metron-client";
 import { getSettings } from "@/lib/settings/service";
 import { probeMetron, type ProbeResult } from "@/lib/settings/probe";
 import { metronAuthorization } from "@/lib/settings/resolve";
@@ -44,51 +38,7 @@ export async function testMetronConnection(fetchImpl?: typeof fetch): Promise<Pr
 async function metronGet(pathAndQuery: string): Promise<MetronPage> {
   const auth = metronAuthorization(await getSettings());
   if (!auth) return { results: [] };
-  const now = Date.now();
-  assertMetronCircuit(now);
-  await sharedMetronLimiter().acquire(currentLane());
-  const url = `${auth.baseUrl}${pathAndQuery}`;
-  const started = now;
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        Authorization: auth.header,
-        "User-Agent": "longbox/1.0",
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-  } catch (error) {
-    await recordFetch({
-      source: "metron",
-      url,
-      startedAt: started,
-      status: null,
-      error: error instanceof Error ? error.message : "Request failed.",
-    });
-    if (!(error instanceof MetronBudgetError) && isMetronTransportFailure(error)) await recordMetronTransportFailure(error, Date.now());
-    throw error;
-  }
-  recordMetronTransportSuccess(Date.now());
-  await recordFetch({ source: "metron", url, startedAt: started, status: response.status });
-  if (response.status === 429) {
-    sharedMetronLimiter().observe(response.headers);
-    const body = await response.text().catch(() => "");
-    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60_000;
-    const resumeAt = Date.now() + delay;
-    sharedMetronLimiter().notePause(resumeAt);
-    throw new MetronBudgetError(pauseLabel("Metron", resumeAt), {
-      budget: "Metron rate limit",
-      count: sharedMetronLimiter().snapshot().count,
-      resumeAt,
-    });
-  }
-  if (!response.ok) {
-    throw new Error(`Metron returned ${response.status}`);
-  }
-  sharedMetronLimiter().observe(response.headers);
-  return (await response.json()) as MetronPage;
+  return requestMetronJson(await metronTransport(), pathAndQuery) as Promise<MetronPage>;
 }
 
 function publisherName(issue: MetronIssue): string | null {

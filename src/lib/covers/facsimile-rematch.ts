@@ -15,7 +15,7 @@ import { coversDir, downloadCover } from "@/lib/covers/files";
 import { resolveGcdCover } from "@/lib/covers/gcd-match";
 import { readEditionJob, writeEditionJob } from "@/lib/covers/job-state";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
-import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, sharedMetronLimiter } from "@/lib/covers/metron-client";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
@@ -169,6 +169,11 @@ function wakeLater(resumeAt: number): void {
 export function scheduleFacsimileRematch(): void {
   if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
   if (finishedForProcess || inflight || editionRematchLockHeld()) return;
+  const metronHeld = nextMetronQueueAt(Date.now());
+  if (metronHeld != null && metronHeld > Date.now()) {
+    wakeLater(metronHeld);
+    return;
+  }
   const persisted = readEditionJob();
   if (persisted?.metronResumeAt) {
     const at = Date.parse(persisted.metronResumeAt);

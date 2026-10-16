@@ -149,15 +149,19 @@ describe("catalog series payloads", () => {
     const run = await fetchMetronSeriesRun(
       transport((url) => {
         urls.push(url);
-        if (url.endsWith("/series/15/")) return { id: 15, issue_count: 4 };
         if (url.includes("page=2")) {
-          return { next: null, results: [{ number: "01" }, { number: "3" }, { number: "Annual 1" }] };
+          return { count: 4, next: null, results: [{ number: "01" }, { number: "3" }, { number: "Annual 1" }] };
         }
-        return { next: "https://metron.cloud/api/issue/?series_id=15&page=2", results: [{ number: "1" }, { number: "2" }] };
+        return {
+          count: 4,
+          next: "https://metron.cloud/api/series/15/issue_list/?page=2",
+          results: [{ number: "1" }, { number: "2" }],
+        };
       }),
       "15",
     );
-    expect(urls[0]).toBe("https://metron.cloud/api/series/15/");
+    expect(urls[0]).toBe("https://metron.cloud/api/series/15/issue_list/");
+    expect(urls.some((url) => /\/series\/15\/?$/.test(url))).toBe(false);
     expect(run).toEqual({ numbers: ["1", "2", "3", "Annual 1"], issueCount: 4 });
     expect(urls.join(" ")).not.toContain("secret");
   });

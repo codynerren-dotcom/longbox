@@ -1,6 +1,6 @@
 import "server-only";
 
-import { hydrateMetronCircuit } from "@/lib/covers/metron-circuit";
+import { hydrateMetronCircuit, METRON_CIRCUIT_BASE_MS } from "@/lib/covers/metron-circuit";
 import {
   comicVineUsage,
   emptyComicVineRate,
@@ -184,7 +184,7 @@ function normalizeCircuit(value: unknown): MemoryShape["circuit"] {
   return {
     failures: typeof row.failures === "number" && row.failures > 0 ? Math.round(row.failures) : 0,
     openUntil: typeof row.openUntil === "number" && row.openUntil > 0 ? row.openUntil : 0,
-    pauseMs: typeof row.pauseMs === "number" && row.pauseMs > 0 ? row.pauseMs : 15 * 60 * 1000,
+    pauseMs: typeof row.pauseMs === "number" && row.pauseMs > 0 ? row.pauseMs : METRON_CIRCUIT_BASE_MS,
   };
 }
 

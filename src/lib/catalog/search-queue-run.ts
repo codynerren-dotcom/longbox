@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { limitBlockFromError } from "@/lib/catalog/limit-notice";
 import { linkIssueToCatalog, searchCatalogSource } from "@/lib/catalog/link-issue";
 import { runInLane } from "@/lib/catalog/rate-lane";
-import { ensureRateHydrated, readCircuitWindow, readComicVineWindow, readGcdWindow, readMetronWindow } from "@/lib/catalog/rate-store";
+import { ensureRateHydrated, readComicVineWindow, readGcdWindow } from "@/lib/catalog/rate-store";
 import {
   alreadyQueuedMessage,
   isQueueKind,
@@ -19,8 +19,9 @@ import {
   type QueueSource,
 } from "@/lib/catalog/search-queue";
 import { rematchShelfCopy } from "@/lib/covers/facsimile-rematch";
+import { MetronConnectError } from "@/lib/covers/types";
 import { loadGcdIssueHits } from "@/lib/covers/gcd-match";
-import { sharedMetronLimiter } from "@/lib/covers/metron-client";
+import { metronConnectHold, nextMetronQueueAt, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { writeLog } from "@/lib/log/write";
 import type { LogSource } from "@/lib/log/types";
@@ -28,6 +29,8 @@ import type { LogSource } from "@/lib/log/types";
 let timer: ReturnType<typeof setTimeout> | null = null;
 let armChain: Promise<void> = Promise.resolve();
 let draining = false;
+/** After a connect timeout, later Metron rows in this process wait with the one that failed. */
+let metronQuietUntil = 0;
 
 function skipped(): boolean {
   return process.env.VITEST === "true" || process.env.NEXT_PHASE === "phase-production-build";
@@ -41,12 +44,10 @@ function logSource(source: string): LogSource {
 
 function windowResumeAt(source: QueueSource, now: number): number | null {
   if (source === "metron") {
-    const circuit = readCircuitWindow();
-    const open = circuit && circuit.openUntil > now ? circuit.openUntil : null;
-    const paused = readMetronWindow().pausedUntil;
-    const rate = paused != null && paused > now ? paused : null;
-    if (open != null && rate != null) return Math.max(open, rate);
-    return open ?? rate;
+    const planned = nextMetronQueueAt(now);
+    const quiet = metronQuietUntil > now ? metronQuietUntil : null;
+    if (planned != null && quiet != null) return Math.max(planned, quiet);
+    return planned ?? quiet;
   }
   if (source === "gcd") {
     const paused = readGcdWindow().pausedUntil;
@@ -186,7 +187,14 @@ async function runQueued(row: {
   } catch (error) {
     const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
     if (block) {
+      if (row.source === "metron") metronQuietUntil = Math.max(metronQuietUntil, block.resumeAt);
       await prisma.searchQueue.update({ where: { id: row.id }, data: { resumeAt: new Date(futureResume(block.resumeAt)) } });
+      return;
+    }
+    if (row.source === "metron" && error instanceof MetronConnectError) {
+      const until = metronConnectHold(Date.now());
+      metronQuietUntil = Math.max(metronQuietUntil, until);
+      await prisma.searchQueue.update({ where: { id: row.id }, data: { resumeAt: new Date(futureResume(until)) } });
       return;
     }
     await writeLog({

@@ -176,7 +176,14 @@ async function loggedFetch(fetchImpl: typeof fetch, source: LogSource, url: stri
   const target = typeof url === "string" ? url : url.toString();
   try {
     const response = await fetchImpl(url, init);
-    await recordFetch({ source, method: init.method, url: target, startedAt: started, status: response.status });
+    await recordFetch({
+      source,
+      method: init.method,
+      url: target,
+      startedAt: started,
+      status: response.status,
+      dayCount: source === "metron" ? sharedMetronLimiter().snapshot().count : undefined,
+    });
     return response;
   } catch (error) {
     await recordFetch({
@@ -186,6 +193,7 @@ async function loggedFetch(fetchImpl: typeof fetch, source: LogSource, url: stri
       startedAt: started,
       status: null,
       error: error instanceof Error ? error.message : "Request failed.",
+      dayCount: source === "metron" ? sharedMetronLimiter().snapshot().count : undefined,
     });
     throw error;
   }

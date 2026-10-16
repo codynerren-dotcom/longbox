@@ -26,7 +26,7 @@ import { pauseLabel, sliceAfterCursor } from "@/lib/catalog/rate-limit";
 import { ensureRateHydrated, readJobWindow, saveJobWindow } from "@/lib/catalog/rate-store";
 import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
-import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, nextMetronQueueAt, type MetronTransport } from "@/lib/covers/metron-client";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
@@ -313,8 +313,17 @@ export async function resumePausedCatalogJobs(): Promise<void> {
     const cursor = readJobWindow(job);
     if (!cursor?.resumeAt) continue;
     const start = job === "backfill" ? () => startCoverBackfillInBackground({ resume: true }) : () => startMetronEnrichmentInBackground({ resume: true });
-    if (cursor.resumeAt <= Date.now()) void startAfterQueue(start);
-    else scheduleJobResume(job, cursor.resumeAt, () => start());
+    const begin = async () => {
+      const later = nextMetronQueueAt(Date.now());
+      if (later != null && later > Date.now()) {
+        scheduleJobResume(job, later, begin);
+        return;
+      }
+      await start();
+    };
+    const when = Math.max(cursor.resumeAt, nextMetronQueueAt(Date.now()) ?? 0);
+    if (when <= Date.now()) void startAfterQueue(start);
+    else scheduleJobResume(job, when, begin);
   }
 }
 

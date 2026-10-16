@@ -1,19 +1,20 @@
 import { variantCoversFrom } from "@/lib/catalog/match-hits";
-import { pauseLabel } from "@/lib/catalog/rate-limit";
+import { pauseLabel, planMetronAcquire } from "@/lib/catalog/rate-limit";
 import { currentLane } from "@/lib/catalog/rate-lane";
 import { readMetronWindow, saveMetronWindow } from "@/lib/catalog/rate-store";
 import { catalogBaseCount, catalogIssueCount, distinctIssueLabels, isVariantDescriptor } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
-import { budgetDay, formatResumeTime, retryAfterFromMessage, retryAfterMs, MetronLimiter, type BudgetStore } from "@/lib/covers/limiter";
+import { budgetDay, formatResumeTime, metronStatusPlan, MetronLimiter, type BudgetStore } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
 import {
   assertMetronCircuit,
-  isMetronTransportFailure,
+  METRON_CIRCUIT_BASE_MS,
+  readMetronCircuit,
   recordMetronTransportFailure,
   recordMetronTransportSuccess,
 } from "@/lib/covers/metron-circuit";
-import { MetronBudgetError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit, type MetronSeriesQuery } from "@/lib/covers/types";
+import { MetronBudgetError, MetronConnectError, type CoverLookup, type MetronIssueHit, type MetronSeriesHit, type MetronSeriesQuery } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
 import { getSettings } from "@/lib/settings/service";
@@ -264,71 +265,151 @@ async function takeJobSlot(now: number): Promise<void> {
   });
 }
 
+type CachedDetail = { modified: string; body: MetronPage };
+
+const detailCache = new Map<string, CachedDetail>();
+
+/** Drop conditional-request memory. Tests start from an empty cache. */
+export function clearMetronDetailCache(): void {
+  detailCache.clear();
+}
+
+/** Detail urls are `/issue/123/`. List urls are `/issue/?…` and stay uncached. */
+export function metronDetailIssueId(pathOrUrl: string): string | null {
+  const path = pathOrUrl.split("?")[0] ?? pathOrUrl;
+  const match = path.match(/\/issue\/(\d+)\/?$/);
+  return match?.[1] ?? null;
+}
+
+/**
+ * When the queue may send the next Metron request.
+ * An open breaker or a spent burst/daily window holds it. A pause with no reset waits out the probe interval.
+ */
+export function nextMetronQueueAt(now: number): number | null {
+  const circuit = readMetronCircuit();
+  const open = circuit.openUntil > now ? circuit.openUntil : null;
+  const plan = planMetronAcquire(readMetronWindow(), now, "interactive", budgetDay(new Date(now)));
+  const rate = plan.kind === "pause" ? (plan.hold.resumeAt > now ? plan.hold.resumeAt : now + METRON_CIRCUIT_BASE_MS) : null;
+  if (open != null && rate != null) return Math.max(open, rate);
+  return open ?? rate;
+}
+
+/** Soonest a queued Metron row may run after a connect timeout. Never sooner than the probe interval. */
+export function metronConnectHold(now: number): number {
+  const open = readMetronCircuit().openUntil;
+  return Math.max(open > now ? open : 0, now + METRON_CIRCUIT_BASE_MS);
+}
+
+async function logMetronFetch(
+  transport: MetronTransport,
+  url: string,
+  started: number,
+  status: number | null,
+  error?: string,
+): Promise<void> {
+  await recordFetch({
+    source: "metron",
+    url,
+    startedAt: started,
+    status,
+    error,
+    now: transport.now(),
+    dayCount: transport.limiter.snapshot().count,
+  });
+}
+
 async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<MetronPage> {
   if (process.env.VITEST !== "true") {
     const { ensureRateHydrated } = await import("@/lib/catalog/rate-store");
     await ensureRateHydrated();
   }
   const lane = currentLane();
+  const detailId = metronDetailIssueId(pathOrUrl);
   let attempt = 0;
   while (true) {
+    attempt += 1;
     assertMetronCircuit(transport.now());
     await takeJobSlot(transport.now());
     await transport.limiter.acquire(lane);
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      Authorization: basicAuthHeader(transport.username, transport.password),
+      "User-Agent": "longbox/1.0",
+    };
+    const cached = detailId ? detailCache.get(detailId) : undefined;
+    if (cached) headers["If-Modified-Since"] = cached.modified;
     const started = transport.now();
     let response: Response;
     try {
       response = await transport.fetch(url, {
-        headers: {
-          Accept: "application/json",
-          Authorization: basicAuthHeader(transport.username, transport.password),
-          "User-Agent": "longbox/1.0",
-        },
+        headers,
         signal: AbortSignal.timeout(15_000),
       });
     } catch (error) {
-      await recordFetch({
-        source: "metron",
-        url,
-        startedAt: started,
-        status: null,
-        error: error instanceof Error ? error.message : "Request failed.",
-        now: transport.now(),
-      });
-      if (isMetronTransportFailure(error)) await recordMetronTransportFailure(error, transport.now());
-      throw error;
+      const connect = new MetronConnectError(error instanceof Error ? error.message : "Request failed.", { cause: error });
+      await logMetronFetch(transport, url, started, null, connect.message);
+      await recordMetronTransportFailure(connect, transport.now());
+      throw connect;
     }
     recordMetronTransportSuccess(transport.now());
-    await recordFetch({ source: "metron", url, startedAt: started, status: response.status, now: transport.now() });
-    if (response.status === 429) {
-      attempt += 1;
+    await logMetronFetch(transport, url, started, response.status);
+    if (response.status === 304) {
       transport.limiter.observe(response.headers);
+      if (cached) return cached.body;
+      throw new Error("Metron returned 304");
+    }
+    if (response.status === 429 || (response.status >= 500 && response.status <= 599)) {
       const body = await response.text().catch(() => "");
-      const delay = retryAfterMs(response.headers, transport.now()) ?? retryAfterFromMessage(body) ?? Math.min(60_000, 5_000 * 2 ** (attempt - 1));
-      const resumeAt = transport.now() + delay;
-      if (lane === "background" || attempt >= 3 || delay > 120_000) {
-        transport.limiter.notePause(resumeAt);
+      const plan = metronStatusPlan({
+        status: response.status,
+        headers: response.headers,
+        body,
+        attempt,
+        now: transport.now(),
+        lane,
+      });
+      if (plan.action === "retry") {
+        const message =
+          response.status === 429
+            ? `Metron rate limit, backing off ${plan.waitMs}ms.`
+            : `Metron returned ${response.status}, backing off ${plan.waitMs}ms.`;
+        await writeLog({
+          level: "warn",
+          source: "covers/backfill",
+          message,
+          details: { delayMs: plan.waitMs, attempt, status: response.status },
+        });
+        transport.limiter.defer(plan.waitMs);
+        continue;
+      }
+      if (plan.action === "pause") {
+        transport.limiter.observe(response.headers);
+        transport.limiter.notePause(plan.resumeAt);
         const snap = transport.limiter.snapshot();
-        throw new MetronBudgetError(pauseLabel("Metron", resumeAt), {
+        throw new MetronBudgetError(pauseLabel("Metron", plan.resumeAt), {
           budget: "Metron rate limit",
           count: snap.count,
-          resumeAt,
+          resumeAt: plan.resumeAt,
         });
       }
-      await writeLog({
-        level: "warn",
-        source: "covers/backfill",
-        message: `Metron rate limit, backing off ${delay}ms.`,
-        details: { delayMs: delay, attempt, status: 429 },
-      });
-      transport.limiter.defer(delay);
-      continue;
+      throw new Error(`Metron returned ${response.status}`);
     }
     if (!response.ok) throw new Error(`Metron returned ${response.status}`);
     transport.limiter.observe(response.headers);
-    return (await response.json()) as MetronPage;
+    const json = (await response.json()) as MetronPage;
+    if (detailId) {
+      const modified = response.headers.get("last-modified");
+      if (modified) detailCache.set(detailId, { modified, body: json });
+      else detailCache.delete(detailId);
+    }
+    return json;
   }
+}
+
+/** Same request path the cover client uses, including retries, 304, and the daily count. */
+export async function requestMetronJson(transport: MetronTransport, pathOrUrl: string): Promise<MetronPage> {
+  return getJson(transport, pathOrUrl);
 }
 
 async function collect(transport: MetronTransport, path: string, map: (value: unknown) => MetronIssueHit | MetronSeriesHit | null) {
@@ -345,50 +426,25 @@ async function collect(transport: MetronTransport, path: string, map: (value: un
   return hits;
 }
 
-const BARCODE_DETAIL_CAP = 8;
-
-/** The list endpoint has no `upc`. Shared-prefix hits need the detail record before a tie-break. */
-async function hydrateBarcodeHits(transport: MetronTransport, hits: MetronIssueHit[]): Promise<MetronIssueHit[]> {
-  if (hits.length < 2) return hits;
-  const needsDetail = hits.some((hit) => !hit.upc && !(hit.upcs && hit.upcs.length > 0));
-  if (!needsDetail) return hits;
-  const detailed: MetronIssueHit[] = [];
-  let fetched = 0;
-  for (const hit of hits) {
-    if (hit.upc || (hit.upcs && hit.upcs.length > 0) || fetched >= BARCODE_DETAIL_CAP) {
-      detailed.push(hit);
-      continue;
-    }
-    fetched += 1;
-    const body = await fetchMetronIssueBody(transport, hit.id);
-    const mapped = body ? mapIssue(body) : null;
-    if (!mapped) {
-      detailed.push({ ...hit, detailFetched: true });
-      continue;
-    }
-    detailed.push({
-      ...hit,
-      ...mapped,
-      imageUrl: mapped.imageUrl || hit.imageUrl,
-      coverYear: mapped.coverYear ?? hit.coverYear,
-      seriesYear: mapped.seriesYear ?? hit.seriesYear,
-      publisher: mapped.publisher ?? hit.publisher,
-      number: mapped.number || hit.number,
-      detailFetched: true,
-    });
-  }
-  return detailed;
-}
-
 export function createMetronCoverLookup(transport: MetronTransport): CoverLookup {
   return {
     async issuesByUpc(upc) {
       const hits = await collect(transport, `/issue/?upc=${encodeURIComponent(upc)}`, mapIssue);
-      return hydrateBarcodeHits(transport, hits as MetronIssueHit[]);
+      return hits as MetronIssueHit[];
     },
     async issuesByUpcPrefix(upc) {
       const hits = await collect(transport, `/issue/?upc_starts_with=${encodeURIComponent(upc)}`, mapIssue);
-      return hydrateBarcodeHits(transport, hits as MetronIssueHit[]);
+      return hits as MetronIssueHit[];
+    },
+    async issuesByName(seriesName, number, seriesYearBegan) {
+      const params = new URLSearchParams();
+      const name = seriesName.trim();
+      if (name) params.set("series_name", name);
+      if (number.trim()) params.set("number", number.trim());
+      if (seriesYearBegan != null) params.set("series_year_began", String(seriesYearBegan));
+      if (params.size === 0) return [];
+      const hits = await collect(transport, `/issue/?${params.toString()}`, mapIssue);
+      return hits as MetronIssueHit[];
     },
     async searchSeries(name, query?: MetronSeriesQuery) {
       const params = new URLSearchParams({ name });
@@ -500,19 +556,25 @@ export function selectMetronSeriesRun(args: {
   return null;
 }
 
-/** Series `issue_count` plus distinct issue numbers from `/issue/?series_id=`. */
+function listTotal(body: MetronPage): number | null {
+  const row = record(body);
+  if (!row) return null;
+  return catalogIssueCount(row.count) ?? readMetronIssueCount(body);
+}
+
+/** Stored series id. Pages `/series/{id}/issue_list/` and does not load the series detail. */
 export async function fetchMetronSeriesRun(
   transport: MetronTransport,
   seriesId: string,
 ): Promise<{ numbers: string[]; issueCount: number | null } | null> {
   if (!/^\d+$/.test(seriesId) || seriesId === "0") return null;
-  const seriesBody = await getJson(transport, `/series/${seriesId}/`);
-  const issueCount = readMetronIssueCount(seriesBody);
   const numbers: string[] = [];
   let complete = true;
-  let next: string | null = `/issue/?series_id=${encodeURIComponent(seriesId)}`;
+  let issueCount: number | null = null;
+  let next: string | null = `/series/${encodeURIComponent(seriesId)}/issue_list/`;
   for (let page = 0; page < SERIES_RUN_PAGES && next; page += 1) {
     const body = await getJson(transport, next);
+    if (issueCount == null) issueCount = listTotal(body);
     for (const row of body.results ?? []) {
       const number = metronSeriesRunLabel(row);
       if (number) numbers.push(number);

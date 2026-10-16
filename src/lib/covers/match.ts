@@ -275,6 +275,13 @@ async function resolveFacsimileCover(comic: CoverQuery, edition: EditionProfile,
 
   let best: CoverDecision = { status: "unmatched", reason: `No facsimile issue for ${comic.series} #${edition.issueNo || "?"}.`, score: 0 };
   for (const search of edition.facsimileSearches) {
+    if (lookup.issuesByName) {
+      const issues = await lookup.issuesByName(search.series, search.issueNo, null);
+      const decision = chooseFacsimileIssue(issues, comic, "series");
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+      continue;
+    }
     const found = await lookup.searchSeries(search.series);
     const candidates = facsimileSeriesRows(found, search.series, comic.publisher);
     for (const candidate of candidates) {
@@ -509,6 +516,15 @@ async function resolvePrintingCover(comic: CoverQuery, edition: EditionProfile, 
   }
   let best: CoverDecision = { status: "unmatched", reason: `No later printing for ${comic.series} #${issueNo}.`, score: 0 };
   for (const name of edition.searchNames) {
+    if (lookup.issuesByName) {
+      const seriesYear = parseShelfSeries(name).yearBegan ?? comic.seriesYear ?? null;
+      let issues = await lookup.issuesByName(name, issueNo, seriesYear);
+      if (issues.length === 0 && seriesYear != null) issues = await lookup.issuesByName(name, issueNo, null);
+      const decision = choosePrintingIssue(issues, comic, "series");
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+      continue;
+    }
     const found = await lookup.searchSeries(name);
     let candidates = narrowSeries(found, { ...comic, series: name, coverYear: comic.releaseYear ?? comic.coverYear });
     if (candidates.length === 0) candidates = narrowSeries(found, { ...comic, series: name, coverYear: null });
@@ -677,6 +693,17 @@ export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Prom
 
   const consider = async (name: string): Promise<CoverDecision | null> => {
     const query = seriesFilters && !/\b(?:facsimile|reprint|omnibus|anniversary|believers)\b/i.test(name) ? seriesFilters : undefined;
+    if (lookup.issuesByName) {
+      const seriesYear = query?.yearBegan ?? comic.seriesYear ?? null;
+      let issues = await lookup.issuesByName(name, issueNo, seriesYear);
+      if (issues.length === 0 && seriesYear != null) issues = await lookup.issuesByName(name, issueNo, null);
+      if (issues.length === 0) return null;
+      const decision = chooseIssue(issues, comic, issueNo, "series");
+      if (decision.status === "matched") return decision;
+      if (decision.score > best.score) best = decision;
+      if (/Several Metron series/.test(decision.reason)) return decision;
+      return null;
+    }
     let found = await lookup.searchSeries(name, query);
     if (found.length === 0 && query) found = await lookup.searchSeries(name);
     const year = edition.reprint ? (comic.releaseYear ?? comic.coverYear) : comic.coverYear;

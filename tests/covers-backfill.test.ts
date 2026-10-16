@@ -882,7 +882,7 @@ describe("Metron rate limit", () => {
     expect(decision).toMatchObject({ status: "matched", via: "barcode", issue: { id: "101" } });
     expect(urls.some((url) => url.includes("/issue/?upc=70985300001100111"))).toBe(true);
     expect(urls.some((url) => url.includes("upc_starts_with=709853000011"))).toBe(true);
-    expect(urls.some((url) => url.endsWith("/issue/101/"))).toBe(true);
+    expect(urls.some((url) => /\/issue\/\d+\/?$/.test(url))).toBe(false);
 
     const prefixOnly = await resolveCover(
       query({ series: "BRZRKR", issueNo: "2B", issue: "2B", coverYear: 2021, publisher: "Boom", barcode: "79394500001100211" }),
@@ -950,8 +950,8 @@ describe("Metron rate limit", () => {
       createMetronCoverLookup(transport),
     );
     expect(decision).toMatchObject({ status: "matched", via: "barcode", issue: { id: "101" } });
-    expect(urls.filter((url) => url.endsWith("/issue/101/") || url.endsWith("/issue/122/") || url.endsWith("/issue/123/"))).toHaveLength(3);
-    const line = logs.find((message) => message.includes("detail fetches 3"));
+    expect(urls.filter((url) => /\/issue\/\d+\/?$/.test(url))).toHaveLength(0);
+    const line = logs.find((message) => message.includes("tried 709853000011.") && message.includes("detail fetches 0"));
     expect(line).toBeTruthy();
     expect(line).toMatch(/tried 709853000011\./);
     expect(line).toMatch(/candidates 101, 122, 123/);

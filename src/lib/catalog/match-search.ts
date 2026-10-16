@@ -76,10 +76,10 @@ export async function searchMetronMatches(
     const params = new URLSearchParams();
     if (name) params.set("series_name", name);
     if (parsed.issueNo) params.set("number", parsed.issueNo);
-    if (parsed.year != null) params.set("cover_year", String(parsed.year));
+    if (parsed.year != null) params.set("series_year_began", String(parsed.year));
     rows = params.size > 0 ? await listMetronIssueRows(transport, `/issue/?${params.toString()}`) : [];
     if (rows.length === 0 && parsed.year != null) {
-      params.delete("cover_year");
+      params.delete("series_year_began");
       if (params.size > 0) rows = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
     }
     if (rows.length > 0) break;

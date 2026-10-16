@@ -4,8 +4,10 @@ import {
   emptyMetronBudget,
   METRON_FALLBACK_BURST,
   METRON_FALLBACK_DAILY,
+  metronSpacingMs,
   pauseLabel,
   planMetronAcquire,
+  readMetronRateHeaders,
   type MetronBudget,
   type RateLane,
 } from "@/lib/catalog/rate-limit";
@@ -71,6 +73,50 @@ export function retryAfterMs(headers: HeaderBag, now: number): number | null {
   const dated = Date.parse(raw);
   if (Number.isNaN(dated)) return null;
   return Math.max(0, dated - now);
+}
+
+/** First 5xx wait. Each later wait doubles until `METRON_5XX_CAP_MS`. */
+export const METRON_5XX_BASE_MS = 1_000;
+/** Longest 5xx wait. Further 5xx responses are not retried. */
+export const METRON_5XX_CAP_MS = 60_000;
+
+export type MetronStatusPlan =
+  | { action: "ok" }
+  | { action: "fail" }
+  | { action: "retry"; waitMs: number }
+  | { action: "pause"; resumeAt: number };
+
+/**
+ * 429 waits for the Reset header or Retry-After, once, then pauses.
+ * 5xx backs off from 1s to 60s. Every other 4xx fails with no retry.
+ */
+export function metronStatusPlan(args: {
+  status: number;
+  headers: HeaderBag;
+  body: string;
+  attempt: number;
+  now: number;
+  lane: RateLane;
+}): MetronStatusPlan {
+  if (args.status === 304 || (args.status >= 200 && args.status < 300)) return { action: "ok" };
+  if (args.status === 429) {
+    const reset = readMetronRateHeaders(args.headers, args.now);
+    const resets = [reset.burstResetAt, reset.sustainedResetAt].filter((value): value is number => value != null && value > args.now);
+    const resetWait = resets.length > 0 ? Math.min(...resets) - args.now : null;
+    const retryAfter = retryAfterMs(args.headers, args.now) ?? retryAfterFromMessage(args.body);
+    const waitMs = resetWait ?? retryAfter ?? 60_000;
+    if (args.lane === "background" || args.attempt >= 2 || waitMs > 120_000) {
+      return { action: "pause", resumeAt: args.now + waitMs };
+    }
+    return { action: "retry", waitMs };
+  }
+  if (args.status >= 500 && args.status <= 599) {
+    if (args.attempt > 7) return { action: "fail" };
+    const waitMs = Math.min(METRON_5XX_CAP_MS, METRON_5XX_BASE_MS * 2 ** Math.max(0, args.attempt - 1));
+    return { action: "retry", waitMs };
+  }
+  if (args.status >= 400) return { action: "fail" };
+  return { action: "fail" };
 }
 
 /** Metron's 429 body says "Expected available in N seconds" when Retry-After is absent. */
@@ -148,7 +194,8 @@ export class MetronLimiter {
 
   defer(ms: number): void {
     const capped = Math.min(Math.max(0, ms), 120_000);
-    const until = this.now() + capped - METRON_MIN_INTERVAL_MS;
+    const spacing = metronSpacingMs(this.budget.burstLimit);
+    const until = this.now() + capped - spacing;
     if (this.budget.lastRequestAt == null || this.budget.lastRequestAt < until) {
       this.budget.lastRequestAt = until;
       this.store.write(this.budget);

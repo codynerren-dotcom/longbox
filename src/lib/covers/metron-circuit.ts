@@ -9,8 +9,8 @@ import { writeLog } from "@/lib/log/write";
 
 /** Consecutive connect failures before every Metron call waits. */
 export const METRON_CIRCUIT_FAILURES = 3;
-/** First pause after the circuit opens. */
-export const METRON_CIRCUIT_BASE_MS = 15 * 60 * 1000;
+/** First pause after the circuit opens. A probe is not sent more often than this. */
+export const METRON_CIRCUIT_BASE_MS = 30 * 60 * 1000;
 /** Longest pause while the host is still failing. */
 export const METRON_CIRCUIT_MAX_MS = 2 * 60 * 60 * 1000;
 
