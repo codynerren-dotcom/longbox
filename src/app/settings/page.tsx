@@ -12,6 +12,7 @@ import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
 import { duplicateGroups, isDemoCoreId } from "@/lib/maintenance";
 import { dateOptions, defaultPreferences } from "@/lib/settings/preferences";
+import { countBaseIssues } from "@/lib/series-view";
 import { loadApiUsage } from "@/lib/catalog/rate-store";
 import { pauseLabel, type UsageWindow } from "@/lib/catalog/rate-limit";
 import { formatResumeTime } from "@/lib/covers/limiter";
@@ -125,7 +126,7 @@ export default async function SettingsPage() {
         <dl className="grid gap-3 text-sm sm:grid-cols-2">
           <Stat label="Version" value={APP_VERSION} />
           <Stat label="Commit" value={appCommit()} />
-          <Stat label="Issues" value={String(counts.comics)} />
+          <Stat label="Comics" value={String(counts.comics)} />
           <Stat label="Copies" value={String(counts.copies)} />
           <Stat label="Series" value={String(counts.series)} />
           <Stat label="Wishlist" value={String(counts.wishlist)} />
@@ -176,8 +177,8 @@ function groupLabel(group: Array<{ barcode: string | null; series: string; issue
 }
 
 async function loadCounts() {
-  const [comics, copySum, series, wishlist, unmatched, matched, pending, slabs] = await Promise.all([
-    prisma.comic.count(),
+  const [shelf, copySum, series, wishlist, unmatched, matched, pending, slabs] = await Promise.all([
+    prisma.comic.findMany({ select: { series: true, issueNo: true } }),
     prisma.comic.aggregate({ _sum: { quantity: true } }),
     prisma.comic.groupBy({ by: ["series"] }),
     prisma.wishlistItem.count(),
@@ -187,7 +188,7 @@ async function loadCounts() {
     prisma.comic.count({ where: { rawOrSlabbed: "Slabbed" } }),
   ]);
   return {
-    comics,
+    comics: countBaseIssues(shelf),
     copies: copySum._sum.quantity ?? 0,
     series: series.length,
     wishlist,

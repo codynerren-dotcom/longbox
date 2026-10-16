@@ -153,18 +153,30 @@ export function copyCountLabel(comics: CopyIdentity[]): string {
 }
 
 function distinctBaseIssues(comics: CopyIdentity[]): number {
+  return countBaseIssues(comics);
+}
+
+/**
+ * One key per series and base issue. `#1A` and `#1B` share it.
+ * A blank issue number stays its own row via `unlabeledId`.
+ */
+export function baseIssueKey(comic: { series: string; issueNo: string | null | undefined }, unlabeledId: string): string {
+  const series = comic.series.trim().toLowerCase();
+  const label = baseIssueLabel(comic.issueNo ?? "");
+  if (!label) return `${series}|unlabeled:${unlabeledId}`;
+  return `${series}|${issueKey(label)}`;
+}
+
+/** Distinct base issues. Cover letters and printings of one number count once. */
+export function countBaseIssues(comics: Array<{ series: string; issueNo: string | null | undefined; id?: string }>): number {
   const seen = new Set<string>();
-  let unlabeled = 0;
+  let blank = 0;
   for (const comic of comics) {
-    const series = comic.series.trim().toLowerCase();
     const label = baseIssueLabel(comic.issueNo ?? "");
-    if (!label) {
-      unlabeled += 1;
-      continue;
-    }
-    seen.add(`${series}|${issueKey(label)}`);
+    const unlabeledId = label ? "" : (comic.id ?? `blank-${blank++}`);
+    seen.add(baseIssueKey(comic, unlabeledId));
   }
-  return seen.size + unlabeled;
+  return seen.size;
 }
 
 /** Owned base numbers, grouped only when they are consecutive. `#7E` and `#55A` are `Have: #7, #55`, not `Have: #7-#55`. */

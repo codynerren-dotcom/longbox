@@ -1217,9 +1217,28 @@ describe("local covers", () => {
       shelf({ id: "b", issueNo: "1A", variantDescription: "Cover A", quantity: 2, keyLevel: "Major" }),
       shelf({ id: "c", issueNo: "1", variant: "A", variantDescription: "Second printing", keyLevel: "Minor" }),
     ]);
-    expect(cards[0]).toMatchObject({ count: 2, copies: 4, keys: 2, keyLevel: "Major" });
-    expect(seriesCardCountLabel({ count: 2, copies: 4 })).toBe("2 comics · 4 copies");
+    expect(cards[0]).toMatchObject({ count: 1, copies: 4, keys: 2, keyLevel: "Major" });
+    expect(seriesCardCountLabel(cards[0]!)).toBe("1 comic · 4 copies");
     expect(seriesCardCountLabel({ count: 1, copies: 1 })).toBe("1 comic");
+  });
+
+  it("counts cover A and cover B of one number as one comic", () => {
+    const cards = groupSeries([
+      shelf({ id: "a", series: "Something is Killing the Children", issueNo: "1", variant: "A", variantDescription: "Cover A", keyLevel: "Minor" }),
+      shelf({ id: "b", series: "Something is Killing the Children", issueNo: "1", variant: "B", variantDescription: "Foil cover B" }),
+    ]);
+    expect(cards[0]).toMatchObject({ count: 1, copies: 2, keys: 1 });
+    expect(seriesCardCountLabel(cards[0]!)).toBe("1 comic · 2 copies");
+  });
+
+  it("folds lettered issue numbers into the base issue on a series card", () => {
+    const cards = groupSeries([
+      shelf({ id: "g", issueNo: "3G", quantity: 1 }),
+      shelf({ id: "h", issueNo: "3H", quantity: 1 }),
+      shelf({ id: "ten", issueNo: "10C", quantity: 1 }),
+    ]);
+    expect(cards[0]).toMatchObject({ count: 2, copies: 3 });
+    expect(seriesCardCountLabel(cards[0]!)).toBe("2 comics · 3 copies");
   });
 });
 
