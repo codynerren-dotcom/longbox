@@ -15,6 +15,7 @@ import {
   haveRange,
   majorityPublisher,
   ownedIssueCount,
+  seriesCatalogKnown,
   seriesMissing,
   groupRowFacts,
   seriesSpend,
@@ -54,8 +55,9 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
   const backdrop = rows.find((row) => row.kind === "owned" && row.image)?.image ?? null;
   const spend = seriesSpend(comics);
   const years = yearSpan(comics);
+  const run = await loadSeriesRun(loaded);
   const have = haveRange(comics);
-  const missing = seriesMissing(comics, await loadSeriesRun(loaded));
+  const missing = seriesMissing(comics, run);
   const owned = ownedIssueCount(comics);
   const coreSeriesId = loaded.find((comic) => comic.coreSeriesId)?.coreSeriesId ?? decoded;
 
@@ -83,7 +85,7 @@ export default async function SeriesRunPage({ params }: { params: Promise<{ seri
             defaultFormat={detectShelfFormat({ series })}
           />
         </div>
-        <SeriesSummary copies={copyCountLabel(comics)} have={have} missing={missing} />
+        <SeriesSummary copies={copyCountLabel(comics)} have={have} missing={missing} catalogUnknown={!seriesCatalogKnown(run)} />
         <p className="mt-2 text-sm text-mist">
           {[years, `${owned} owned`, spend ? `Cost basis ${formatMoney(spend, prefs.pricing.currency)}` : null]
             .filter(Boolean)

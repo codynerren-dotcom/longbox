@@ -7,10 +7,12 @@ export function SeriesSummary({
   copies,
   have,
   missing,
+  catalogUnknown = false,
 }: {
   copies: string;
   have: string | null;
   missing: MissingChip | null;
+  catalogUnknown?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const parts = missing?.parts ?? [];
@@ -34,6 +36,7 @@ export function SeriesSummary({
           ) : null}
         </span>
       ) : null}
+      {catalogUnknown ? <span className="text-mist"> · (catalog unknown)</span> : null}
     </div>
   );
 }

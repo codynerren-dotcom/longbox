@@ -142,13 +142,29 @@ export function groupQuantity(items: Array<{ quantity: number }>): number {
   return items.reduce((sum, item) => sum + copyQuantity(item), 0);
 }
 
+/** Distinct base issues, then copies when a number has more than one. `3G` and `3H` are one issue. */
 export function copyCountLabel(comics: CopyIdentity[]): string {
-  const comicsCount = groupCopies(comics).length;
+  const issues = distinctBaseIssues(comics);
   const copies = groupQuantity(comics);
-  const comicLabel = comicsCount === 1 ? "1 comic" : `${comicsCount} comics`;
-  if (copies === comicsCount) return comicLabel;
+  const issueLabel = issues === 1 ? "1 issue" : `${issues} issues`;
+  if (copies === issues) return issueLabel;
   const copyLabel = copies === 1 ? "1 copy" : `${copies} copies`;
-  return `${comicLabel} · ${copyLabel}`;
+  return `${issueLabel} · ${copyLabel}`;
+}
+
+function distinctBaseIssues(comics: CopyIdentity[]): number {
+  const seen = new Set<string>();
+  let unlabeled = 0;
+  for (const comic of comics) {
+    const series = comic.series.trim().toLowerCase();
+    const label = baseIssueLabel(comic.issueNo ?? "");
+    if (!label) {
+      unlabeled += 1;
+      continue;
+    }
+    seen.add(`${series}|${issueKey(label)}`);
+  }
+  return seen.size + unlabeled;
 }
 
 const RANGE_DASH = "\u2013";
@@ -160,7 +176,11 @@ export function haveRange(comics: SeriesCopy[]): string | null {
   return `Have: ${collapseNumbers(numbers).parts.join(", ")}`;
 }
 
-/** A catalog run. `numbers` wins when it is non-empty; otherwise issues are `1..issueCount`. */
+/**
+ * A catalog run. `issueCount` is the length of the run (`1..N`) once variant
+ * rows have been folded out. `numbers` adds labels such as annuals. With neither,
+ * Missing is only the holes between the first and last owned issue.
+ */
 export type CatalogRun = {
   numbers: string[];
   issueCount: number | null;
@@ -284,16 +304,32 @@ function issueKey(label: string): string {
   return value != null && value > 0 ? `n:${value}` : `s:${label.toLowerCase()}`;
 }
 
+/** True when Metron, GCD, or Comic Vine supplied an issue count or an issue list. */
+export function seriesCatalogKnown(run: CatalogRun | null): boolean {
+  if (!run) return false;
+  if (catalogIssueCount(run.issueCount) != null) return true;
+  return run.numbers.length > 0;
+}
+
 /**
- * One Missing list: holes between owned numbers, plus anything the catalog run
- * still doesn't have. Variants of one number count as owned.
- * Null when nothing is missing, so the header can omit the clause.
+ * Missing issues for the header. A known issue count is `1..N`, so it includes
+ * numbers before the first owned issue and after the last. With no catalog,
+ * only the holes between the first and last owned number are listed.
+ * Variants of one number count as owned. Null when nothing is missing.
  */
 export function seriesMissing(comics: SeriesCopy[], run: CatalogRun | null): MissingChip | null {
   const numeric = new Set<number>();
   const text: string[] = [];
   const owned = ownedKeys(comics);
-  if (run && run.numbers.length > 0) {
+  const ownedNumbers = ownedIssueNumbers(comics);
+  if (seriesCatalogKnown(run) && run) {
+    const ceiling = catalogBaseCount(run.numbers, catalogIssueCount(run.issueCount));
+    if (ceiling != null) {
+      const present = new Set(ownedNumbers);
+      for (let issue = 1; issue <= ceiling; issue += 1) {
+        if (!present.has(issue)) numeric.add(issue);
+      }
+    }
     for (const label of distinctIssueLabels(run.numbers)) {
       const value = issueNumberValue(label);
       if (value != null && value > 0) {
@@ -303,17 +339,9 @@ export function seriesMissing(comics: SeriesCopy[], run: CatalogRun | null): Mis
       }
     }
   } else {
-    const count = catalogIssueCount(run?.issueCount);
-    if (count != null) {
-      const present = new Set(ownedIssueNumbers(comics));
-      for (let issue = 1; issue <= count; issue += 1) {
-        if (!present.has(issue)) numeric.add(issue);
-      }
+    for (let index = 0; index < ownedNumbers.length - 1; index += 1) {
+      for (let hole = ownedNumbers[index] + 1; hole < ownedNumbers[index + 1]; hole += 1) numeric.add(hole);
     }
-  }
-  const ownedNumbers = ownedIssueNumbers(comics);
-  for (let index = 0; index < ownedNumbers.length - 1; index += 1) {
-    for (let hole = ownedNumbers[index] + 1; hole < ownedNumbers[index + 1]; hole += 1) numeric.add(hole);
   }
   const collapsed = collapseNumbers([...numeric]);
   const count = collapsed.count + text.length;
@@ -327,6 +355,7 @@ export function seriesHeaderSummary(comics: SeriesCopy[], run: CatalogRun | null
   if (have) parts.push(have);
   const missing = seriesMissing(comics, run);
   if (missing) parts.push(missingClause(missing));
+  if (!seriesCatalogKnown(run)) parts.push("(catalog unknown)");
   return parts.join(" · ");
 }
 
