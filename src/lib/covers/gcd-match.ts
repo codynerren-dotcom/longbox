@@ -1,5 +1,6 @@
 import type { GcdCatalog, GcdIssueRow, GcdSeriesRow } from "@/lib/catalog/gcd";
 import { createGcdCatalog, gcdCoverHref } from "@/lib/catalog/gcd";
+import { GcdNameMiss, gcdBareFranchise, gcdSeriesNameKey, gcdSeriesNameQueries, rankGcdSeries, shelfIsUsBook } from "@/lib/catalog/gcd-name";
 import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
 import { exactBarcodeMatch } from "@/lib/catalog/match-row";
 import type { MatchHit } from "@/lib/catalog/match-hits";
@@ -62,7 +63,14 @@ export async function searchGcdMatches(
   barcode: string,
   mode: "query" | "barcode",
   shelfFormat?: string | null,
-  options?: { facsimile?: boolean; catalog?: GcdCatalog; shelfSeries?: string | null },
+  options?: {
+    facsimile?: boolean;
+    catalog?: GcdCatalog;
+    shelfSeries?: string | null;
+    publisher?: string | null;
+    country?: string | null;
+    language?: string | null;
+  },
 ): Promise<MatchHit[]> {
   const catalog = options?.catalog ?? createGcdCatalog();
   const format = resolveShelfFormat({ shelfFormat });
@@ -91,20 +99,81 @@ export async function searchGcdMatches(
   }
   const wanted = parsed.series || series;
   if (!wanted.trim()) return [];
+  const hint = {
+    name: wanted,
+    publisher: options?.publisher,
+    year: parsed.year,
+    usBook: shelfIsUsBook({ country: options?.country, language: options?.language, barcode }),
+  };
+  const names = wanted.includes("/") ? gcdSlashMatchNames(wanted) : slashSafeNames(uniqueNames([wanted], catalogNameQueries(wanted)));
   let seriesRows: GcdSeriesRow[] = [];
-  for (const name of uniqueNames([wanted], catalogNameQueries(wanted))) {
-    const rows = await catalog.seriesByName(name);
-    const named = rows.filter((row) => seriesNamesMatch(name, row.name) || seriesNamesMatch(wanted, row.name));
-    const solos =
-      named.length > 0
-        ? []
-        : rows.filter((row) => knownIssueCount(row) === 1 && (seriesSoloTitle(name, row.name) || seriesSoloTitle(wanted, row.name)));
-    const picked = named.length > 0 ? named : solos;
-    if (picked.length > 0) {
-      seriesRows = picked;
-      break;
+  let misses = 0;
+  if (wanted.includes("/")) {
+    const required = new Set(gcdSeriesNameQueries(wanted).map((name) => name.toLowerCase()));
+    const asked = new Set<string>();
+    const pool: GcdSeriesRow[] = [];
+    const seen = new Set<string>();
+    let fallback: GcdSeriesRow[] = [];
+    for (const name of names) {
+      asked.add(name.toLowerCase());
+      let rows: GcdSeriesRow[] = [];
+      try {
+        rows = await catalog.seriesByName(name);
+      } catch (error) {
+        if (error instanceof GcdNameMiss) {
+          misses += 1;
+          continue;
+        }
+        throw error;
+      }
+      for (const row of rows) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        pool.push(row);
+      }
+      if (fallback.length === 0) {
+        const named = rows.filter((row) => seriesNamesMatch(name, row.name) || seriesNamesMatch(wanted, row.name));
+        const solos =
+          named.length > 0
+            ? []
+            : rows.filter((row) => knownIssueCount(row) === 1 && (seriesSoloTitle(name, row.name) || seriesSoloTitle(wanted, row.name)));
+        const picked = named.length > 0 ? named : solos;
+        if (picked.length > 0) fallback = picked;
+      }
+      const requiredDone = [...required].every((query) => asked.has(query));
+      if (!requiredDone) continue;
+      const named = pool.filter((row) => gcdSeriesNameKey(row.name) === gcdSeriesNameKey(wanted));
+      if (named.length > 0 || fallback.length > 0) break;
+    }
+    const named = pool.filter((row) => gcdSeriesNameKey(row.name) === gcdSeriesNameKey(wanted));
+    const ranked = rankGcdSeries(await resolvePublishers(named, catalog), hint);
+    seriesRows = ranked.length > 0 ? ranked : fallback;
+  } else {
+    for (const name of names) {
+      let rows: GcdSeriesRow[] = [];
+      try {
+        rows = await catalog.seriesByName(name);
+      } catch (error) {
+        if (error instanceof GcdNameMiss) {
+          misses += 1;
+          continue;
+        }
+        throw error;
+      }
+      const named = rows.filter((row) => seriesNamesMatch(name, row.name) || seriesNamesMatch(wanted, row.name));
+      const solos =
+        named.length > 0
+          ? []
+          : rows.filter((row) => knownIssueCount(row) === 1 && (seriesSoloTitle(name, row.name) || seriesSoloTitle(wanted, row.name)));
+      const picked = named.length > 0 ? named : solos;
+      if (picked.length > 0) {
+        const ranked = rankGcdSeries(picked, hint);
+        seriesRows = ranked.length > 0 ? ranked : picked;
+        break;
+      }
     }
   }
+  if (seriesRows.length === 0 && names.length > 0 && misses === names.length) throw new GcdNameMiss(wanted);
   const hits: MatchHit[] = [];
   for (const seriesRow of seriesRows.slice(0, 3)) {
     const ids = gcdMatchIssueIds(seriesRow, parsed.issueNo, parsed.year);
@@ -310,11 +379,13 @@ export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): P
   if (!comic.series.trim() || (!issueNo && comic.coverYear == null)) {
     return { status: "unmatched", reason: "GCD needs a series and issue number.", score: 0 };
   }
-  const names = uniqueNames(edition.searchNames.length > 0 ? edition.searchNames : [comic.series], catalogNameQueries(comic.series));
+  const names = comic.series.includes("/")
+    ? gcdSlashMatchNames(comic.series, edition.searchNames)
+    : uniqueNames(edition.searchNames.length > 0 ? edition.searchNames : [comic.series], catalogNameQueries(comic.series));
   let best: CoverDecision = { status: "unmatched", reason: `No GCD series named ${comic.series}.`, score: 0 };
   let fetched = 0;
   for (const name of names) {
-    const seriesRows = await catalog.seriesByName(name);
+    const seriesRows = await readSeries(catalog, name);
     const picked = pickSeries(seriesRows, name, edition.reprint ? (comic.releaseYear ?? comic.coverYear) : comic.coverYear);
     for (const series of picked) {
       const issueIds = issueIdsFor(series, issueNo, comic.coverYear, edition.reprint).slice(0, VARIANT_FETCH_CAP);
@@ -438,11 +509,12 @@ export async function collectGcdCollectedIssues(comic: CoverQuery, format: Shelf
   const seenSeries = new Set<string>();
   let fetched = 0;
   const trade = format === "tp" || format === "hc";
-  const names = trade ? gcdCollectedQueries(seriesName) : catalogNameQueries(seriesName, { broad: true });
+  const rawNames = trade ? gcdCollectedQueries(seriesName) : catalogNameQueries(seriesName, { broad: true });
+  const names = seriesName.includes("/") ? gcdSlashMatchNames(seriesName, rawNames) : slashSafeNames(rawNames);
   const issueCap = trade ? 12 : 8;
   for (const name of names) {
     if (exact.length > 0 || fetched >= issueCap) break;
-    const rows = await catalog.seriesByName(name);
+    const rows = await readSeries(catalog, name);
     const kept = orderCollected(
       rows.filter((row) => keepCollectedSeries(row, seriesName, format)),
       format,
@@ -534,8 +606,8 @@ async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof 
   let best: CoverDecision = { status: "unmatched", reason: `No later printing for ${comic.series} #${issueNo || "?"}.`, score: 0 };
   if (!comic.series.trim() || !issueNo) return best;
   let fetched = 0;
-  for (const name of edition.searchNames) {
-    const seriesRows = await catalog.seriesByName(name);
+  for (const name of slashSafeNames(edition.searchNames)) {
+    const seriesRows = await readSeries(catalog, name);
     const picked = pickSeries(seriesRows, name, comic.releaseYear ?? comic.coverYear);
     for (const series of picked) {
       const issueIds = issuesFor(series, issueNo, true).slice(0, 3);
@@ -583,9 +655,9 @@ export async function collectGcdFacsimileIssues(
   const releaseYear = comic.releaseYear ?? yearFromDate(comic.releaseDate);
   let fallback: GcdIssueRow[] = [];
   let fetched = 0;
-  for (const name of gcdFacsimileQueries(comic.series, issueNo).slice(0, 8)) {
+  for (const name of slashSafeNames(gcdFacsimileQueries(comic.series, issueNo)).slice(0, 8)) {
     if (fetched >= 8) break;
-    const rows = await catalog.seriesByName(name);
+    const rows = await readSeries(catalog, name);
     const kept = keepFacsimileSeries(rows, issueNo, releaseYear);
     if (kept.length === 0) continue;
     const loaded = await loadFacsimileIssues(kept, catalog);
@@ -750,6 +822,62 @@ function yearFromDate(value: Date | string | null | undefined): number | null {
   }
   const match = String(value).match(/\b((?:18|19|20)\d{2})\b/);
   return match?.[1] ? Number(match[1]) : null;
+}
+
+/** Slash titles: rare part and slash-removed form first, then other safe catalog queries. A bare franchise such as Batman is left out. */
+function gcdSlashMatchNames(wanted: string, extras: string[] = []): string[] {
+  const head = gcdSeriesNameQueries(wanted);
+  const tail = slashSafeNames([...extras, ...catalogNameQueries(wanted)]).filter((name) => !gcdBareFranchise(name) && !name.includes("/"));
+  return uniqueNames(head, tail);
+}
+
+function slashSafeNames(names: string[]): string[] {
+  const out: string[] = [];
+  const add = (value: string) => {
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    if (trimmed.length < 3 || /[\\/#?%]/.test(trimmed)) return;
+    if (out.some((item) => item.toLowerCase() === trimmed.toLowerCase())) return;
+    out.push(trimmed);
+  };
+  for (const name of names) {
+    if (name.includes("/")) {
+      for (const query of gcdSeriesNameQueries(name)) add(query);
+    } else add(name);
+  }
+  return out;
+}
+
+async function readSeries(catalog: GcdCatalog, name: string): Promise<GcdSeriesRow[]> {
+  try {
+    return await catalog.seriesByName(name);
+  } catch (error) {
+    if (error instanceof GcdNameMiss) return [];
+    throw error;
+  }
+}
+
+/** Publisher URLs on a short name-matched list. Each lookup is one limited GCD request. */
+async function resolvePublishers(rows: GcdSeriesRow[], catalog: GcdCatalog): Promise<GcdSeriesRow[]> {
+  if (!catalog.publisher) return rows;
+  const cache = new Map<string, string | null>();
+  const resolved: GcdSeriesRow[] = [];
+  for (const row of rows) {
+    if (row.publisher || !row.publisherId) {
+      resolved.push(row);
+      continue;
+    }
+    let name = cache.get(row.publisherId);
+    if (name === undefined) {
+      if (cache.size >= 8) {
+        resolved.push(row);
+        continue;
+      }
+      name = await catalog.publisher(row.publisherId);
+      cache.set(row.publisherId, name);
+    }
+    resolved.push({ ...row, publisher: name });
+  }
+  return resolved;
 }
 
 function uniqueNames(first: string[], second: string[]): string[] {

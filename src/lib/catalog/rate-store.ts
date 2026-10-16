@@ -137,7 +137,17 @@ export async function saveJobWindow(cursor: JobCursor): Promise<void> {
 
 export async function loadApiUsage(now = Date.now()): Promise<UsageWindow[]> {
   await ensureRateHydrated();
-  return [...metronUsage(memory.metron, now), gcdUsage(memory.gcd, now), ...comicVineUsage(memory.comicvine, now)];
+  const signedIn = await gcdSignedIn();
+  return [...metronUsage(memory.metron, now), gcdUsage(memory.gcd, now, signedIn), ...comicVineUsage(memory.comicvine, now)];
+}
+
+async function gcdSignedIn(): Promise<boolean> {
+  try {
+    const { gcdAccountSignedIn } = await import("@/lib/catalog/gcd");
+    return await gcdAccountSignedIn();
+  } catch {
+    return memory.gcd.mode === "authenticated";
+  }
 }
 
 export function normalizeGcd(value: unknown): GcdRateState {

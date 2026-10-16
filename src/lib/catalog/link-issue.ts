@@ -134,7 +134,8 @@ export async function searchIssueCatalog(args: {
     args.mode === "barcode" && !args.query.trim() && shelfSeries
       ? matchQuery({ series: shelfSeries, issueNo: stored?.issueNo, year: null })
       : args.query;
-  const request = { ...args, query, shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null, shelfSeries };
+  const rank = (await loadShelfRank(args.comicId)) ?? {};
+  const request = { ...args, query, shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null, shelfSeries, ...rank };
   try {
     const hits = await searchOne(args.source, request);
     if ("ok" in hits) return { ...hits, notice: null, queue: null };
@@ -196,6 +197,7 @@ export async function searchCatalogSource(args: {
     args.mode === "barcode" && !args.query.trim() && shelfSeries
       ? matchQuery({ series: shelfSeries, issueNo: stored?.issueNo, year: null })
       : args.query;
+  const rank = await loadShelfRank(args.comicId);
   const found = await searchOne(args.source, {
     query,
     barcode: args.barcode,
@@ -203,6 +205,9 @@ export async function searchCatalogSource(args: {
     shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null,
     shelfSeries,
     facsimile: args.facsimile,
+    publisher: rank?.publisher ?? null,
+    country: rank?.country ?? null,
+    language: rank?.language ?? null,
   });
   if ("ok" in found) throw new Error(found.message);
   return found;
@@ -227,6 +232,9 @@ async function searchOne(
     shelfFormat?: string | null;
     shelfSeries?: string | null;
     facsimile?: boolean;
+    publisher?: string | null;
+    country?: string | null;
+    language?: string | null;
   },
 ): Promise<MatchHit[] | { ok: false; message: string }> {
   if (source === "metron") return searchMetron(args);
@@ -234,9 +242,23 @@ async function searchOne(
     return searchGcdMatches(args.query, args.barcode, args.mode, args.shelfFormat, {
       facsimile: args.facsimile,
       shelfSeries: args.shelfSeries,
+      publisher: args.publisher,
+      country: args.country,
+      language: args.language,
     });
   }
   return searchComicVine(args);
+}
+
+async function loadShelfRank(comicId: string | null | undefined): Promise<{ publisher: string | null; country: string | null; language: string | null } | null> {
+  const id = comicId?.trim() ?? "";
+  if (!id) return null;
+  const comic = await prisma.comic.findUnique({
+    where: { id },
+    select: { publisher: true, country: true, language: true },
+  });
+  if (!comic) return null;
+  return { publisher: comic.publisher, country: comic.country, language: comic.language };
 }
 
 async function storedShelf(args: {

@@ -55,6 +55,21 @@ export async function saveServiceAction(_prev: SettingsActionState, formData: Fo
   }
 }
 
+export async function testGcdLoginAction(_prev: ProbeActionState): Promise<ProbeActionState> {
+  const config = await getSettings();
+  if (!config.gcd.username || !config.gcd.password) {
+    const result = { ok: false, message: "Save a GCD username and password, then test the login." };
+    await logConnectionTest("gcd", result);
+    return { ...result, service: "gcd", status: "done" };
+  }
+  const result = await probeGcd(config);
+  const shown = result.ok
+    ? { ...result, message: "Signed in. GCD accepted the username and password. The limit is 2,000 per day." }
+    : result;
+  await logConnectionTest("gcd", shown);
+  return { ...shown, service: "gcd", status: "done" };
+}
+
 export async function testConnectionAction(_prev: ProbeActionState, formData: FormData): Promise<ProbeActionState> {
   const service = String(formData.get("service") ?? "");
   const config = applyCredentialOverrides(await getSettings(), typedSecrets(formData));

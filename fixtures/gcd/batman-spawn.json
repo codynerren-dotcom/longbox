@@ -1,0 +1,123 @@
+{
+  "page1": {
+    "count": 219,
+    "next": "https://www.comics.org/api/series/name/Spawn/?page=2",
+    "previous": null,
+    "results": [
+      {
+        "api_url": "https://www.comics.org/api/series/4871/?format=json",
+        "name": "Spawn",
+        "country": "us",
+        "language": "en",
+        "publisher": "https://www.comics.org/api/publisher/480/",
+        "year_began": 1992,
+        "year_ended": null,
+        "publishing_format": "ongoing",
+        "issue_count": 300,
+        "active_issues": ["https://www.comics.org/api/issue/100001/?format=json"],
+        "issue_descriptors": ["1"]
+      }
+    ]
+  },
+  "page2": {
+    "count": 219,
+    "next": "https://www.comics.org/api/series/name/Spawn/?page=3",
+    "previous": "https://www.comics.org/api/series/name/Spawn/",
+    "results": [
+      {
+        "api_url": "https://www.comics.org/api/series/203583/?format=json",
+        "name": "Batman / Spawn",
+        "country": "us",
+        "language": "en",
+        "publisher": "https://www.comics.org/api/publisher/54/",
+        "year_began": 2022,
+        "year_ended": 2022,
+        "publishing_format": "one-shot",
+        "issue_count": 1,
+        "active_issues": ["https://www.comics.org/api/issue/2430001/?format=json"],
+        "issue_descriptors": ["1 [Todd McFarlane Variant Cover]"]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/193753/?format=json",
+        "name": "Batman/Spawn",
+        "country": "it",
+        "language": "it",
+        "publisher": "https://www.comics.org/api/publisher/200/",
+        "year_began": 2022,
+        "year_ended": 2022,
+        "publishing_format": "one-shot",
+        "issue_count": 1,
+        "active_issues": ["https://www.comics.org/api/issue/2430002/?format=json"],
+        "issue_descriptors": ["1"]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/211707/?format=json",
+        "name": "Batman - Spawn",
+        "country": "us",
+        "language": "en",
+        "publisher": "https://www.comics.org/api/publisher/480/",
+        "year_began": 1994,
+        "year_ended": 1994,
+        "publishing_format": "one-shot",
+        "issue_count": 1,
+        "active_issues": ["https://www.comics.org/api/issue/2430003/?format=json"],
+        "issue_descriptors": ["1"]
+      },
+      {
+        "api_url": "https://www.comics.org/api/series/188001/?format=json",
+        "name": "Batman & Spawn",
+        "country": "fr",
+        "language": "fr",
+        "publisher": "https://www.comics.org/api/publisher/54/",
+        "year_began": 2022,
+        "year_ended": 2022,
+        "publishing_format": "one-shot",
+        "issue_count": 1,
+        "active_issues": ["https://www.comics.org/api/issue/2430004/?format=json"],
+        "issue_descriptors": ["1"]
+      }
+    ]
+  },
+  "page3": {
+    "count": 219,
+    "next": null,
+    "previous": "https://www.comics.org/api/series/name/Spawn/?page=2",
+    "results": [
+      {
+        "api_url": "https://www.comics.org/api/series/150000/?format=json",
+        "name": "King Spawn",
+        "country": "us",
+        "language": "en",
+        "publisher": "https://www.comics.org/api/publisher/480/",
+        "year_began": 2021,
+        "year_ended": null,
+        "publishing_format": "ongoing",
+        "issue_count": 12,
+        "active_issues": [],
+        "issue_descriptors": []
+      }
+    ]
+  },
+  "empty": {
+    "count": 0,
+    "next": null,
+    "previous": null,
+    "results": []
+  },
+  "issue": {
+    "api_url": "https://www.comics.org/api/issue/2430001/?format=json",
+    "series": "https://www.comics.org/api/series/203583/?format=json",
+    "series_name": "Batman / Spawn (2022 series)",
+    "number": "1",
+    "variant_name": "Todd McFarlane Variant Cover",
+    "publication_date": "December 2022",
+    "key_date": "2022-12-00",
+    "indicia_publisher": "DC Comics",
+    "barcode": "76194137888600134",
+    "on_sale_date": "2022-12-13",
+    "price": "5.99 USD",
+    "page_count": "48.000",
+    "cover": "https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg",
+    "story_set": []
+  }
+}

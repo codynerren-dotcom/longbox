@@ -513,6 +513,8 @@ export type UsageWindow = {
   limit: number;
   resetAt: number | null;
   pausedUntil: number | null;
+  /** Saved GCD basic auth. The day window is 2,000 requests. */
+  signedIn?: boolean;
 };
 
 export function metronUsage(budget: MetronBudget, now: number): UsageWindow[] {
@@ -541,17 +543,18 @@ export function metronUsage(budget: MetronBudget, now: number): UsageWindow[] {
   ];
 }
 
-export function gcdUsage(state: GcdRateState, now: number): UsageWindow {
-  const fresh = state.hits.filter((time) => now - time < (state.mode === "authenticated" ? GCD_DAY_MS : GCD_HOUR_MS));
-  const limit = state.mode === "authenticated" ? GCD_AUTH_PER_DAY : GCD_ANON_PER_HOUR;
+export function gcdUsage(state: GcdRateState, now: number, signedIn = state.mode === "authenticated"): UsageWindow {
+  const windowMs = signedIn ? GCD_DAY_MS : GCD_HOUR_MS;
+  const fresh = state.hits.filter((time) => now - time < windowMs);
   const oldest = fresh[0] ?? null;
   return {
     source: "GCD",
-    label: state.mode === "authenticated" ? "Day" : "Hour",
+    label: signedIn ? "Day" : "Hour",
     used: fresh.length,
-    limit,
-    resetAt: oldest == null ? null : oldest + (state.mode === "authenticated" ? GCD_DAY_MS : GCD_HOUR_MS),
+    limit: signedIn ? GCD_AUTH_PER_DAY : GCD_ANON_PER_HOUR,
+    resetAt: oldest == null ? null : oldest + windowMs,
     pausedUntil: state.pausedUntil != null && state.pausedUntil > now ? state.pausedUntil : null,
+    signedIn,
   };
 }
 

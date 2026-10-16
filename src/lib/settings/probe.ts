@@ -129,6 +129,7 @@ export async function probeGcd(config: IntegrationConfig, fetchImpl: typeof fetc
       return { ok: false, message: pauseLabel("GCD", resumeAt) };
     }
     if (response.status === 401 || response.status === 403) return { ok: false, message: "GCD rejected the username or password." };
+    if (response.status === 404) return { ok: false, message: "No GCD series named Saga" };
     if (!response.ok) return { ok: false, message: `GCD returned ${response.status}.` };
     return { ok: true, message: authed ? "GCD accepted the username and password." : "GCD answered." };
   } catch {

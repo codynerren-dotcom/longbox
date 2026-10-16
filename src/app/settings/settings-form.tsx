@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useActionState, useRef, useState, useTransition } from "react";
-import { clearSettingAction, saveServiceAction, saveSettingsAction, testConnectionAction, type ProbeActionState, type SettingsActionState } from "@/app/settings/actions";
+import { clearSettingAction, saveServiceAction, saveSettingsAction, testConnectionAction, testGcdLoginAction, type ProbeActionState, type SettingsActionState } from "@/app/settings/actions";
 import { Panel } from "@/components/panel";
 import { SECRET_MASK, type FieldView, type SettingsView } from "@/lib/settings/resolve";
 
@@ -123,6 +123,16 @@ function CredentialCard({
           >
             Test connection
           </button>
+          {service === "gcd" ? (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => start(async () => setProbe(await testGcdLoginAction(initialProbe)))}
+              className="rounded-full bg-panel2 px-4 py-2 text-sm font-semibold text-paper disabled:opacity-50"
+            >
+              Test GCD login
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={pending}

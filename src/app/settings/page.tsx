@@ -145,6 +145,7 @@ function ApiUsage({ windows }: { windows: UsageWindow[] }) {
           <li key={`${row.source}:${row.label}`} className="flex flex-wrap items-baseline justify-between gap-2">
             <span className="text-paper">
               {row.source} <span className="text-mist">{row.label}</span>
+              {row.signedIn ? <span className="text-mist"> · signed in</span> : null}
             </span>
             <span className="font-mono text-paper">
               {row.used}/{row.limit}
