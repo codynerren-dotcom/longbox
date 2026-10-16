@@ -17,6 +17,7 @@ import { readEditionJob, writeEditionJob } from "@/lib/covers/job-state";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
 import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
+import { priorLinkOf, proposalReason, REMATCH_MODE_DEFAULT, saveProposal, unmatchedPlan, type ProposalInput, type RematchMode } from "@/lib/covers/propose-match";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
@@ -310,16 +311,17 @@ async function noteGcdPause(error: GcdBudgetError): Promise<void> {
 
 export async function rematchShelfCopy(
   comicId: string,
-  options?: { metron?: boolean },
-): Promise<{ ok: boolean; message: string; outcome: RematchOutcome; notice: string | null; limitBlocks: LimitBlock[]; searchedSources: string[] }> {
+  options?: { metron?: boolean; mode?: RematchMode },
+): Promise<{ ok: boolean; message: string; outcome: RematchOutcome; proposed: boolean; notice: string | null; limitBlocks: LimitBlock[]; searchedSources: string[] }> {
   const comic = await prisma.comic.findUnique({ where: { id: comicId } });
-  if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched", notice: null, limitBlocks: [], searchedSources: [] };
+  const mode = options?.mode ?? REMATCH_MODE_DEFAULT;
+  if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
   const link = readManualLink(comic.manualLink);
   if (link.metronIssueId || link.gcdIssueId || link.comicvineIssueId) {
-    return { ok: false, message: "This link was chosen by hand. Unlink it first.", outcome: "skipped", notice: null, limitBlocks: [], searchedSources: [] };
+    return { ok: false, message: "This link was chosen by hand. Unlink it first.", outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
   }
   if (link.userCover) {
-    return { ok: false, message: "This cover was uploaded. Unlink the catalog id if you want, and the photo stays.", outcome: "skipped", notice: null, limitBlocks: [], searchedSources: [] };
+    return { ok: false, message: "This cover was uploaded. Unlink the catalog id if you want, and the photo stays.", outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
   }
 
   const query = coverQuery(comic);
@@ -338,17 +340,25 @@ export async function rematchShelfCopy(
   const needsCredentials = !metronReady && !metronSkipped;
   const limitBlocks: LimitBlock[] = [];
   const searchedSources: string[] = [];
-  const pack = (result: { ok: boolean; message: string; outcome: RematchOutcome }) => {
+  const pack = (result: { ok: boolean; message: string; outcome: RematchOutcome; proposed?: boolean }) => {
     const notice = limitNotices(limitBlocks, searchedSources) || null;
     const blocked = new Set(limitBlocks.map((block) => block.source));
     const didSearch = searchedSources.some((name) => !blocked.has(name as LimitBlock["source"]));
+    const proposed = result.proposed === true;
     if (notice && !didSearch && result.outcome !== "matched" && result.outcome !== "skipped") {
-      return { ...result, ok: false, message: notice, notice, limitBlocks, searchedSources };
+      return { ...result, ok: false, message: notice, proposed, notice, limitBlocks, searchedSources };
     }
-    return { ...result, notice, limitBlocks, searchedSources };
+    return { ...result, proposed, notice, limitBlocks, searchedSources };
   };
 
-  const linkGcd = async (): Promise<{ ok: true; message: string } | { ok: false; reason: string }> => {
+  const holdProposal = async (draft: Omit<ProposalInput, "comicId" | "priorLink">) => {
+    const saved = await saveProposal({ ...draft, comicId, priorLink: priorLinkOf(comic) });
+    if (saved === "saved") return { message: draft.reason, proposed: true };
+    if (saved === "unchanged") return { message: `${comic.series} #${comic.issueNo || "?"} is already linked to ${draft.provider} ${draft.issueId}.`, proposed: false };
+    return { message: `${comic.series} #${comic.issueNo || "?"}: that ${draft.provider} issue was already reviewed.`, proposed: false };
+  };
+
+  const linkGcd = async (): Promise<{ ok: true; held: { message: string; proposed: boolean } } | { ok: false; reason: string }> => {
     if (Date.now() < gcdClosedUntil) return { ok: false, reason: "GCD is paused. Metron matching continues." };
     searchedSources.push("GCD");
     let gcd;
@@ -365,8 +375,25 @@ export async function rematchShelfCopy(
     }
     if (gcd.status !== "matched") return { ok: false, reason: gcd.reason };
     try {
-      const { gcdDetails } = await import("@/lib/covers/gcd-match");
       const issue = await createGcdCatalog().issue(gcd.issue.id);
+      if (mode === "propose") {
+        const held = await holdProposal({
+          provider: "gcd",
+          issueId: gcd.issue.id,
+          seriesId: gcd.issue.seriesId,
+          confidence: gcd.score,
+          reason: proposalReason("gcd", gcd.issue.seriesName, gcd.issue.number, gcd.issue.id, gcd.score, gcd.coverReview),
+          coverUrl: issue?.coverUrl ?? gcd.issue.imageUrl,
+          title: gcd.issue.seriesName,
+          issueNo: gcd.issue.number,
+          variant: issue?.variant ?? gcd.issue.variant ?? null,
+        });
+        if (held.proposed) {
+          await writeLog({ level: "info", source: "covers/backfill", message: held.message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score, proposed: true } });
+        }
+        return { ok: true, held };
+      }
+      const { gcdDetails } = await import("@/lib/covers/gcd-match");
       const detail = issue ? gcdDetails(issue) : null;
       await clearAutomaticLink(comicId, "Re-matching.", { keepCover: keepPrintingCover });
       const confirmedPrinting = edition.kind === "printing" && edition.printing != null && !gcd.coverReview;
@@ -378,7 +405,7 @@ export async function rematchShelfCopy(
       const review = gcd.coverReview ? ` ${needsReviewNote(gcd.coverReview)}` : "";
       const message = `Matched GCD ${gcd.issue.id} (${gcd.issue.seriesName} #${gcd.issue.number}), score ${gcd.score}.${review}`;
       await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, gcdIssueId: gcd.issue.id, score: gcd.score } });
-      return { ok: true, message };
+      return { ok: true, held: { message, proposed: false } };
     } catch (error) {
       if (error instanceof GcdBudgetError) {
         const block = limitBlockFromError(error);
@@ -390,9 +417,12 @@ export async function rematchShelfCopy(
     }
   };
 
-  const finish = async (matchedMessage: string | null) => {
-    if (matchedMessage) return pack({ ok: true, message: matchedMessage, outcome: "matched" });
+  const finish = async (held: { message: string; proposed: boolean } | null) => {
+    if (held) return pack({ ok: true, message: held.message, outcome: held.proposed ? "matched" : "skipped", proposed: held.proposed });
     const outcome = editionOutcome({ matched: false, metronSkipped, gcdTried });
+    if (outcome === "unmatched" && unmatchedPlan(mode) === "leave") {
+      return pack({ ok: true, message: reason, outcome, proposed: false });
+    }
     if (outcome === "unmatched") {
       if (keepPrintingCover) {
         await prisma.comic.update({
@@ -412,7 +442,7 @@ export async function rematchShelfCopy(
     if (gcdFirst) {
       gcdTried = true;
       const gcd = await linkGcd();
-      if (gcd.ok) return finish(gcd.message);
+      if (gcd.ok) return finish(gcd.held);
       reason = gcd.reason || reason;
     }
 
@@ -421,6 +451,23 @@ export async function rematchShelfCopy(
       try {
         const transport = await metronTransport();
         const decision = await resolveCover(query, createMetronCoverLookup(transport));
+        if (decision.status === "matched" && mode === "propose") {
+          const held = await holdProposal({
+            provider: "metron",
+            issueId: decision.issue.id,
+            seriesId: decision.issue.seriesId,
+            confidence: decision.score,
+            reason: proposalReason("metron", decision.issue.seriesName, decision.issue.number, decision.issue.id, decision.score, decision.coverReview),
+            coverUrl: decision.issue.imageUrl,
+            title: decision.issue.seriesName,
+            issueNo: decision.issue.number,
+            variant: decision.issue.variant ?? null,
+          });
+          if (held.proposed) {
+            await writeLog({ level: "info", source: "covers/backfill", message: held.message, details: { comicId, metronIssueId: decision.issue.id, score: decision.score, proposed: true } });
+          }
+          return finish(held);
+        }
         if (decision.status === "matched") {
           const detail = await fetchMetronIssueRecord(transport, decision.issue.id);
           const printing = savedPrintingCover(query, decision.issue, detail?.covers);
@@ -455,7 +502,7 @@ export async function rematchShelfCopy(
           const review = yearReview ? ` ${yearReview}` : filename ? "" : note ? ` ${needsReviewNote(note)}` : "";
           const message = `Matched Metron ${decision.issue.id} (${decision.issue.seriesName} #${decision.issue.number}), score ${decision.score}.${review}`;
           await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, metronIssueId: decision.issue.id, score: decision.score } });
-          return finish(message);
+          return finish({ message, proposed: false });
         }
         reason = decision.reason;
       } catch (error) {
@@ -470,7 +517,7 @@ export async function rematchShelfCopy(
     if (!gcdFirst && !gcdTried) {
       gcdTried = true;
       const gcd = await linkGcd();
-      if (gcd.ok) return finish(gcd.message);
+      if (gcd.ok) return finish(gcd.held);
       reason = gcd.reason || reason;
     }
   } catch (error) {
@@ -512,10 +559,10 @@ const linkedSelect = {
   manualLink: true,
 } as const;
 
-export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+export async function rematchAllSuspectCopies(options?: { mode?: RematchMode }): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   armMetronJobBudget();
   try {
-    return await rematchAllSuspectCopiesBody();
+    return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT);
   } finally {
     clearMetronJobBudget();
   }
@@ -527,7 +574,7 @@ function queueSeed(comicId: string, blocks: LimitBlock[]): QueueSeed | null {
   return { comicId, source: hint.source, resumeAt: hint.resumeAt, kind: hint.kind };
 }
 
-async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+async function rematchAllSuspectCopiesBody(mode: RematchMode): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   const [comics, years, printings] = await Promise.all([
     prisma.comic.findMany({
       where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
@@ -552,7 +599,7 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
       continue;
     }
     try {
-      const result = await rematchShelfCopy(comic.id, { metron });
+      const result = await rematchShelfCopy(comic.id, { metron, mode });
       limitBlocks.push(...result.limitBlocks);
       searchedSources.push(...result.searchedSources);
       if (result.outcome !== "matched" && result.outcome !== "skipped") {
@@ -592,7 +639,10 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
       unmatched += 1;
     }
   }
-  const message = `Re-matched ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`;
+  const message =
+    mode === "propose"
+      ? `Proposed ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`
+      : `Re-matched ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`;
   const notice = limitNotices(limitBlocks, searchedSources) || null;
   await writeLog({ level: "info", source: "covers/backfill", message: notice ? `${message} ${notice}` : message, details: { matched, unmatched, skipped } });
   return { ok: true, message, notice, queueItems };
@@ -693,7 +743,7 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
       await writeLog({
         level: "info",
         source: "covers/backfill",
-        message: `Edition re-match finished. Matched ${summary.matched}. Unmatched ${summary.unmatched}. Skipped ${summary.skipped} hand-picked links.`,
+        message: `Edition re-match finished. Proposed ${summary.matched}. Unmatched ${summary.unmatched}. Skipped ${summary.skipped} hand-picked links.`,
         details: summary,
       });
     }

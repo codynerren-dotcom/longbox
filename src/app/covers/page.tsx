@@ -102,7 +102,14 @@ export default async function CoversPage() {
         <p className="mt-2 text-sm text-mist">
           A facsimile link is listed when the linked issue&apos;s store year is not within a year of the copy&apos;s release date. A later printing stays listed until its printing cover is confirmed. Re-match keeps that issue link and leaves the cover for review when the printing cover is missing. Other links are listed when the copy is another edition, or when its release year and cover year are more than two years apart.
         </p>
-        {suspects.length > 0 ? <RematchAllSuspects /> : null}
+        {suspects.length > 0 ? (
+          <>
+            <RematchAllSuspects />
+            <p className="mt-2 text-sm text-mist">
+              Propose mode saves a suggestion and leaves the copy alone. Accept it on <Link href="/review" className="text-comic">Review matches</Link>.
+            </p>
+          </>
+        ) : null}
         {suspects.length === 0 ? (
           <p className="mt-2 text-sm text-mist">No suspect links.</p>
         ) : (

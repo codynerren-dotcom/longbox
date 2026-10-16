@@ -116,6 +116,7 @@ model Comic {
   updatedAt          DateTime  @updatedAt
   priceSnapshots     PriceSnapshot[]
   searchQueues       SearchQueue[]
+  matchProposals     MatchProposal[]
 
   @@index([seriesSort])
   @@index([coreSeriesId])
@@ -177,6 +178,33 @@ model AppLog {
   @@index([createdAt])
   @@index([level, createdAt])
   @@index([source, createdAt])
+}
+
+/// A bulk re-match suggestion. The comic row stays as it was until Accept.
+model MatchProposal {
+  id         String   @id @default(cuid())
+  comicId    String
+  comic      Comic    @relation(fields: [comicId], references: [id], onDelete: Cascade)
+  /// metron, comicvine, or gcd.
+  provider   String
+  issueId    String
+  seriesId   String?
+  confidence Int
+  reason     String   @db.Text
+  coverUrl   String?
+  title      String
+  issueNo    String
+  variant    String?
+  /// Catalog ids and cover on the comic when the proposal was saved.
+  priorLink  Json
+  /// pending, rejected, or accepted. Rejected is not offered again.
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([comicId, provider, issueId])
+  @@index([status])
+  @@index([comicId])
 }
 
 /// A manual search or re-link waiting for a source window to reset. One row per comic and source.

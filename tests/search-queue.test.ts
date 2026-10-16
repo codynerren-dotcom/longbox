@@ -103,6 +103,7 @@ describe("search queue", () => {
     expect(queueResultMessage(item, "matched")).toBe("Matched Amazing Fantasy #15 on GCD.");
     expect(queueResultHref("c1")).toBe("/issues/c1");
     expect(queueResultMessage(item, "empty")).toBe("No matches for Amazing Fantasy #15 on GCD.");
+    expect(queueResultMessage(item, "proposed")).toBe("Proposed a match for Amazing Fantasy #15 on GCD. Review it before linking.");
     expect(queuedLogHref({ queued: true, comicId: "c1", href: "/issues/c1" })).toBe("/issues/c1");
     expect(queuedLogHref({ comicId: "c1" })).toBeNull();
   });

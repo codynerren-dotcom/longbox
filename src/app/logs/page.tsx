@@ -5,6 +5,7 @@ import { formatPauseClock } from "@/lib/catalog/rate-limit";
 import { queuedLogHref, queueSourceLabel } from "@/lib/catalog/search-queue";
 import { CancelQueuedSearch } from "@/app/logs/queued-searches";
 import { editionJobText, readEditionJob } from "@/lib/covers/job-state";
+import { countPendingProposals } from "@/lib/covers/propose-match";
 import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
 import { logFiltersFrom, logQueryString, logWhere } from "@/lib/log/query";
@@ -46,6 +47,7 @@ export default async function LogsPage({
   const query = logQueryString(filters);
   const display = dateOptions(prefs, true);
   const jobLine = editionJobText(readEditionJob());
+  const proposals = await countPendingProposals();
   let queued: { id: string; label: string; source: string; resumeAt: Date }[] = [];
   try {
     queued = await prisma.searchQueue.findMany({
@@ -63,6 +65,11 @@ export default async function LogsPage({
       </PageHeader>
 
       {jobLine ? <p className="mb-4 text-sm text-paper">{jobLine}</p> : null}
+      <p className="mb-4 text-sm text-mist">
+        <Link href="/review" className="font-semibold text-comic">
+          Review matches{proposals > 0 ? ` (${proposals})` : ""}
+        </Link>
+      </p>
 
       <section className="mb-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
         <h2 className="font-display text-3xl tracking-wide">Queued searches</h2>

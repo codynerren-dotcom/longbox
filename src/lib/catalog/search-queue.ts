@@ -181,9 +181,10 @@ export function applyAttempt(
   return { rows: rows.filter((item) => item.id !== id), notice: queueResultMessage(row, outcome.status), row };
 }
 
-export function queueResultMessage(row: { label: string; source: string }, status: "matched" | "empty"): string {
+export function queueResultMessage(row: { label: string; source: string }, status: "matched" | "proposed" | "empty"): string {
   const name = queueSourceLabel(row.source);
   if (status === "matched") return `Matched ${row.label} on ${name}.`;
+  if (status === "proposed") return `Proposed a match for ${row.label} on ${name}. Review it before linking.`;
   return `No matches for ${row.label} on ${name}.`;
 }
 

@@ -32,7 +32,7 @@ export function SuspectActions({ id, manual }: { id: string; manual: boolean }) 
         <button
           type="button"
           disabled={pending || manual}
-          title={manual ? "This link was chosen by hand. Unlink it first." : "Look up this facsimile again and replace the link when a modern issue matches."}
+          title={manual ? "This link was chosen by hand. Unlink it first." : "Look this up again and save a proposal. The link stays until you accept it."}
           className="rounded-full bg-comic px-3 py-2 text-sm font-semibold text-ink disabled:opacity-50"
           onClick={() => run(() => rematchSuspectAction(id))}
         >
@@ -85,7 +85,7 @@ export function RematchAllSuspects() {
           });
         }}
       >
-        Re-match all suspect
+        Propose re-matches
       </button>
       {message ? <p className={ok ? "mt-2 text-sm text-paper" : "mt-2 text-sm text-red-300"}>{message}</p> : null}
       <LimitToast

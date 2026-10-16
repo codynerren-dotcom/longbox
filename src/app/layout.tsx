@@ -6,6 +6,7 @@ import { scheduleFacsimileRematch } from "@/lib/covers/facsimile-rematch";
 import { scheduleShelfFormatBackfill } from "@/lib/shelf-format-backfill";
 import { readBackfillStatus } from "@/lib/covers/files";
 import { readEditionJob } from "@/lib/covers/job-state";
+import { countPendingProposals } from "@/lib/covers/propose-match";
 import { getViewer } from "@/lib/auth";
 import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
@@ -53,11 +54,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   scheduleShelfFormatBackfill();
   const viewer = await getViewer();
   const prefs = await getPreferences().catch(() => defaultPreferences());
+  const proposalCount = await countPendingProposals();
   return (
     <html lang="en" className={`${display.variable} ${body.variable}`} style={{ "--accent-rgb": ACCENT_RGB[prefs.display.accent] } as React.CSSProperties}>
       <body className="font-sans antialiased">
         <link rel="manifest" href="/manifest.webmanifest" crossOrigin="use-credentials" />
-        <AppShell viewer={viewer} backfill={readBackfillStatus()} rematch={readEditionJob()}>
+        <AppShell viewer={viewer} backfill={readBackfillStatus()} rematch={readEditionJob()} proposalCount={proposalCount}>
           {children}
         </AppShell>
         <PwaRegister />
