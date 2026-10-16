@@ -35,7 +35,7 @@ export async function runCoversAction(): Promise<LibraryState> {
   revalidatePath("/settings");
   revalidatePath("/covers");
   if (result === "unconfigured") {
-    return { status: "error", message: "Add Metron username and password, then start the backfill again.", notice };
+    return { status: "error", message: "Add a Metron API token, or a username and password, then start the backfill again.", notice };
   }
   if (result === "busy") return { status: "ok", message: "A cover backfill is already running.", notice };
   return { status: "ok", message: "Backfill started.", notice };
@@ -62,7 +62,7 @@ export async function enrichMatchedAction(): Promise<LibraryState> {
   const result = await startMetronEnrichmentInBackground();
   revalidatePath("/settings");
   revalidatePath("/covers");
-  if (result === "unconfigured") return { status: "error", message: "Add Metron username and password, then try enrichment again.", notice };
+  if (result === "unconfigured") return { status: "error", message: "Add a Metron API token, or a username and password, then try enrichment again.", notice };
   if (result === "disabled") return { status: "error", message: "Turn on Fill missing details from Metron to enrich matched issues.", notice };
   if (result === "busy") return { status: "ok", message: "A Metron run is already going.", notice };
   return { status: "ok", message: "Enrichment started for matched issues.", notice };

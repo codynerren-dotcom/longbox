@@ -21,7 +21,7 @@ export async function startCoverBackfillAction(): Promise<BackfillActionState> {
   const result = await startCoverBackfillInBackground();
   revalidatePath("/covers");
   if (result === "unconfigured") {
-    return { status: "error", message: "Add Metron username and password in Settings, then start the backfill again.", notice };
+    return { status: "error", message: "Add a Metron API token, or a username and password, in Settings, then start the backfill again.", notice };
   }
   if (result === "busy") {
     return { status: "busy", message: "A cover backfill is already running. Refresh in a moment.", notice };

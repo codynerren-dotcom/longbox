@@ -19,6 +19,8 @@ import {
   readMetronCircuit,
   resetMetronCircuit,
 } from "@/lib/covers/metron-circuit";
+import { downloadCover } from "@/lib/covers/files";
+import { METRON_USER_AGENT } from "@/lib/covers/metron-headers";
 import {
   clearMetronDetailCache,
   createMetronCoverLookup,
@@ -380,5 +382,63 @@ describe("Metron request practices", () => {
     expect(logged).not.toContain(password);
     expect(logged).not.toContain("Basic ");
     expect(logged.toLowerCase()).not.toContain("authorization");
+  });
+
+  it("names Longbox in the User-Agent and can send a Bearer token", async () => {
+    const built = transport({
+      fetch: async (_url, init) => {
+        const headers = init?.headers as Record<string, string>;
+        expect(headers["User-Agent"]).toBe(METRON_USER_AGENT);
+        expect(headers.Accept).toBe("application/json");
+        expect(headers.Authorization).toBe("Bearer tok_123");
+        return Response.json({ results: [] });
+      },
+    });
+    built.transport.authorization = "Bearer tok_123";
+    await createMetronCoverLookup(built.transport).issuesByUpc("1");
+  });
+
+  it("sends If-Modified-Since when a stored series issue list is fetched again", async () => {
+    clearMetronDetailCache();
+    const modified = "Wed, 12 Feb 2026 10:30:00 GMT";
+    let calls = 0;
+    const page = { count: 1, next: null, results: [{ number: "1" }] };
+    const client = transport({
+      fetch: async (_url, init) => {
+        calls += 1;
+        const headers = init?.headers as Record<string, string>;
+        if (calls === 1) {
+          expect(headers["If-Modified-Since"]).toBeUndefined();
+          return Response.json(page, { headers: { "Last-Modified": modified } });
+        }
+        expect(headers["If-Modified-Since"]).toBe(modified);
+        return new Response(null, { status: 304 });
+      },
+    }).transport;
+    const first = await fetchMetronSeriesRun(client, "15");
+    const second = await fetchMetronSeriesRun(client, "15");
+    expect(second).toEqual(first);
+    expect(calls).toBe(2);
+  });
+
+  it("sends the User-Agent when downloading a Metron cover", async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("user-agent")).toBe(METRON_USER_AGENT);
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const filename = await downloadCover("https://static.metron.cloud/media/issue/saga-1.jpg", "50", "/tmp/longbox-cover-test", {
+        force: true,
+      });
+      expect(filename.startsWith("metron-50")).toBe(true);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

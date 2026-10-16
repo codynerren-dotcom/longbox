@@ -184,6 +184,11 @@ describe("settings resolution", () => {
     expect(auth?.header).not.toContain("token-value");
   });
 
+  it("sends a Bearer token when that is the only Metron credential", () => {
+    const config = buildConfig(emptyStored(), env({ metronToken: "token-value" }));
+    expect(metronAuthorization(config)?.header).toBe("Bearer token-value");
+  });
+
   it("seeds only when the toggle is on and the shelf is empty", () => {
     expect(shouldSeedShelf(true, 0)).toBe(true);
     expect(shouldSeedShelf(true, 30)).toBe(false);

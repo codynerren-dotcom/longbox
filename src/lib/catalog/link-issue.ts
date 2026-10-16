@@ -298,7 +298,7 @@ async function searchMetron(args: {
   mode: "query" | "barcode";
   shelfFormat?: string | null;
 }): Promise<MatchHit[] | { ok: false; message: string }> {
-  if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
+  if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron API token, or a username and password, in Settings to search." };
   return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode, args.shelfFormat);
 }
 
@@ -443,7 +443,7 @@ async function loadLinkTarget(
     };
   }
   if (source === "metron") {
-    if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
+    if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron API token, or a username and password, in Settings to search." };
     const body = await fetchMetronIssueBody(await metronTransport(), hit.id);
     const detail = body ? mapMetronDetails(body) : null;
     const mapped = body ? mapMetronMatchHit(body) : null;
@@ -543,7 +543,7 @@ async function chosenImage(
     if (issueId) return { source: link.coverSource, issueId, imageUrl: link.coverImageUrl, primaryUrl: link.coverImageUrl };
   }
   if (link.metronIssueId) {
-    if (!(await metronBasicAuth())) throw new Error("Add a Metron username and password in Settings to search.");
+    if (!(await metronBasicAuth())) throw new Error("Add a Metron API token, or a username and password, in Settings to search.");
     const body = await fetchMetronIssueBody(await metronTransport(), link.metronIssueId);
     const imageUrl = body ? mapMetronMatchHit(body)?.coverUrl ?? null : null;
     if (imageUrl) return { source: "metron", issueId: link.metronIssueId, imageUrl, primaryUrl: imageUrl };

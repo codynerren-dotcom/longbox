@@ -58,7 +58,7 @@ export async function revertToMetronCover(comicId: string): Promise<{ ok: boolea
   const label = issueLabel(comic.series, comic.issueNo, comic.issue);
   if (!metronId) return { ok: false, message: `${label} has no Metron cover to restore.` };
   if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish." };
-  if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to restore the cover." };
+  if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron API token, or a username and password, in Settings to restore the cover." };
   try {
     const detail = await fetchMetronIssueRecord(await metronTransport(), metronId);
     if (!detail?.imageUrl) return { ok: false, message: `Metron issue ${metronId} has no cover image.` };

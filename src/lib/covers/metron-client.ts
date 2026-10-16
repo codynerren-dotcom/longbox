@@ -5,6 +5,7 @@ import { readMetronWindow, saveMetronWindow } from "@/lib/catalog/rate-store";
 import { catalogBaseCount, catalogIssueCount, distinctIssueLabels, isVariantDescriptor } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
+import { METRON_USER_AGENT } from "@/lib/covers/metron-headers";
 import { budgetDay, formatResumeTime, metronStatusPlan, MetronLimiter, type BudgetStore } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
 import {
@@ -18,12 +19,15 @@ import { MetronBudgetError, MetronConnectError, type CoverLookup, type MetronIss
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
 import { getSettings } from "@/lib/settings/service";
+import { metronAuthorization } from "@/lib/settings/resolve";
 
 export type MetronTransport = {
   fetch: typeof fetch;
   limiter: MetronLimiter;
   username: string;
   password: string;
+  /** Set by the live client. Tests that only have a username and password leave this unset. */
+  authorization?: string;
   baseUrl: string;
   now: () => number;
 };
@@ -33,10 +37,11 @@ type MetronPage = {
   results?: unknown[];
 };
 
+/** True when a Bearer token or a username and password is configured. The pair may be blank when only a token is set. */
 export async function metronBasicAuth(): Promise<{ username: string; password: string } | null> {
-  const { metron } = await getSettings();
-  if (!metron.username || !metron.password) return null;
-  return { username: metron.username, password: metron.password };
+  const settings = await getSettings();
+  if (!metronAuthorization(settings)) return null;
+  return { username: settings.metron.username, password: settings.metron.password };
 }
 
 export async function metronBaseUrl(): Promise<string> {
@@ -87,14 +92,16 @@ export function sharedMetronLimiter(): MetronLimiter {
 }
 
 export async function metronTransport(): Promise<MetronTransport> {
-  const auth = await metronBasicAuth();
-  if (!auth) throw new Error("Set Metron username and password in Settings or the environment.");
+  const settings = await getSettings();
+  const auth = metronAuthorization(settings);
+  if (!auth) throw new Error("Set a Metron API token, or a username and password, in Settings or the environment.");
   return {
     fetch,
     limiter: sharedMetronLimiter(),
-    username: auth.username,
-    password: auth.password,
-    baseUrl: await metronBaseUrl(),
+    username: settings.metron.username,
+    password: settings.metron.password,
+    authorization: auth.header,
+    baseUrl: auth.baseUrl,
     now: () => Date.now(),
   };
 }
@@ -274,11 +281,16 @@ export function clearMetronDetailCache(): void {
   detailCache.clear();
 }
 
-/** Detail urls are `/issue/123/`. List urls are `/issue/?…` and stay uncached. */
-export function metronDetailIssueId(pathOrUrl: string): string | null {
+/**
+ * URLs that support `If-Modified-Since`: an issue detail, or a series `issue_list`.
+ * A filtered list such as `/issue/?upc=` does not.
+ * https://github.com/Metron-Project/metron/blob/master/api/README.md#conditional-requests
+ */
+export function metronConditionalKey(pathOrUrl: string): string | null {
   const path = pathOrUrl.split("?")[0] ?? pathOrUrl;
-  const match = path.match(/\/issue\/(\d+)\/?$/);
-  return match?.[1] ?? null;
+  if (/\/issue\/\d+\/?$/.test(path)) return pathOrUrl;
+  if (/\/series\/\d+\/issue_list\/?$/.test(path)) return pathOrUrl;
+  return null;
 }
 
 /**
@@ -324,7 +336,6 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     await ensureRateHydrated();
   }
   const lane = currentLane();
-  const detailId = metronDetailIssueId(pathOrUrl);
   let attempt = 0;
   while (true) {
     attempt += 1;
@@ -332,12 +343,13 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     await takeJobSlot(transport.now());
     await transport.limiter.acquire(lane);
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
+    const cacheKey = metronConditionalKey(url);
     const headers: Record<string, string> = {
       Accept: "application/json",
-      Authorization: basicAuthHeader(transport.username, transport.password),
-      "User-Agent": "longbox/1.0",
+      Authorization: transport.authorization ?? basicAuthHeader(transport.username, transport.password),
+      "User-Agent": METRON_USER_AGENT,
     };
-    const cached = detailId ? detailCache.get(detailId) : undefined;
+    const cached = cacheKey ? detailCache.get(cacheKey) : undefined;
     if (cached) headers["If-Modified-Since"] = cached.modified;
     const started = transport.now();
     let response: Response;
@@ -398,10 +410,10 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     if (!response.ok) throw new Error(`Metron returned ${response.status}`);
     transport.limiter.observe(response.headers);
     const json = (await response.json()) as MetronPage;
-    if (detailId) {
+    if (cacheKey) {
       const modified = response.headers.get("last-modified");
-      if (modified) detailCache.set(detailId, { modified, body: json });
-      else detailCache.delete(detailId);
+      if (modified) detailCache.set(cacheKey, { modified, body: json });
+      else detailCache.delete(cacheKey);
     }
     return json;
   }

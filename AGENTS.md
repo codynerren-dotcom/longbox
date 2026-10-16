@@ -39,6 +39,19 @@ Every new integration that calls an external host goes through the shared limite
 
 A manual Match search, re-match, or backfill shows a notice instead of an empty result. Name the source, the limit, and the America/Chicago reset time, for example `Metron limit reached (20/min). Resets at 11:42 AM.` When another source was still searched, say so. A Metron connect pause uses `Metron unreachable, retrying at 11:42 AM.` `tests/limit-notice.test.ts` covers the wording. Queue it on a search or re-link stores that request until the window resets, runs it ahead of background jobs, and lists it on Logs until it finishes or is cancelled. `tests/search-queue.test.ts` covers the queue.
 
+## Metron
+
+Longbox only reads Metron. The project introduction is https://metron-project.github.io/docs/introduction. The Metron page there links to the database and the repo. Use these with it:
+
+- API reference: https://github.com/Metron-Project/metron/blob/master/api/README.md
+- Rate limits: https://github.com/Metron-Project/metron/blob/master/api/RATELIMIT.md
+- Data model: https://metron-project.github.io/docs/metroninfo/documentation
+- The database is [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The metron.cloud footer, linked from the introduction, states that license. Keep the Metron link on a copy that came from Metron, and do not republish the database as Longbox's own.
+
+Every Metron request, including a cover download from `static.metron.cloud`, sends `User-Agent: longbox/1.0 (personal comic shelf)`. An empty User-Agent is banned. API calls also send `Accept: application/json`. Credentials go in the `Authorization` header, Bearer when a token is the only credential and Basic when a username and password are saved, and never in the URL or the logs.
+
+Find issues with the server filters: `upc`, `upc_starts_with` for a 12-digit scan, `gcd_id`, `cv_id`, and `series_name` plus `number` plus `series_year_began`. `sku` is a distributor code, not a barcode. After a series id is stored, page `/api/series/{id}/issue_list/` and do not look that series up by name again. List endpoints find matches. The detail endpoint is for the one issue being shown or accepted. Detail and `issue_list` refetches send `If-Modified-Since`. A 304 keeps the cached body and still counts against the quota. Follow `next` with one request in flight. Retry only a 429, after the reset time or `Retry-After`, and a 5xx, with backoff from 1 second up to 60. Do not retry other 4xx responses, and do not POST, PUT, or PATCH.
+
 ## Validation
 
 Run this before considering a change done:

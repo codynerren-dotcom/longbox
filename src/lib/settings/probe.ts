@@ -5,23 +5,21 @@ import { pauseLabel } from "@/lib/catalog/rate-limit";
 import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { assertMetronCircuit, isMetronTransportFailure, recordMetronTransportFailure, recordMetronTransportSuccess } from "@/lib/covers/metron-circuit";
 import { sharedMetronLimiter } from "@/lib/covers/metron-client";
+import { METRON_USER_AGENT } from "@/lib/covers/metron-headers";
 import { MetronBudgetError } from "@/lib/covers/types";
 import { recordFetch } from "@/lib/log/api";
 import type { LogSource } from "@/lib/log/types";
-import type { IntegrationConfig } from "@/lib/settings/resolve";
+import { metronAuthorization, type IntegrationConfig } from "@/lib/settings/resolve";
 
 export type ProbeResult = { ok: boolean; message: string };
 
 const TIMEOUT_MS = 8000;
 
 export async function probeMetron(config: IntegrationConfig, fetchImpl: typeof fetch = fetch): Promise<ProbeResult> {
-  const basic = Boolean(config.metron.username && config.metron.password);
-  const header = basic
-    ? `Basic ${Buffer.from(`${config.metron.username}:${config.metron.password}`).toString("base64")}`
-    : config.metron.token
-      ? `Bearer ${config.metron.token}`
-      : null;
-  if (!header) return { ok: false, message: "Metron username and password are not set." };
+  const auth = metronAuthorization(config);
+  if (!auth) return { ok: false, message: "A Metron API token, or a username and password, is not set." };
+  const header = auth.header;
+  const basic = header.startsWith("Basic ");
   try {
     assertMetronCircuit(Date.now());
     await sharedMetronLimiter().acquire("interactive");
@@ -32,7 +30,7 @@ export async function probeMetron(config: IntegrationConfig, fetchImpl: typeof f
   const url = `${config.metron.baseUrl}/series/?name=Saga`;
   try {
     const response = await loggedFetch(fetchImpl, "metron", url, {
-      headers: { Accept: "application/json", Authorization: header, "User-Agent": "longbox/1.0" },
+      headers: { Accept: "application/json", Authorization: header, "User-Agent": METRON_USER_AGENT },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     sharedMetronLimiter().observe(response.headers);

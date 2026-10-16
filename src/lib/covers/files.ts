@@ -9,6 +9,7 @@ import { noteImagePause, reserveImageDownload } from "@/lib/catalog/rate-gate";
 import { GCD_COVER_MISSED, isGcdScanHost } from "@/lib/catalog/match-row";
 import { normalizeMetronBudget, pauseLabel } from "@/lib/catalog/rate-limit";
 import { emptyBudget, retryAfterFromMessage, retryAfterMs, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
+import { METRON_USER_AGENT } from "@/lib/covers/metron-headers";
 
 const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
 const CATALOG_FILE = "(?:metron|cv|gcd)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
@@ -208,7 +209,11 @@ export async function downloadCover(
   const started = Date.now();
   let response: Response;
   try {
-    response = await fetch(parsed, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+    response = await fetch(parsed, {
+      headers: { "User-Agent": METRON_USER_AGENT, Accept: "image/avif,image/webp,image/*,*/*" },
+      signal: AbortSignal.timeout(20_000),
+      redirect: "follow",
+    });
   } catch (error) {
     await recordFetch({
       source: "covers/backfill",

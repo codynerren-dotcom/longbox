@@ -483,7 +483,7 @@ export async function rematchShelfCopy(
   }
 
   if (needsCredentials) {
-    return pack({ ok: false, message: "Set Metron username and password in Settings or the environment.", outcome: "unmatched" });
+    return pack({ ok: false, message: "Set a Metron API token, or a username and password, in Settings or the environment.", outcome: "unmatched" });
   }
   return finish(null);
 }

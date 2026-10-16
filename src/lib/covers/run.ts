@@ -510,7 +510,7 @@ async function loadMatchedIssue(transport: MetronTransport, issueId: string): Pr
 
 export async function attachMetronCover(comicId: string, metronIssueId: string): Promise<void> {
   if (!/^\d+$/.test(metronIssueId)) throw new Error("Enter a numeric Metron issue id.");
-  if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
+  if (!(await metronBasicAuth())) throw new Error("Set a Metron API token, or a username and password, in Settings or the environment.");
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) throw new Error("A cover backfill is already running.");
   const detail = await fetchMetronIssueRecord(await metronTransport(), metronIssueId);
   if (!detail?.imageUrl) throw new Error(`Metron issue ${metronIssueId} has no cover image.`);
@@ -582,7 +582,7 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       releaseBackfillLock();
     }
   }
-  if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
+  if (!(await metronBasicAuth())) throw new Error("Set a Metron API token, or a username and password, in Settings or the environment.");
   if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
   try {
     const transport = await metronTransport();
@@ -786,7 +786,7 @@ export async function refreshIssueFromMetron(comicId: string): Promise<{ ok: boo
     return { ok: false, message };
   }
   if (!(await metronBasicAuth())) {
-    const message = "Set Metron username and password in Settings or the environment.";
+    const message = "Set a Metron API token, or a username and password, in Settings or the environment.";
     await writeLog({ level: "warn", source: "metron", message, details: { comicId } });
     return { ok: false, message };
   }
