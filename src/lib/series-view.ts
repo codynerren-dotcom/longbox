@@ -167,7 +167,7 @@ function distinctBaseIssues(comics: CopyIdentity[]): number {
   return seen.size + unlabeled;
 }
 
-/** Owned numbers only. Every number has a `#`, including both ends of a range: `Have: #1-#3, #5-#6`. */
+/** Owned base numbers, grouped only when they are consecutive. `#7E` and `#55A` are `Have: #7, #55`, not `Have: #7-#55`. */
 export function haveRange(comics: SeriesCopy[]): string | null {
   const numbers = ownedIssueNumbers(comics);
   if (numbers.length === 0) return null;

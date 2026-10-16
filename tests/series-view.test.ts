@@ -247,6 +247,15 @@ describe("series rows", () => {
     expect(seriesHeaderSummary(alphaFlight, { numbers: [], issueCount: 130 })).toBe(
       "1 comic · Have: #15 · Missing 129: #1-14, #16-130",
     );
+    const avengers = [
+      copy({ id: "av-7", series: "Avengers", issueNo: "7E" }),
+      copy({ id: "av-55", series: "Avengers", issueNo: "55A" }),
+    ];
+    expect(haveRange(avengers)).toBe("Have: #7, #55");
+    expect(seriesHeaderSummary(avengers, { numbers: [], issueCount: 66 })).toBe(
+      "2 comics · Have: #7, #55 · Missing 64: #1-6, #8-54, #56-66",
+    );
+    expect(seriesHeaderSummary(avengers, { numbers: [], issueCount: 66 })).not.toContain("7-55");
     expect(seriesMissing(pandora, { numbers: ["1", "2", "3", "4", "5", "6", "7", "8"], issueCount: 8 })).toEqual({
       kind: "missing",
       count: 3,
