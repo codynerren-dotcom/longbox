@@ -147,6 +147,7 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
   const covers = coversWithUpc(row);
   const upcs = listedUpcs(row);
   const altNumber = text(row.alt_number);
+  const seriesVolume = whole(series?.volume);
   return {
     id: String(row.id),
     seriesId: series?.id != null ? String(series.id) : null,
@@ -158,6 +159,7 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
     label: text(row.issue) ?? variant,
     releaseYear: coverYearOf(text(row.store_date)),
     seriesYear: whole(series?.year_began),
+    ...(seriesVolume != null ? { seriesVolume } : {}),
     upc: text(row.upc),
     upcs,
     publisher:
@@ -460,6 +462,7 @@ export function metronIssueQuery(
   number: string,
   seriesYearBegan: number | null,
   kind: "primary" | "alt-number" | "alt-series",
+  volume?: number | null,
 ): string | null {
   const params = new URLSearchParams();
   const name = seriesName.trim();
@@ -471,6 +474,7 @@ export function metronIssueQuery(
     if (issue) params.set("alt_number", issue);
   } else if (issue) params.set("number", issue);
   if (seriesYearBegan != null) params.set("series_year_began", String(seriesYearBegan));
+  else if (kind === "primary" && volume != null) params.set("volume", String(volume));
   if ([...params.keys()].length === 0) return null;
   return `/issue/?${params.toString()}`;
 }
@@ -494,12 +498,13 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
       const hits = await collect(transport, `/issue/?upc_starts_with=${encodeURIComponent(upc)}`, mapIssue);
       return hits as MetronIssueHit[];
     },
-    async issuesByName(seriesName, number, seriesYearBegan) {
-      const primary = metronIssueQuery(seriesName, number, seriesYearBegan, "primary");
+    async issuesByName(seriesName, number, seriesYearBegan, volume) {
+      const primary = metronIssueQuery(seriesName, number, seriesYearBegan, "primary", volume);
       if (!primary) return [];
       let hits = (await collect(transport, primary, mapIssue)) as MetronIssueHit[];
       if (hits.length > 0) return hits;
-      // A year is already retried by the caller. Spend the extra request on a legacy number, or on alternate names once the year is gone.
+      // A volume filter is retried by the caller. A year is too. Spend the extra request on a legacy number, or on alternate names once the year is gone.
+      if (volume != null && seriesYearBegan == null) return hits;
       if (!legacyMetronNumber(number) && seriesYearBegan != null) return hits;
       const follow = metronIssueFollowUp(seriesName, number, seriesYearBegan);
       if (!follow) return hits;

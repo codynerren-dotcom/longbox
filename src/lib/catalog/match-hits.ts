@@ -24,6 +24,10 @@ export type MatchHit = {
   onSaleDate?: string | null;
   /** Cover page to open when the scan itself cannot be shown. */
   coverPageUrl?: string | null;
+  /** Series start year, when the payload includes one. */
+  seriesYear?: number | null;
+  /** Series volume, when the payload includes one. */
+  seriesVolume?: number | null;
 };
 
 function text(value: unknown): string | null {
@@ -34,6 +38,12 @@ function text(value: unknown): string | null {
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function whole(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
+  return null;
 }
 
 function digits(value: unknown): string | null {
@@ -101,6 +111,8 @@ export function mapMetronMatchHit(value: unknown): MatchHit | null {
   if (!seriesName) return null;
   const covers = variantCoversFrom(row);
   const variant = text(row.variant) ?? text(record(row.variant)?.name) ?? covers.find((cover) => cover.label !== "Cover")?.label ?? null;
+  const seriesYear = whole(series?.year_began);
+  const seriesVolume = whole(series?.volume);
   return {
     source: "metron",
     id,
@@ -112,6 +124,8 @@ export function mapMetronMatchHit(value: unknown): MatchHit | null {
     publisher: publisherName(series?.publisher) ?? publisherName(row.publisher),
     coverUrl: covers[0]?.imageUrl ?? null,
     covers,
+    ...(seriesYear != null ? { seriesYear } : {}),
+    ...(seriesVolume != null ? { seriesVolume } : {}),
   };
 }
 

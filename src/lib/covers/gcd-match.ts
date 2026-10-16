@@ -12,7 +12,9 @@ import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
 import {
   catalogNameQueries,
+  catalogSeriesQuery,
   gcdFormatMatches,
+  parseShelfSeries,
   isbnDigits,
   isCollected,
   normalizeSeriesName,
@@ -80,8 +82,9 @@ export async function searchGcdMatches(
   const parsed = parseMatchQuery(mode === "barcode" && !typed ? "" : query);
   const shelf = tradeSearchSeries(options?.shelfSeries) || (options?.shelfSeries ?? "").trim();
   const series = parsed.series || (mode === "barcode" ? shelf : "") || typed;
+  const named = catalogSeriesQuery(series, options?.shelfSeries);
   const probe: CoverQuery = {
-    series,
+    series: named.name || series,
     issueNo: parsed.issueNo,
     issue: parsed.issueNo,
     coverYear: null,
@@ -99,7 +102,7 @@ export async function searchGcdMatches(
     const collected = await collectGcdCollectedIssues({ ...probe, shelfFormat: isCollected(format) ? format : "tp" }, isCollected(format) ? format : "tp", catalog);
     return orderGcdMatchHits(collected.map(gcdHit), barcode);
   }
-  const wanted = parsed.series || series;
+  const wanted = named.name || parsed.series || series;
   if (!wanted.trim()) return [];
   const year = parsed.year ?? options?.year ?? null;
   const hint = {
@@ -457,9 +460,11 @@ export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): P
   if (!comic.series.trim() || (!issueNo && comic.coverYear == null)) {
     return { status: "unmatched", reason: "GCD needs a series and issue number.", score: 0 };
   }
+  const shelfName = parseShelfSeries(comic.series);
+  const editionNames = (edition.searchNames.length > 0 ? edition.searchNames : [comic.series]).map((entry) => parseShelfSeries(entry).name || entry);
   const names = comic.series.includes("/")
-    ? gcdSlashMatchNames(comic.series, edition.searchNames)
-    : uniqueNames(edition.searchNames.length > 0 ? edition.searchNames : [comic.series], catalogNameQueries(comic.series));
+    ? gcdSlashMatchNames(shelfName.name || comic.series, editionNames)
+    : uniqueNames(editionNames, catalogNameQueries(shelfName.name || comic.series));
   let best: CoverDecision = { status: "unmatched", reason: `No GCD series named ${comic.series}.`, score: 0 };
   let fetched = 0;
   for (const name of names) {
@@ -578,7 +583,7 @@ export function gcdCollectedQueries(series: string | null | undefined): string[]
 
 /** Collected series from the normalized name, then the issue whose ISBN matches. */
 export async function collectGcdCollectedIssues(comic: CoverQuery, format: ShelfFormat, catalog: GcdCatalog): Promise<GcdIssueRow[]> {
-  const seriesName = tradeSearchSeries(comic.series) || comic.series.trim();
+  const seriesName = catalogSeriesQuery(tradeSearchSeries(comic.series) || comic.series.trim()).name;
   if (!seriesName) return [];
   const isbn = isbnDigits(comic.barcode);
   const volume = volumeNumber(comic.issueNo, comic.issue);
@@ -684,7 +689,7 @@ async function resolveGcdPrinting(comic: CoverQuery, edition: ReturnType<typeof 
   let best: CoverDecision = { status: "unmatched", reason: `No later printing for ${comic.series} #${issueNo || "?"}.`, score: 0 };
   if (!comic.series.trim() || !issueNo) return best;
   let fetched = 0;
-  for (const name of slashSafeNames(edition.searchNames)) {
+  for (const name of slashSafeNames(edition.searchNames.map((entry) => parseShelfSeries(entry).name || entry))) {
     const seriesRows = await readSeries(catalog, name);
     const picked = pickSeries(seriesRows, name, comic.releaseYear ?? comic.coverYear);
     for (const series of picked) {

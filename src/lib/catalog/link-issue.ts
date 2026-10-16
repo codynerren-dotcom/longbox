@@ -297,15 +297,27 @@ async function searchMetron(args: {
   barcode: string;
   mode: "query" | "barcode";
   shelfFormat?: string | null;
+  shelfSeries?: string | null;
 }): Promise<MatchHit[] | { ok: false; message: string }> {
   if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron API token, or a username and password, in Settings to search." };
-  return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode, args.shelfFormat);
+  return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode, args.shelfFormat, args.shelfSeries);
 }
 
-async function searchComicVine(args: { query: string; barcode: string; mode: "query" | "barcode" }): Promise<MatchHit[] | { ok: false; message: string }> {
+async function searchComicVine(args: {
+  query: string;
+  barcode: string;
+  mode: "query" | "barcode";
+  shelfSeries?: string | null;
+}): Promise<MatchHit[] | { ok: false; message: string }> {
   const settings = await getSettings();
   if (!settings.comicvine.apiKey) return { ok: false, message: "Add a Comic Vine API key in Settings to search." };
-  return searchComicVineMatches({ apiKey: settings.comicvine.apiKey, query: args.query, barcode: args.barcode, mode: args.mode });
+  return searchComicVineMatches({
+    apiKey: settings.comicvine.apiKey,
+    query: args.query,
+    barcode: args.barcode,
+    mode: args.mode,
+    shelfSeries: args.shelfSeries,
+  });
 }
 
 export async function loadIssueCovers(source: CatalogSource, issueId: string): Promise<MatchCover[]> {

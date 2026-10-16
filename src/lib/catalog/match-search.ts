@@ -13,7 +13,7 @@ import {
 import { fetchMetronIssueBody, legacyMetronNumber, listMetronIssueRows, metronIssueFollowUp, type MetronTransport } from "@/lib/covers/metron-client";
 import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
-import { catalogNameQueries, isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
+import { catalogNameQueries, catalogSeriesQuery, isbnDigits, isCollected, metronSeriesType, rankSeriesHits, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
 
 const CV_BASE = "https://comicvine.gamespot.com/api";
 
@@ -23,6 +23,7 @@ export async function searchMetronMatches(
   barcode: string,
   mode: "query" | "barcode",
   shelfFormat?: string | null,
+  shelfSeries?: string | null,
 ): Promise<MatchHit[]> {
   const format = resolveShelfFormat({ shelfFormat });
   if (mode === "barcode") {
@@ -41,7 +42,7 @@ export async function searchMetronMatches(
   if (!parsed.series && !parsed.issueNo) return [];
   const typeName = isCollected(format) ? metronSeriesType(format) : null;
   if (typeName) {
-    const seriesName = tradeSearchSeries(parsed.series) || parsed.series;
+    const seriesName = catalogSeriesQuery(tradeSearchSeries(parsed.series) || parsed.series, shelfSeries).name || parsed.series;
     const number = volumeNumber(parsed.issueNo);
     if (!seriesName) return [];
     const hits: MatchHit[] = [];
@@ -70,29 +71,45 @@ export async function searchMetronMatches(
     }
     return orderMatchHits(hits.slice(0, 12), parsed.year);
   }
-  const names = dedupeNames(parsed.series ? [parsed.series, ...catalogNameQueries(parsed.series)] : []);
+  const series = catalogSeriesQuery(parsed.series, shelfSeries);
+  const names = dedupeNames(series.name ? [series.name, ...catalogNameQueries(series.name)] : []);
   let rows: unknown[] = [];
   for (const name of names) {
-    const params = new URLSearchParams();
-    if (name) params.set("series_name", name);
-    if (parsed.issueNo) params.set("number", parsed.issueNo);
-    if (parsed.year != null) params.set("series_year_began", String(parsed.year));
+    const params = metronNameParams(name, parsed.issueNo, parsed.year, series);
     rows = params.size > 0 ? await listMetronIssueRows(transport, `/issue/?${params.toString()}`) : [];
-    if (rows.length === 0 && parsed.year != null) {
+    if (rows.length === 0 && (params.has("volume") || params.has("series_year_began"))) {
+      params.delete("volume");
       params.delete("series_year_began");
       if (params.size > 0) rows = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
     }
     if (rows.length > 0) break;
   }
-  if (rows.length === 0 && parsed.series) {
-    const year = legacyMetronNumber(parsed.issueNo ?? "") ? parsed.year : null;
-    const follow = metronIssueFollowUp(parsed.series, parsed.issueNo ?? "", year);
+  if (rows.length === 0 && series.name) {
+    const year = legacyMetronNumber(parsed.issueNo ?? "") ? (series.yearBegan ?? (series.volume == null ? parsed.year : null)) : null;
+    const follow = metronIssueFollowUp(series.name, parsed.issueNo ?? "", year);
     if (follow) rows = await listMetronIssueRows(transport, follow);
   }
+  const hits = rows.map(mapMetronMatchHit).filter((hit): hit is MatchHit => hit !== null);
   return orderMatchHits(
-    rows.map(mapMetronMatchHit).filter((hit): hit is MatchHit => hit !== null),
+    rankSeriesHits(hits, { volume: series.volume, yearBegan: series.yearBegan, shelfYear: series.yearBegan == null && series.volume == null ? parsed.year : null }),
     parsed.year,
   );
+}
+
+/** Volume when the title has one. Otherwise the series start year, then the shelf year. One of those, on the same request. */
+function metronNameParams(
+  name: string,
+  issueNo: string | null,
+  shelfYear: number | null,
+  series: { volume: number | null; yearBegan: number | null },
+): URLSearchParams {
+  const params = new URLSearchParams();
+  if (name) params.set("series_name", name);
+  if (issueNo) params.set("number", issueNo);
+  if (series.yearBegan != null) params.set("series_year_began", String(series.yearBegan));
+  else if (series.volume != null) params.set("volume", String(series.volume));
+  else if (shelfYear != null) params.set("series_year_began", String(shelfYear));
+  return params;
 }
 
 let vineMemory: ComicVineRateState = emptyComicVineRate();
@@ -199,6 +216,7 @@ export async function searchComicVineMatches(args: {
   barcode: string;
   mode: "query" | "barcode";
   fetchImpl?: typeof fetch;
+  shelfSeries?: string | null;
 }): Promise<MatchHit[]> {
   const fetchImpl = args.fetchImpl ?? fetch;
   if (args.mode === "barcode") {
@@ -218,13 +236,17 @@ export async function searchComicVineMatches(args: {
 
   const parsed = parseMatchQuery(args.query);
   if (!parsed.series && !parsed.issueNo) return [];
-  const volumes = asRows(
-    await comicVineGet(fetchImpl, args.apiKey, "/search/", {
-      resources: "volume",
-      query: parsed.series || args.query.trim(),
-      limit: "5",
-      field_list: "id,name,start_year,publisher",
-    }),
+  const series = catalogSeriesQuery(parsed.series, args.shelfSeries);
+  const volumes = rankComicVineVolumes(
+    asRows(
+      await comicVineGet(fetchImpl, args.apiKey, "/search/", {
+        resources: "volume",
+        query: series.name || parsed.series || args.query.trim(),
+        limit: "5",
+        field_list: "id,name,start_year,publisher",
+      }),
+    ),
+    series.yearBegan ?? parsed.year,
   );
   const hits: MatchHit[] = [];
   for (const volume of volumes) {
@@ -250,7 +272,7 @@ export async function searchComicVineMatches(args: {
     const results = asRows(
       await comicVineGet(fetchImpl, args.apiKey, "/search/", {
         resources: "issue",
-        query: args.query.trim(),
+        query: [series.name || parsed.series, parsed.issueNo ? `#${parsed.issueNo}` : "", parsed.year ?? ""].filter(Boolean).join(" "),
         limit: "12",
         field_list: "id,name,issue_number,cover_date,image,volume",
       }),
@@ -261,6 +283,27 @@ export async function searchComicVineMatches(args: {
     }
   }
   return orderMatchHits(hits.slice(0, 12), parsed.year);
+}
+
+function volumeStartYear(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const year = (value as { start_year?: unknown }).start_year;
+  if (typeof year === "number" && Number.isInteger(year)) return year;
+  if (typeof year === "string" && /^(?:18|19|20)\d{2}$/.test(year.trim())) return Number.parseInt(year.trim(), 10);
+  return null;
+}
+
+/** Keep the volume whose start year is the series year or the shelf year. One issue request in the common case. */
+function rankComicVineVolumes(rows: unknown[], target: number | null): unknown[] {
+  if (target == null || rows.length <= 1) return rows;
+  const parsed = rows.map((row, index) => ({ row, index, year: volumeStartYear(row) }));
+  const exact = parsed.filter((item) => item.year === target);
+  if (exact.length > 0) return exact.map((item) => item.row);
+  const earlier = parsed.filter((item) => item.year != null && (item.year as number) <= target);
+  if (earlier.length === 0) return rows;
+  const best = Math.max(...earlier.map((item) => item.year ?? 0));
+  const closest = earlier.filter((item) => item.year === best);
+  return closest.length > 0 ? closest.map((item) => item.row) : rows;
 }
 
 function dedupeNames(values: string[]): string[] {

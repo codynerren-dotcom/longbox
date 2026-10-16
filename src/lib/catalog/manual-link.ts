@@ -1,3 +1,5 @@
+import { parseShelfSeries } from "@/lib/shelf-format";
+
 export type CatalogSource = "metron" | "comicvine" | "gcd";
 
 export type ManualLink = {
@@ -133,7 +135,8 @@ export function withoutLinkedId(current: unknown, source: CatalogSource): Manual
 }
 
 export function matchQuery(comic: { series: string; issueNo: string | null | undefined; year: number | null | undefined }): string {
-  const parts = [comic.series.trim()];
+  const series = parseShelfSeries(comic.series).name || comic.series.trim();
+  const parts = [series];
   const issue = comic.issueNo?.trim().replace(/^#/, "");
   if (issue) parts.push(`#${issue}`);
   if (comic.year != null && Number.isInteger(comic.year)) parts.push(String(comic.year));

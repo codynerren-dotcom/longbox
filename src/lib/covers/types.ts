@@ -10,6 +10,8 @@ export type MetronIssueHit = {
   label: string | null;
   releaseYear?: number | null;
   seriesYear?: number | null;
+  /** Metron series volume. Used to pick Vol. 8 over an older series with the same name. */
+  seriesVolume?: number | null;
   upc?: string | null;
   /** Other UPC strings from the issue detail, including variant covers. The list payload leaves these off. */
   upcs?: string[] | null;
@@ -53,11 +55,11 @@ export type CoverLookup = {
   /** Series search limited to a Metron series type such as Trade Paperback. */
   searchSeriesByType?: (name: string, seriesType: string) => Promise<MetronSeriesHit[]>;
   /**
-   * One list request: `series_name`, `number`, and `series_year_began`.
+   * One list request: `series_name`, `number`, and `series_year_began` or `volume`.
    * A miss on a legacy number retries `alt_number`. A miss with no year retries `series_q`.
    * Present on the live client. Test lookups that still search series by name omit it.
    */
-  issuesByName?: (seriesName: string, number: string, seriesYearBegan: number | null) => Promise<MetronIssueHit[]>;
+  issuesByName?: (seriesName: string, number: string, seriesYearBegan: number | null, volume?: number | null) => Promise<MetronIssueHit[]>;
 };
 
 export type CoverQuery = {

@@ -117,7 +117,7 @@ export function parseShelfSeries(series: string | null | undefined): {
       name = single[1].trim().replace(/,\s*$/, "");
       continue;
     }
-    const vol = name.match(/^(.*?)(?:,|\s)\s*vol(?:ume)?\.?\s*(\d+)\s*$/i);
+    const vol = name.match(/^(.*?)(?:,|\s)\s*\(?\s*vol(?:ume)?\.?\s*(\d+)\s*\)?\s*$/i);
     if (vol?.[1]?.trim()) {
       volume = volume ?? Number(vol[2]);
       name = vol[1].trim().replace(/,\s*$/, "");
@@ -126,6 +126,65 @@ export function parseShelfSeries(series: string | null | undefined): {
     break;
   }
   return { name, volume, yearBegan, yearEnd };
+}
+
+/**
+ * Name to send a catalog. A trailing volume stays off the name.
+ * When the query was already stripped, the shelf title still supplies the volume.
+ */
+export function catalogSeriesQuery(series: string | null | undefined, shelfSeries?: string | null): {
+  name: string;
+  volume: number | null;
+  yearBegan: number | null;
+} {
+  const parsed = parseShelfSeries(series);
+  const name = parsed.name || (series ?? "").replace(/\s+/g, " ").trim();
+  let volume = parsed.volume;
+  let yearBegan = parsed.yearBegan;
+  if ((volume == null || yearBegan == null) && shelfSeries) {
+    const shelf = parseShelfSeries(shelfSeries);
+    if (shelf.name && shelf.name.toLowerCase() === name.toLowerCase()) {
+      volume = volume ?? shelf.volume;
+      yearBegan = yearBegan ?? shelf.yearBegan;
+    }
+  }
+  return { name, volume, yearBegan };
+}
+
+/** Hits whose series volume or start year agrees with the shelf. The rest stay in their original order. */
+export function rankSeriesHits<T extends { seriesVolume?: number | null; seriesYear?: number | null }>(
+  hits: T[],
+  hint: { volume?: number | null; yearBegan?: number | null; shelfYear?: number | null },
+): T[] {
+  const preferred = preferredSeriesHits(hits, hint);
+  if (preferred.length === 0 || preferred.length === hits.length) return hits;
+  const rest = hits.filter((hit) => !preferred.includes(hit));
+  return [...preferred, ...rest];
+}
+
+/** Only the hits that agree with the volume or the series year. Empty when nothing agrees. */
+export function preferredSeriesHits<T extends { seriesVolume?: number | null; seriesYear?: number | null }>(
+  hits: T[],
+  hint: { volume?: number | null; yearBegan?: number | null; shelfYear?: number | null },
+): T[] {
+  if (hint.volume != null) {
+    const volumed = hits.filter((hit) => hit.seriesVolume === hint.volume);
+    if (volumed.length > 0) return volumed;
+  }
+  if (hint.yearBegan != null) {
+    const dated = hits.filter((hit) => hit.seriesYear === hint.yearBegan);
+    if (dated.length > 0) return dated;
+  }
+  const shelfYear = hint.shelfYear ?? null;
+  if (shelfYear != null) {
+    const started = hits.filter((hit) => hit.seriesYear != null && (hit.seriesYear as number) <= shelfYear);
+    if (started.length > 0 && started.length < hits.length) {
+      const best = Math.max(...started.map((hit) => hit.seriesYear ?? 0));
+      const closest = started.filter((hit) => hit.seriesYear === best);
+      if (closest.length > 0) return closest;
+    }
+  }
+  return [];
 }
 
 /** Token-set match. A shared volume number has to agree when both titles carry one. */
