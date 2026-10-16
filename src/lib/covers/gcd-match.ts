@@ -70,6 +70,8 @@ export async function searchGcdMatches(
     publisher?: string | null;
     country?: string | null;
     language?: string | null;
+    /** Shelf cover year. A barcode query often has no year of its own. */
+    year?: number | null;
   },
 ): Promise<MatchHit[]> {
   const catalog = options?.catalog ?? createGcdCatalog();
@@ -99,12 +101,14 @@ export async function searchGcdMatches(
   }
   const wanted = parsed.series || series;
   if (!wanted.trim()) return [];
+  const year = parsed.year ?? options?.year ?? null;
   const hint = {
     name: wanted,
     publisher: options?.publisher,
-    year: parsed.year,
+    year,
     usBook: shelfIsUsBook({ country: options?.country, language: options?.language, barcode }),
   };
+  const fullBarcode = barcode.replace(/\D/g, "").length >= 12;
   const names = wanted.includes("/") ? gcdSlashMatchNames(wanted) : slashSafeNames(uniqueNames([wanted], catalogNameQueries(wanted)));
   let seriesRows: GcdSeriesRow[] = [];
   let misses = 0;
@@ -176,16 +180,20 @@ export async function searchGcdMatches(
   if (seriesRows.length === 0 && names.length > 0 && misses === names.length) throw new GcdNameMiss(wanted);
   const hits: MatchHit[] = [];
   for (const seriesRow of seriesRows.slice(0, 3)) {
-    const ids = gcdMatchIssueIds(seriesRow, parsed.issueNo, parsed.year);
+    const familyIds = new Set(gcdMatchIssueIds(seriesRow, parsed.issueNo, year));
+    const ids = mode === "barcode" && fullBarcode ? gcdBarcodeIssueIds(seriesRow, familyIds) : [...familyIds];
     const family: MatchHit[] = [];
     for (const id of ids) {
       const issue = await catalog.issue(id);
       if (!issue) continue;
       issue.seriesYear = issue.seriesYear ?? seriesRow.yearBegan;
       const descriptor = seriesRow.issues.find((item) => item.id === id)?.descriptor ?? "";
-      family.push(gcdHit(withDescriptor(issue, descriptor)));
+      const hit = gcdHit(withDescriptor(issue, descriptor));
+      if (mode === "barcode" && fullBarcode && !familyIds.has(id) && !exactBarcodeMatch(barcode, hit.barcode)) continue;
+      family.push(hit);
     }
     hits.push(...orderGcdMatchHits(family, barcode));
+    if (mode === "barcode" && fullBarcode && hits.some((hit) => exactBarcodeMatch(barcode, hit.barcode))) break;
     if (hits.length >= MATCH_VARIANT_CAP) break;
   }
   return orderGcdMatchHits(hits, barcode).slice(0, MATCH_VARIANT_CAP);
@@ -260,6 +268,19 @@ export function gcdVariantSiblingIds(series: GcdSeriesRow, issueId: string): str
   if (!self) return [];
   const key = gcdIssueFamilyKey(self.descriptor);
   return series.issues.filter((item) => item.id !== issueId && gcdIssueFamilyKey(item.descriptor) === key).map((item) => item.id);
+}
+
+/**
+ * Issue ids to compare with a shelf barcode. GCD has no barcode route, so the
+ * numbered issue's variants are checked first, then the rest of that series.
+ */
+function gcdBarcodeIssueIds(series: GcdSeriesRow, familyIds: ReadonlySet<string>): string[] {
+  const ids = [...familyIds];
+  for (const issue of series.issues) {
+    if (ids.length >= MATCH_VARIANT_CAP) break;
+    if (!ids.includes(issue.id)) ids.push(issue.id);
+  }
+  return ids;
 }
 
 /**

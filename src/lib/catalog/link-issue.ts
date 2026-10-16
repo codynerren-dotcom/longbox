@@ -208,6 +208,7 @@ export async function searchCatalogSource(args: {
     publisher: rank?.publisher ?? null,
     country: rank?.country ?? null,
     language: rank?.language ?? null,
+    year: rank?.year ?? null,
   });
   if ("ok" in found) throw new Error(found.message);
   return found;
@@ -235,6 +236,7 @@ async function searchOne(
     publisher?: string | null;
     country?: string | null;
     language?: string | null;
+    year?: number | null;
   },
 ): Promise<MatchHit[] | { ok: false; message: string }> {
   if (source === "metron") return searchMetron(args);
@@ -245,20 +247,28 @@ async function searchOne(
       publisher: args.publisher,
       country: args.country,
       language: args.language,
+      year: args.year,
     });
   }
   return searchComicVine(args);
 }
 
-async function loadShelfRank(comicId: string | null | undefined): Promise<{ publisher: string | null; country: string | null; language: string | null } | null> {
+async function loadShelfRank(
+  comicId: string | null | undefined,
+): Promise<{ publisher: string | null; country: string | null; language: string | null; year: number | null } | null> {
   const id = comicId?.trim() ?? "";
   if (!id) return null;
   const comic = await prisma.comic.findUnique({
     where: { id },
-    select: { publisher: true, country: true, language: true },
+    select: { publisher: true, country: true, language: true, coverYear: true, releaseYear: true, seriesYear: true },
   });
   if (!comic) return null;
-  return { publisher: comic.publisher, country: comic.country, language: comic.language };
+  return {
+    publisher: comic.publisher,
+    country: comic.country,
+    language: comic.language,
+    year: comic.coverYear ?? comic.releaseYear ?? comic.seriesYear,
+  };
 }
 
 async function storedShelf(args: {
