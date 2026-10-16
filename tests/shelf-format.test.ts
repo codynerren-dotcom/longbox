@@ -86,7 +86,8 @@ describe("shelf format detection", () => {
     expect(metronSeriesType("tp")).toBe("Trade Paperback");
     expect(metronSeriesType("hc")).toBe("Hardcover");
     expect(metronSeriesType("omnibus")).toBe("Omnibus");
-    expect(metronSeriesType("gn")).toBe("Trade Paperback");
+    expect(metronSeriesType("gn")).toBe("Graphic Novel");
+    expect(metronSeriesType("compendium")).toBe("Trade Paperback");
     expect(seriesHeaderFormat(["tp", "tp"])).toBe("tp");
     expect(seriesHeaderFormat(["tp", "single"])).toBeNull();
   });

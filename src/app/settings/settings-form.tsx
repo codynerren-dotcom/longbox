@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useActionState, useRef, useState, useTransition } from "react";
-import { clearSettingAction, saveServiceAction, saveSettingsAction, testConnectionAction, type ProbeActionState, type SettingsActionState } from "@/app/settings/actions";
+import { clearSettingAction, saveServiceAction, saveSettingsAction, testConnectionAction, testGcdLoginAction, type ProbeActionState, type SettingsActionState } from "@/app/settings/actions";
 import { Panel } from "@/components/panel";
 import { SECRET_MASK, type FieldView, type SettingsView } from "@/lib/settings/resolve";
 
@@ -14,11 +14,21 @@ export function SettingsForm({ view }: { view: SettingsView }) {
     <div className="space-y-4">
       <CredentialCard
         title="Metron"
-        detail="Username and password for catalog lookup and cover backfill. A saved value overrides the environment."
+        detail="Paste your Metron API token. Username and password are only used if no token is saved."
         service="metron"
         inputs={[
+          { name: "metron.token", label: "API token", field: view.metron.token },
           { name: "metron.username", label: "Username", field: view.metron.username },
           { name: "metron.password", label: "Password", field: view.metron.password },
+        ]}
+      />
+      <CredentialCard
+        title="Grand Comics Database"
+        detail="Optional. Save the username and password here. The password is encrypted. Compose does not pass them. Anonymous requests stay at 30 per hour. A saved pair uses 2,000 per day."
+        service="gcd"
+        inputs={[
+          { name: "gcd.username", label: "Username", field: view.gcd.username },
+          { name: "gcd.password", label: "Password", field: view.gcd.password },
         ]}
       />
       <CredentialCard
@@ -49,7 +59,7 @@ function CredentialCard({
 }: {
   title: string;
   detail: string;
-  service: "metron" | "comicvine" | "ebay";
+  service: "metron" | "gcd" | "comicvine" | "ebay";
   inputs: Array<{ name: string; label: string; field: FieldView }>;
 }) {
   const router = useRouter();
@@ -114,6 +124,16 @@ function CredentialCard({
           >
             Test connection
           </button>
+          {service === "gcd" ? (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => start(async () => setProbe(await testGcdLoginAction(initialProbe)))}
+              className="rounded-full bg-panel2 px-4 py-2 text-sm font-semibold text-paper disabled:opacity-50"
+            >
+              Test GCD login
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={pending}

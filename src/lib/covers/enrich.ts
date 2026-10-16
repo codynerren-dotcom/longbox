@@ -133,6 +133,10 @@ export function fromMetron(sources: unknown, field: string): boolean {
   return readFieldSources(sources)[field as MetronField] === "metron";
 }
 
+export function citesMetron(sources: unknown): boolean {
+  return Object.values(readFieldSources(sources)).includes("metron");
+}
+
 export function fieldCredit(sources: unknown, field: string): string | null {
   const mark = readFieldSources(sources)[field as MetronField];
   if (mark === "gcd") return "Data from GCD";

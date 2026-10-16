@@ -7,13 +7,14 @@ import { MatchPanel } from "@/app/issues/match-panel";
 import { RemoveCopyButton } from "@/app/issues/remove-copy";
 import { CatalogIdLink } from "@/components/catalog-id-link";
 import { IssueCatalogLinks } from "@/components/catalog-links";
+import { MetronCredit } from "@/components/metron-credit";
 import { CoverTile } from "@/components/cover-tile";
 import { FormatBadge } from "@/components/format-badge";
 import { ReadToggle } from "@/components/read-toggle";
 import { matchQuery, readManualLink } from "@/lib/catalog/manual-link";
 import { metronConfigured } from "@/lib/catalog/metron";
 import { detectEdition } from "@/lib/covers/edition";
-import { fieldCredit } from "@/lib/covers/enrich";
+import { citesMetron, fieldCredit } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
 import { isEmptyDisplay, showSlabSection } from "@/lib/issue-view";
 import { toIssueDraft } from "@/lib/issue-fields";
@@ -129,6 +130,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           <p className="mt-2 text-sm text-paper">{comic.quantity} copies</p>
         ) : null}
         <IssueCatalogLinks comic={comic} />
+        {comic.metronIssueId || comic.metronSeriesId || citesMetron(comic.fieldSources) ? <MetronCredit /> : null}
         <MatchPanel
           comicId={comic.id}
           shelfFormat={comic.shelfFormat}
@@ -152,7 +154,8 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
           metronIssueUrl={comic.metronIssueUrl}
           comicvineIssueId={comic.comicvineIssueId}
           gcdIssueId={comic.gcdIssueId}
-          canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId)}
+          canRepull={Boolean(link.coverImageUrl || comic.metronIssueId || comic.comicvineIssueId || link.gcdIssueId || comic.gcdIssueId)}
+          userCover={link.userCover}
         />
 
         <div id="editor">

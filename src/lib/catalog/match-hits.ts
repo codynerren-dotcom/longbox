@@ -1,3 +1,5 @@
+import type { MetronIssueHit } from "@/lib/covers/types";
+
 export type MatchCover = {
   label: string;
   imageUrl: string;
@@ -24,6 +26,10 @@ export type MatchHit = {
   onSaleDate?: string | null;
   /** Cover page to open when the scan itself cannot be shown. */
   coverPageUrl?: string | null;
+  /** Series start year, when the payload includes one. */
+  seriesYear?: number | null;
+  /** Series volume, when the payload includes one. */
+  seriesVolume?: number | null;
 };
 
 function text(value: unknown): string | null {
@@ -34,6 +40,12 @@ function text(value: unknown): string | null {
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function whole(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
+  return null;
 }
 
 function digits(value: unknown): string | null {
@@ -92,6 +104,27 @@ export function variantCoversFrom(value: unknown): MatchCover[] {
   return dedupeCovers(covers);
 }
 
+export function matchHitFromIssue(hit: MetronIssueHit): MatchHit | null {
+  if (!/^\d{1,12}$/.test(hit.id) || !hit.seriesName.trim()) return null;
+  const covers = (hit.covers ?? []).filter((cover) => cover.imageUrl).map((cover) => ({ label: cover.label, imageUrl: cover.imageUrl }));
+  if (hit.imageUrl && !covers.some((cover) => cover.imageUrl === hit.imageUrl)) covers.unshift({ label: "Cover", imageUrl: hit.imageUrl });
+  return {
+    source: "metron",
+    id: hit.id,
+    seriesId: hit.seriesId && /^\d{1,12}$/.test(hit.seriesId) ? hit.seriesId : null,
+    series: hit.seriesName.trim(),
+    issueNo: hit.number,
+    variant: hit.variant ?? null,
+    coverDate: hit.storeDate ?? (hit.coverYear != null ? String(hit.coverYear) : null),
+    publisher: hit.publisher ?? null,
+    coverUrl: hit.imageUrl,
+    covers,
+    barcode: hit.upc ?? null,
+    ...(hit.seriesYear != null ? { seriesYear: hit.seriesYear } : {}),
+    ...(hit.seriesVolume != null ? { seriesVolume: hit.seriesVolume } : {}),
+  };
+}
+
 export function mapMetronMatchHit(value: unknown): MatchHit | null {
   const row = record(value);
   const id = digits(row?.id);
@@ -101,6 +134,8 @@ export function mapMetronMatchHit(value: unknown): MatchHit | null {
   if (!seriesName) return null;
   const covers = variantCoversFrom(row);
   const variant = text(row.variant) ?? text(record(row.variant)?.name) ?? covers.find((cover) => cover.label !== "Cover")?.label ?? null;
+  const seriesYear = whole(series?.year_began);
+  const seriesVolume = whole(series?.volume);
   return {
     source: "metron",
     id,
@@ -112,6 +147,8 @@ export function mapMetronMatchHit(value: unknown): MatchHit | null {
     publisher: publisherName(series?.publisher) ?? publisherName(row.publisher),
     coverUrl: covers[0]?.imageUrl ?? null,
     covers,
+    ...(seriesYear != null ? { seriesYear } : {}),
+    ...(seriesVolume != null ? { seriesVolume } : {}),
   };
 }
 

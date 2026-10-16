@@ -1,10 +1,12 @@
 import { costBasis } from "@/lib/clz/parse";
 import { AGE_ORDER, ageBucket } from "@/lib/series";
+import { baseIssueKey, baseIssueLabel, countBaseIssues } from "@/lib/series-view";
 import { isCollected, shelfFormatOf } from "@/lib/shelf-format";
 
 export type StatsComic = {
   quantity: number;
   series: string;
+  issueNo?: string | null;
   publisher: string | null;
   keyLevel: string | null;
   rawOrSlabbed: string | null;
@@ -31,12 +33,19 @@ export type ShelfStats = {
   topSeries: Array<{ label: string; count: number; copies: number }>;
 };
 
+/** Dashboard top-series line. Same words as a series header: comic, and a copies clause. */
+export function topSeriesLabel(count: number, copies: number): string {
+  const comics = count === 1 ? "1 comic" : `${count} comics`;
+  const copyLabel = copies === 1 ? "1 copy" : `${copies} copies`;
+  return `${comics} · ${copyLabel}`;
+}
+
 export function computeStats(comics: StatsComic[]): ShelfStats {
   const series = new Set<string>();
   const publishers = new Set<string>();
   const ageCounts = new Map<string, number>();
   const publisherCounts = new Map<string, number>();
-  const seriesCounts = new Map<string, { count: number; copies: number }>();
+  const seriesCounts = new Map<string, { bases: Set<string>; blank: number; copies: number }>();
   let copies = 0;
   let majorKeys = 0;
   let minorKeys = 0;
@@ -68,14 +77,16 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
     ageCounts.set(bucket, (ageCounts.get(bucket) ?? 0) + comic.quantity);
     const publisher = comic.publisher ?? "Unknown";
     publisherCounts.set(publisher, (publisherCounts.get(publisher) ?? 0) + comic.quantity);
-    const current = seriesCounts.get(comic.series) ?? { count: 0, copies: 0 };
-    current.count += 1;
+    const current = seriesCounts.get(comic.series) ?? { bases: new Set<string>(), blank: 0, copies: 0 };
+    const unlabeled = baseIssueLabel(comic.issueNo ?? "") == null;
+    current.bases.add(baseIssueKey({ series: comic.series, issueNo: comic.issueNo ?? null }, `blank-${current.blank}`));
+    if (unlabeled) current.blank += 1;
     current.copies += comic.quantity;
     seriesCounts.set(comic.series, current);
   }
 
   return {
-    comics: comics.length,
+    comics: countBaseIssues(comics.map((comic, index) => ({ series: comic.series, issueNo: comic.issueNo ?? null, id: `row-${index}` }))),
     copies,
     series: series.size,
     publishers: publishers.size,
@@ -96,7 +107,7 @@ export function computeStats(comics: StatsComic[]): ShelfStats {
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
       .slice(0, 8),
     topSeries: [...seriesCounts.entries()]
-      .map(([label, value]) => ({ label, count: value.count, copies: value.copies }))
+      .map(([label, value]) => ({ label, count: value.bases.size, copies: value.copies }))
       .sort((a, b) => b.copies - a.copies || a.label.localeCompare(b.label))
       .slice(0, 8),
   };

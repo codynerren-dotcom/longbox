@@ -98,7 +98,10 @@ function useProgressLabel(): string | null {
 export function CoverLiveStatus() {
   const { status, rematch } = useBackfillStatus();
   const running = Boolean(status?.running);
-  const paused = status?.stoppedReason === "Paused." || Boolean(status?.stoppedReason?.includes("Resumes at"));
+  const paused =
+    status?.stoppedReason === "Paused." ||
+    Boolean(status?.stoppedReason?.includes("Resumes at")) ||
+    Boolean(status?.stoppedReason?.toLowerCase().includes("paused until"));
   const rematchLine = editionJobText(rematch);
   return (
     <>

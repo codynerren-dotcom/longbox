@@ -21,9 +21,13 @@ import {
   type BackfillStatus,
 } from "@/lib/covers/files";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
+import { runInLane } from "@/lib/catalog/rate-lane";
+import { pauseLabel, sliceAfterCursor } from "@/lib/catalog/rate-limit";
+import { ensureRateHydrated, readJobWindow, saveJobWindow } from "@/lib/catalog/rate-store";
 import { gcdDetails, resolveGcdCover } from "@/lib/covers/gcd-match";
 import { resolveCover } from "@/lib/covers/match";
-import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronIssuesByCrossId, metronTransport, type MetronTransport } from "@/lib/covers/metron-client";
+import { createCrossLookup } from "@/lib/covers/cross-link-run";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, type MetronTransport } from "@/lib/covers/metron-client";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { MetronBudgetError, type CoverRecord } from "@/lib/covers/types";
@@ -302,6 +306,28 @@ function matchedCoverPatch(update: {
 let backfillResume: ReturnType<typeof setTimeout> | null = null;
 let enrichResume: ReturnType<typeof setTimeout> | null = null;
 
+/** Re-arm a paused backfill or enrichment after a restart. The cursor stays on the job row. */
+export async function resumePausedCatalogJobs(): Promise<void> {
+  if (process.env.VITEST === "true" || process.env.NEXT_PHASE === "phase-production-build") return;
+  await ensureRateHydrated();
+  for (const job of ["backfill", "enrich"] as const) {
+    const cursor = readJobWindow(job);
+    if (!cursor?.resumeAt) continue;
+    const start = job === "backfill" ? () => startCoverBackfillInBackground({ resume: true }) : () => startMetronEnrichmentInBackground({ resume: true });
+    const begin = async () => {
+      const later = nextMetronQueueAt(Date.now());
+      if (later != null && later > Date.now()) {
+        scheduleJobResume(job, later, begin);
+        return;
+      }
+      await start();
+    };
+    const when = Math.max(cursor.resumeAt, nextMetronQueueAt(Date.now()) ?? 0);
+    if (when <= Date.now()) void startAfterQueue(start);
+    else scheduleJobResume(job, when, begin);
+  }
+}
+
 function scheduleJobResume(slot: "backfill" | "enrich", resumeAt: number, start: () => Promise<unknown>): void {
   const current = slot === "backfill" ? backfillResume : enrichResume;
   if (current) clearTimeout(current);
@@ -309,13 +335,25 @@ function scheduleJobResume(slot: "backfill" | "enrich", resumeAt: number, start:
   const timer = setTimeout(() => {
     if (slot === "backfill") backfillResume = null;
     else enrichResume = null;
-    void start();
+    void startAfterQueue(start);
   }, wait);
   if (slot === "backfill") backfillResume = timer;
   else enrichResume = timer;
 }
 
 export async function runCoverBackfill(log: (line: string) => void = console.log): Promise<BackfillSummary> {
+  return runInLane("background", () => runCoverBackfillLane(log));
+}
+
+async function startAfterQueue(start: () => Promise<unknown>): Promise<void> {
+  const { drainDueSearches } = await import("@/lib/catalog/search-queue-run");
+  await drainDueSearches();
+  await start();
+}
+
+async function runCoverBackfillLane(log: (line: string) => void): Promise<BackfillSummary> {
+  const { drainDueSearches } = await import("@/lib/catalog/search-queue-run");
+  await drainDueSearches();
   const startedAt = new Date().toISOString();
   const emit = (line: string) => {
     log(line);
@@ -324,8 +362,12 @@ export async function runCoverBackfill(log: (line: string) => void = console.log
   armMetronJobBudget();
   try {
     const summary = await runCoverBackfillBody(emit, startedAt);
-    if (summary.resumeAt && summary.resumeAt > Date.now() && /Metron (?:job|connect)/.test(summary.stoppedReason ?? "")) {
+    if (summary.resumeAt && summary.resumeAt > Date.now()) {
+      const cursorId = readJobWindow("backfill")?.cursorId ?? null;
+      await saveJobWindow({ job: "backfill", cursorId, resumeAt: summary.resumeAt, reason: summary.stoppedReason });
       scheduleJobResume("backfill", summary.resumeAt, () => startCoverBackfillInBackground({ resume: true }));
+    } else if (!summary.stoppedReason || summary.stoppedReason === "Paused.") {
+      await saveJobWindow({ job: "backfill", cursorId: summary.stoppedReason === "Paused." ? (readJobWindow("backfill")?.cursorId ?? null) : null, resumeAt: null, reason: summary.stoppedReason });
     }
     return summary;
   } catch (error) {
@@ -348,6 +390,8 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
   const lookup = createMetronCoverLookup(transport);
   await crossLinkShelf(emit);
   writeBackfillStatus(statusFrom({ pending: 0, matched: 0, unmatched: 0, skipped: 0, stoppedReason: null }, true, startedAt, "Looking up covers on Metron."));
+  await ensureRateHydrated();
+  const savedCursor = readJobWindow("backfill");
   const comics = await loadComics();
   const labels = new Map(comics.map((comic) => [comic.id, issueLabel(comic.series, comic.issueNo, comic.issue)]));
   await logCoverStarted(comics.length);
@@ -376,10 +420,7 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
       });
     },
     gcd: (comic) => resolveGcdCover(comic, createGcdCatalog()),
-    crossLookup: {
-      byComicVine: (id) => metronIssuesByCrossId(transport, "cv_id", id),
-      byGcd: (id) => metronIssuesByCrossId(transport, "gcd_id", id),
-    },
+    crossLookup: createCrossLookup(transport),
     markGcd: async (id, update) => {
       const issue = await createGcdCatalog().issue(update.gcdIssueId);
       const detail = issue ? gcdDetails(issue) : null;
@@ -398,6 +439,8 @@ async function runCoverBackfillBody(emit: (line: string) => void, startedAt: str
       }
     },
     log: emit,
+    cursorId: savedCursor?.cursorId ?? null,
+    onAdvance: (id) => saveJobWindow({ job: "backfill", cursorId: id, resumeAt: null, reason: null }),
     onProgress: (current) => {
       writeBackfillStatus(statusFrom(current, true, startedAt, null));
       const checked = current.matched + current.unmatched;
@@ -419,7 +462,10 @@ export async function startCoverBackfillInBackground(options?: { resume?: boolea
   if (!(await metronBasicAuth())) return "unconfigured";
   if (options?.resume && (await getPreferences()).covers.paused) return "busy";
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) return "busy";
-  if (!options?.resume) await setCoversPaused(false);
+  if (!options?.resume) {
+    await setCoversPaused(false);
+    await saveJobWindow({ job: "backfill", cursorId: null, resumeAt: null, reason: null });
+  }
   if (!acquireBackfillLock()) return "busy";
   globalBackfill.longboxCoverBackfill = runCoverBackfill()
     .catch((error: unknown) => {
@@ -462,7 +508,7 @@ async function loadMatchedIssue(transport: MetronTransport, issueId: string): Pr
 
 export async function attachMetronCover(comicId: string, metronIssueId: string): Promise<void> {
   if (!/^\d+$/.test(metronIssueId)) throw new Error("Enter a numeric Metron issue id.");
-  if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
+  if (!(await metronBasicAuth())) throw new Error("Set a Metron API token, or a username and password, in Settings or the environment.");
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) throw new Error("A cover backfill is already running.");
   const detail = await fetchMetronIssueRecord(await metronTransport(), metronIssueId);
   if (!detail?.imageUrl) throw new Error(`Metron issue ${metronIssueId} has no cover image.`);
@@ -534,7 +580,7 @@ export async function refetchOneCover(comicId: string): Promise<string> {
       releaseBackfillLock();
     }
   }
-  if (!(await metronBasicAuth())) throw new Error("Set Metron username and password in Settings or the environment.");
+  if (!(await metronBasicAuth())) throw new Error("Set a Metron API token, or a username and password, in Settings or the environment.");
   if (!acquireBackfillLock()) throw new Error("A cover backfill is already running.");
   try {
     const transport = await metronTransport();
@@ -562,10 +608,7 @@ export async function refetchOneCover(comicId: string): Promise<string> {
         });
       },
       gcd: (row) => resolveGcdCover(row, createGcdCatalog()),
-      crossLookup: {
-        byComicVine: (id) => metronIssuesByCrossId(transport, "cv_id", id),
-        byGcd: (id) => metronIssuesByCrossId(transport, "gcd_id", id),
-      },
+      crossLookup: createCrossLookup(transport),
       markGcd: async (id, update) => {
         const issue = await createGcdCatalog().issue(update.gcdIssueId);
         const detail = issue ? gcdDetails(issue) : null;
@@ -606,7 +649,10 @@ export async function startMetronEnrichmentInBackground(options?: { resume?: boo
   if (!(await getPreferences()).covers.fillMissing) return "disabled";
   if (options?.resume && (await getPreferences()).covers.paused) return "busy";
   if (globalBackfill.longboxCoverBackfill || backfillLockHeld()) return "busy";
-  if (!options?.resume) await setCoversPaused(false);
+  if (!options?.resume) {
+    await setCoversPaused(false);
+    await saveJobWindow({ job: "enrich", cursorId: null, resumeAt: null, reason: null });
+  }
   if (!acquireBackfillLock()) return "busy";
   globalBackfill.longboxCoverBackfill = runMetronEnrichment()
     .catch(async (error: unknown) => {
@@ -633,6 +679,9 @@ export async function startMetronEnrichmentInBackground(options?: { resume?: boo
 }
 
 async function runMetronEnrichment(): Promise<void> {
+  return runInLane("background", async () => {
+  const { drainDueSearches } = await import("@/lib/catalog/search-queue-run");
+  await drainDueSearches();
   const startedAt = new Date().toISOString();
   armMetronJobBudget();
   try {
@@ -640,25 +689,35 @@ async function runMetronEnrichment(): Promise<void> {
   } finally {
     clearMetronJobBudget();
   }
+  });
 }
 
 async function runMetronEnrichmentBody(startedAt: string): Promise<void> {
-  const comics = await prisma.comic.findMany({
-    where: { metronIssueId: { not: null } },
-    orderBy: [{ seriesSort: "asc" }, { issueSort: "asc" }],
-    select: { id: true, series: true, issue: true, issueNo: true, metronIssueId: true },
-  });
+  await ensureRateHydrated();
+  const savedCursor = readJobWindow("enrich");
+  const comics = sliceAfterCursor(
+    await prisma.comic.findMany({
+      where: { metronIssueId: { not: null } },
+      orderBy: [{ seriesSort: "asc" }, { issueSort: "asc" }],
+      select: { id: true, series: true, issue: true, issueNo: true, metronIssueId: true },
+    }),
+    savedCursor?.cursorId ?? null,
+  );
   const summary = { pending: comics.length, matched: 0, unmatched: 0, skipped: 0, stoppedReason: null as string | null };
   writeBackfillStatus(statusFrom(summary, true, startedAt, "Filling missing details from Metron.", "enrich"));
   await logEnrichStarted(comics.length);
   const transport = await metronTransport();
   for (const comic of comics) {
+    let advance = true;
+    try {
     const prefs = await getPreferences();
     if (!prefs.covers.fillMissing) {
+      advance = false;
       summary.stoppedReason = "Fill missing details from Metron is off.";
       break;
     }
     if (prefs.covers.paused) {
+      advance = false;
       summary.stoppedReason = "Paused.";
       break;
     }
@@ -682,9 +741,16 @@ async function runMetronEnrichmentBody(startedAt: string): Promise<void> {
       }
     } catch (error) {
       if (error instanceof MetronBudgetError) {
+        advance = false;
         const pause = await recordBudgetPause("Metron enrichment", error);
-        summary.stoppedReason = budgetPauseMessage("Metron enrichment", pause);
-        if (pause.budget === "Metron job" || pause.budget === "Metron connect") {
+        summary.stoppedReason = pause.resumeAt > 0 ? pauseLabel("Metron", pause.resumeAt) : budgetPauseMessage("Metron enrichment", pause);
+        if (pause.resumeAt > Date.now()) {
+          await saveJobWindow({
+            job: "enrich",
+            cursorId: readJobWindow("enrich")?.cursorId ?? null,
+            resumeAt: pause.resumeAt,
+            reason: summary.stoppedReason,
+          });
           scheduleJobResume("enrich", pause.resumeAt, () => startMetronEnrichmentInBackground({ resume: true }));
         }
         break;
@@ -692,6 +758,9 @@ async function runMetronEnrichmentBody(startedAt: string): Promise<void> {
       summary.unmatched += 1;
       const message = error instanceof Error ? error.message : "Could not enrich this issue.";
       await writeLog({ level: "warn", source: "metron", message: `${label}: ${message}`, details: { comicId: comic.id, metronIssueId } });
+    }
+    } finally {
+      if (advance) await saveJobWindow({ job: "enrich", cursorId: comic.id, resumeAt: null, reason: null });
     }
     writeBackfillStatus(statusFrom(summary, true, startedAt, null, "enrich"));
   }
@@ -712,7 +781,7 @@ export async function refreshIssueFromMetron(comicId: string): Promise<{ ok: boo
     return { ok: false, message };
   }
   if (!(await metronBasicAuth())) {
-    const message = "Set Metron username and password in Settings or the environment.";
+    const message = "Set a Metron API token, or a username and password, in Settings or the environment.";
     await writeLog({ level: "warn", source: "metron", message, details: { comicId } });
     return { ok: false, message };
   }

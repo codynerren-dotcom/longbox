@@ -23,6 +23,17 @@ import {
   type SeriesCopy,
 } from "@/lib/series-view";
 
+function eightBillionGeniesDescriptors(): string[] {
+  const notes = ["Cover A - Ryan Browne", "Second Printing", "Bird City Comics Store Variant", "Facsimile"];
+  const labels: string[] = [];
+  for (let issue = 1; issue <= 8; issue += 1) {
+    labels.push(String(issue));
+    for (const note of notes) labels.push(`${issue} [${note}]`);
+  }
+  labels.push("1K", "2E", "3D");
+  return labels;
+}
+
 function copy(overrides: Partial<SeriesCopy> & Pick<SeriesCopy, "id">): SeriesCopy {
   return {
     series: "Saga",
@@ -118,11 +129,11 @@ describe("series rows", () => {
       copy({ id: "c", issueNo: "1", variant: "A", seriesYear: 1800, publisher: "Image" }),
       copy({ id: "annual", issueNo: "Annual 1", publisher: "Other" }),
     ];
-    expect(copyCountLabel(comics)).toBe("4 comics · 5 copies");
+    expect(copyCountLabel(comics)).toBe("3 comics · 5 copies");
     expect(copyCountLabel([copy({ id: "only" })])).toBe("1 comic");
-    expect(haveRange(comics)).toBe("Have: 1-12");
-    expect(haveRange([copy({ id: "only", issueNo: "5" })])).toBe("Have: 5");
-    expect(seriesMissing(comics, null)).toEqual({ kind: "gaps", count: 10, parts: ["#2-11"] });
+    expect(haveRange(comics)).toBe("Have: #1, #12");
+    expect(haveRange([copy({ id: "only", issueNo: "5" })])).toBe("Have: #5");
+    expect(seriesMissing(comics, null)).toEqual({ kind: "missing", count: 10, parts: ["#2-11"] });
     expect(seriesMissing([copy({ id: "only", issueNo: "5" })], null)).toBeNull();
     expect(seriesMissing([copy({ id: "annual", issueNo: "Annual 1" })], null)).toBeNull();
     expect(ownedIssueCount(comics)).toBe(3);
@@ -140,7 +151,7 @@ describe("series rows", () => {
     );
     comics.push(copy({ id: "dup", issueNo: "12", variant: "B" }));
     expect(seriesMissing(comics, null)).toEqual({
-      kind: "gaps",
+      kind: "missing",
       count: 15,
       parts: ["#2-11", "#13", "#15-17", "#20"],
     });
@@ -151,7 +162,7 @@ describe("series rows", () => {
       ),
     ).toBeNull();
     expect(seriesMissing([copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })], null)).toEqual({
-      kind: "gaps",
+      kind: "missing",
       count: 398,
       parts: ["#2-399"],
     });
@@ -161,10 +172,10 @@ describe("series rows", () => {
     const owned = [copy({ id: "a", issueNo: "1" }), copy({ id: "variant", issueNo: "1", variant: "B" })];
     const run = { numbers: ["1", "01", "2", "3", "4", "5"], issueCount: 20 };
     expect(distinctIssueLabels(run.numbers)).toEqual(["1", "2", "3", "4", "5"]);
-    expect(seriesMissing(owned, run)).toEqual({ kind: "missing", count: 4, parts: ["#2-5"] });
-    expect(seriesHeaderSummary(owned, run)).toBe("2 comics · Have: 1 · Missing 4: #2-5");
+    expect(seriesMissing(owned, run)).toEqual({ kind: "missing", count: 19, parts: ["#2-20"] });
+    expect(seriesHeaderSummary(owned, run)).toBe("1 comic · 2 copies · Have: #1 · Missing 19: #2-20");
     expect(seriesHeaderSummary([copy({ id: "only", issueNo: "1" })], { numbers: ["1", "2", "3", "4", "5"], issueCount: null })).toBe(
-      "1 comic · Have: 1 · Missing 4: #2-5",
+      "1 comic · Have: #1 · Missing 4: #2-5",
     );
     expect(seriesMissing([copy({ id: "only", issueNo: "01" })], { numbers: ["1", "2"], issueCount: null })).toEqual({
       kind: "missing",
@@ -192,10 +203,68 @@ describe("series rows", () => {
       }),
     ).toBeNull();
     expect(seriesHeaderSummary([copy({ id: "a", issueNo: "1" }), copy({ id: "b", issueNo: "2" })], { numbers: ["1", "2"], issueCount: 9 })).toBe(
-      "2 comics · Have: 1-2",
+      "2 comics · Have: #1-#2 · Missing 7: #3-9",
     );
+    const genies = eightBillionGeniesDescriptors();
+    expect(distinctIssueLabels(genies)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8"]);
+    const ownedGenies = [
+      ...["1", "2", "3", "4", "5", "6", "7", "8"].map((issueNo, index) =>
+        copy({ id: `genies-${index}`, series: "Eight Billion Genies", issueNo }),
+      ),
+      copy({ id: "genies-k", series: "Eight Billion Genies", issueNo: "1K", variantDescription: "Facsimile" }),
+    ];
+    const geniesRun = { numbers: genies, issueCount: 40 };
+    expect(seriesMissing(ownedGenies, geniesRun)).toBeNull();
+    expect(haveRange(ownedGenies)).toBe("Have: #1-#8");
+    expect(ownedIssueCount(ownedGenies)).toBe(8);
+    expect(seriesHeaderSummary(ownedGenies, geniesRun)).toBe("8 comics · 9 copies · Have: #1-#8");
+    expect(seriesHeaderSummary(ownedGenies, geniesRun)).not.toContain("Missing");
+    expect(seriesMissing(ownedGenies.slice(0, 7), geniesRun)).toEqual({ kind: "missing", count: 1, parts: ["#8"] });
+    const pandora = ["1", "2", "3", "5", "6"].map((issueNo, index) =>
+      copy({ id: `pandora-${index}`, series: "Frank Miller's Pandora", issueNo }),
+    );
+    expect(haveRange(pandora)).toBe("Have: #1-#3, #5-#6");
+    expect(seriesMissing(pandora, null)).toEqual({ kind: "missing", count: 1, parts: ["#4"] });
+    expect(seriesHeaderSummary(pandora, null)).toBe("5 comics · Have: #1-#3, #5-#6 · Missing 1: #4 · (catalog unknown)");
+    expect(seriesHeaderSummary(pandora, null)).not.toContain("Gaps");
+    const fantasticFour = [
+      copy({ id: "ff-g", series: "Fantastic Four", issueNo: "3G" }),
+      copy({ id: "ff-h", series: "Fantastic Four", issueNo: "3H" }),
+      copy({ id: "ff-c", series: "Fantastic Four", issueNo: "10C" }),
+      copy({ id: "ff-a", series: "Fantastic Four", issueNo: "17A" }),
+    ];
+    const fantasticFourRun = { numbers: [] as string[], issueCount: 48 };
+    expect(haveRange(fantasticFour)).toBe("Have: #3, #10, #17");
+    expect(seriesHeaderSummary(fantasticFour, fantasticFourRun)).toBe(
+      "3 comics · 4 copies · Have: #3, #10, #17 · Missing 45: #1-2, #4-9, #11-16, #18-48",
+    );
+    expect(seriesHeaderSummary(fantasticFour, fantasticFourRun)).not.toContain("catalog unknown");
+    expect(seriesHeaderSummary(fantasticFour, fantasticFourRun)).not.toContain("Gaps");
+    expect(seriesHeaderSummary(fantasticFour, null)).toBe(
+      "3 comics · 4 copies · Have: #3, #10, #17 · Missing 12: #4-9, #11-16 · (catalog unknown)",
+    );
+    const alphaFlight = [copy({ id: "alpha", series: "Alpha Flight", issueNo: "15" })];
+    expect(seriesHeaderSummary(alphaFlight, { numbers: [], issueCount: 130 })).toBe(
+      "1 comic · Have: #15 · Missing 129: #1-14, #16-130",
+    );
+    const avengers = [
+      copy({ id: "av-7", series: "Avengers", issueNo: "7E" }),
+      copy({ id: "av-55", series: "Avengers", issueNo: "55A" }),
+    ];
+    expect(haveRange(avengers)).toBe("Have: #7, #55");
+    expect(seriesHeaderSummary(avengers, { numbers: [], issueCount: 66 })).toBe(
+      "2 comics · Have: #7, #55 · Missing 64: #1-6, #8-54, #56-66",
+    );
+    expect(seriesHeaderSummary(avengers, { numbers: [], issueCount: 66 })).not.toContain("7-55");
+    expect(seriesMissing(pandora, { numbers: ["1", "2", "3", "4", "5", "6", "7", "8"], issueCount: 8 })).toEqual({
+      kind: "missing",
+      count: 3,
+      parts: ["#4", "#7-8"],
+    });
     const holes = ["1", "12", "14", "18", "19", "21"].map((issueNo, index) => copy({ id: `g${index}`, issueNo }));
-    expect(seriesHeaderSummary(holes, null)).toBe("6 comics · Have: 1-21 · Gaps 15: #2-11, #13, #15-17, #20");
+    expect(seriesHeaderSummary(holes, null)).toBe(
+      "6 comics · Have: #1, #12, #14, #18-#19, #21 · Missing 15: #2-11, #13, #15-17, #20 · (catalog unknown)",
+    );
     const parts = Array.from({ length: 20 }, (_, index) => `#${index + 2}`);
     const cut = truncateMissingParts(parts);
     expect(cut.shown.join(", ").length).toBeLessThanOrEqual(56);
@@ -392,10 +461,10 @@ describe("series rows", () => {
       createElement(SeriesSummary, {
         copies: "1 comic",
         have: "Have: 1",
-        missing: { kind: "gaps", count: 40, parts: Array.from({ length: 20 }, (_, index) => `#${index + 2}`) },
+        missing: { kind: "missing", count: 40, parts: Array.from({ length: 20 }, (_, index) => `#${index + 2}`) },
       }),
     );
-    expect(long).toContain("Gaps 40:");
+    expect(long).toContain("Missing 40:");
     expect(long).toContain("show all");
     expect(long).toContain("min-h-11");
     expect(long).not.toContain("#21");

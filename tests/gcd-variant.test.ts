@@ -79,9 +79,13 @@ describe("recorded GCD variant", () => {
     expect(foil.publisher).toBe("DC Comics");
     expect(foil.coverArtist).toBe("Glenn Fabry");
     expect(parent.variantOf ?? null).toBeNull();
+    expect(parent.coverUrl).toBe("https://files1.comics.org//img/gcd/covers_by_id/1625/w400/1625206.jpg");
     const hit = gcdHit(foil);
+    expect(foil.coverUrl).toBeNull();
     expect(hit.coverUrl).toBeNull();
     expect(hit.covers).toEqual([]);
+    expect(gcdHit(parent).coverUrl).toBeNull();
+    expect(gcdHit(parent).covers).toEqual([]);
     expect(hit.coverPageUrl).toBe("https://www.comics.org/issue/2514867/cover/4/");
     expect(hit.barcode).toBe("76194137966100121");
     expect(hit.price).toBe("7.99 USD");

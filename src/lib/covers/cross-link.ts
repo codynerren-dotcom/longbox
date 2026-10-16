@@ -1,7 +1,10 @@
 import { readFieldSources } from "@/lib/covers/enrich";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import { readManualLink } from "@/lib/catalog/manual-link";
+import { readCrossMiss, writeCrossMiss, type StoredCrossMiss } from "@/lib/covers/cross-miss";
+import { sameIssueNumber } from "@/lib/covers/edition";
 import type { MetronIssueHit } from "@/lib/covers/types";
+import { catalogSeriesQuery } from "@/lib/shelf-format";
 
 export type CrossVia = "cv_id" | "gcd_id";
 
@@ -16,21 +19,41 @@ export type CrossCopy = {
   gcdIssueId?: string | null;
   /** Metron id named on a GCD record. Used before the Metron gcd_id filter. */
   embeddedMetronIssueId?: string | null;
+  barcode?: string | null;
   userCover?: boolean;
   coverFile?: string | null;
   coverStatus?: string | null;
 };
 
+/** Series name, issue number, series year, and barcode from a GCD or Comic Vine record. */
+export type CrossForeign = {
+  seriesName: string;
+  number: string;
+  seriesYear: number | null;
+  barcode: string | null;
+};
+
+export type CrossNameQuery = {
+  name: string;
+  number: string;
+  year: number | null;
+};
+
 export type CrossLookup = {
   byComicVine: (id: string) => Promise<MetronIssueHit[]>;
   byGcd: (id: string) => Promise<MetronIssueHit[]>;
+  /** GCD or Comic Vine fields for the one name query. */
+  foreignIssue?: (via: CrossVia, id: string) => Promise<CrossForeign | null>;
+  /** One Metron list request. No `alt_number` or `series_q` follow-up. */
+  byName?: (query: CrossNameQuery) => Promise<MetronIssueHit[]>;
 };
 
 export type CrossResult =
   | { status: "skip"; reason: string }
   | { status: "linked"; via: CrossVia; foreignId: string; hit: MetronIssueHit }
-  | { status: "miss"; via: CrossVia; foreignId: string; reason: string }
-  | { status: "many"; via: CrossVia; foreignId: string; ids: string[]; reason: string };
+  | { status: "miss"; via: CrossVia; foreignId: string; reason: string; nameSearched: boolean }
+  | { status: "many"; via: CrossVia; foreignId: string; ids: string[]; reason: string }
+  | { status: "candidates"; via: CrossVia; foreignId: string; hits: MetronIssueHit[]; reason: string; nameSearched: true };
 
 export function pickExactCrossHit(hits: MetronIssueHit[], key: "cvId" | "gcdId", id: string): { hit: MetronIssueHit } | { reason: string; ids: string[] } {
   const wanted = id.trim();
@@ -70,18 +93,31 @@ export async function lookupCrossIssue(copy: CrossCopy, lookup: CrossLookup): Pr
     };
   }
   const cv = digits(copy.comicvineIssueId);
-  if (cv) {
-    const found = await decide("cv_id", cv, await lookup.byComicVine(cv), "cvId");
-    if (found.status !== "miss") return found;
-    const gcd = digits(copy.gcdIssueId);
-    if (!gcd) return found;
-    const next = await decide("gcd_id", gcd, await lookup.byGcd(gcd), "gcdId");
-    if (next.status === "miss") return { ...found, reason: `${found.reason} ${next.reason}` };
-    return next;
-  }
   const gcd = digits(copy.gcdIssueId);
-  if (gcd) return decide("gcd_id", gcd, await lookup.byGcd(gcd), "gcdId");
-  return { status: "skip", reason: `${labelOf(copy)} has no Comic Vine or GCD id.` };
+  if (!cv && !gcd) return { status: "skip", reason: `${labelOf(copy)} has no Comic Vine or GCD id.` };
+  const cached = await readCrossMiss(cv, gcd);
+  if (cached) return resultFromMiss(cached);
+  if (cv) {
+    const found = decide("cv_id", cv, await lookup.byComicVine(cv), "cvId");
+    if (found.status !== "miss") return found;
+  }
+  if (gcd) {
+    const found = decide("gcd_id", gcd, await lookup.byGcd(gcd), "gcdId");
+    if (found.status !== "miss") return found;
+  }
+  const via: CrossVia = gcd ? "gcd_id" : "cv_id";
+  const foreignId = gcd ?? cv ?? "";
+  const result = await searchByName(copy, lookup, via, foreignId);
+  if ((result.status === "miss" || result.status === "candidates") && result.nameSearched) {
+    await writeCrossMiss(cv, gcd, {
+      status: result.status,
+      via: result.via,
+      foreignId: result.foreignId,
+      reason: result.reason,
+      hits: result.status === "candidates" ? result.hits : [],
+    });
+  }
+  return result;
 }
 
 export function blankCrossIds(
@@ -121,11 +157,137 @@ export function crossLinkLine(copy: CrossCopy, result: CrossResult): string | nu
   return `${name}: ${result.reason}`;
 }
 
+/** Name, number, and series year sent on the one follow-up. The volume stays off the name. */
+export function crossNameQuery(record: CrossForeign): CrossNameQuery {
+  const parsed = catalogSeriesQuery(record.seriesName);
+  return {
+    name: parsed.name.trim(),
+    number: record.number.trim(),
+    year: record.seriesYear ?? parsed.yearBegan,
+  };
+}
+
+export function crossForeignFromComicVine(value: unknown): (CrossForeign & { volumeId: string | null }) | null {
+  const row = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  if (!row) return null;
+  const volume = row.volume && typeof row.volume === "object" && !Array.isArray(row.volume) ? (row.volume as Record<string, unknown>) : null;
+  const seriesName = textOf(volume?.name) ?? textOf(row.volume);
+  const number = textOf(row.issue_number);
+  if (!seriesName || !number) return null;
+  const parsed = catalogSeriesQuery(seriesName);
+  const start = wholeYear(volume?.start_year);
+  return {
+    seriesName,
+    number,
+    seriesYear: start ?? parsed.yearBegan,
+    barcode: null,
+    volumeId: digits(textOf(volume?.id)),
+  };
+}
+
+/**
+ * A barcode match links that issue. One hit whose stripped name, number, and series year
+ * all match is linked. Every other list is left for the Match panel.
+ */
+export function classifyCrossNameHits(args: {
+  via: CrossVia;
+  foreignId: string;
+  hits: MetronIssueHit[];
+  record: CrossForeign;
+  shelfBarcode?: string | null;
+}): CrossResult {
+  const unique = [...new Map(args.hits.map((hit) => [hit.id, hit])).values()];
+  const codes = [args.record.barcode, args.shelfBarcode].filter((code): code is string => Boolean(code && code.trim()));
+  const barcoded = unique.filter((hit) => hitMatchesBarcode(hit, codes));
+  if (barcoded.length === 1) return { status: "linked", via: args.via, foreignId: args.foreignId, hit: barcoded[0] };
+  const query = crossNameQuery(args.record);
+  if (unique.length === 1 && exactNameHit(unique[0], query)) return { status: "linked", via: args.via, foreignId: args.foreignId, hit: unique[0] };
+  if (unique.length === 0) return { status: "miss", via: args.via, foreignId: args.foreignId, reason: "not on Metron", nameSearched: true };
+  const catalog = args.via === "gcd_id" ? "GCD" : "Comic Vine";
+  return {
+    status: "candidates",
+    via: args.via,
+    foreignId: args.foreignId,
+    hits: unique,
+    reason: `Metron has no ${catalog} cross-link; searched by name: ${unique.length} candidates`,
+    nameSearched: true,
+  };
+}
+
 function decide(via: CrossVia, foreignId: string, hits: MetronIssueHit[], key: "cvId" | "gcdId"): CrossResult {
   const picked = pickExactCrossHit(hits, key, foreignId);
   if ("hit" in picked) return { status: "linked", via, foreignId, hit: picked.hit };
   if (picked.ids.length > 1) return { status: "many", via, foreignId, ids: picked.ids, reason: picked.reason };
-  return { status: "miss", via, foreignId, reason: picked.reason };
+  return { status: "miss", via, foreignId, reason: picked.reason, nameSearched: false };
+}
+
+async function searchByName(copy: CrossCopy, lookup: CrossLookup, via: CrossVia, foreignId: string): Promise<CrossResult> {
+  if (!lookup.byName || !lookup.foreignIssue) {
+    return { status: "miss", via, foreignId, reason: "not on Metron", nameSearched: false };
+  }
+  let record: CrossForeign | null = null;
+  try {
+    record = await lookup.foreignIssue(via, foreignId);
+  } catch (error) {
+    if (isBudgetError(error)) throw error;
+    record = null;
+  }
+  const query = record ? crossNameQuery(record) : null;
+  if (!record || !query?.name || !query.number) {
+    return { status: "miss", via, foreignId, reason: "not on Metron", nameSearched: false };
+  }
+  const hits = await lookup.byName(query);
+  return classifyCrossNameHits({ via, foreignId, hits, record, shelfBarcode: copy.barcode });
+}
+
+function resultFromMiss(row: StoredCrossMiss): CrossResult {
+  if (row.status === "candidates" && row.hits.length > 0) {
+    return { status: "candidates", via: row.via, foreignId: row.foreignId, hits: row.hits, reason: row.reason, nameSearched: true };
+  }
+  return { status: "miss", via: row.via, foreignId: row.foreignId, reason: row.reason, nameSearched: true };
+}
+
+function exactNameHit(hit: MetronIssueHit, query: CrossNameQuery): boolean {
+  if (!query.name || !query.number || query.year == null || hit.seriesYear !== query.year) return false;
+  const got = catalogSeriesQuery(hit.seriesName).name.trim().toLowerCase();
+  if (got !== query.name.trim().toLowerCase()) return false;
+  return sameIssueNumber(query.number, hit.number);
+}
+
+function hitMatchesBarcode(hit: MetronIssueHit, codes: string[]): boolean {
+  if (codes.length === 0) return false;
+  const found = [hit.upc, ...(hit.upcs ?? []), ...(hit.covers ?? []).map((cover) => cover.upc)];
+  return codes.some((code) => found.some((upc) => sameBarcode(code, upc)));
+}
+
+function sameBarcode(left: string | null | undefined, right: string | null | undefined): boolean {
+  const a = barcodeDigits(left);
+  const b = barcodeDigits(right);
+  if (a.length < 12 || b.length < 12) return false;
+  if (a === b) return true;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  return long.startsWith(short) && long.length - short.length === 5;
+}
+
+function barcodeDigits(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+function textOf(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function wholeYear(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 1800 && value <= 2100) return value;
+  if (typeof value === "string" && /^(?:18|19|20)\d{2}$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
+  return null;
+}
+
+function isBudgetError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "GcdBudgetError" || error.name === "MetronBudgetError" || error.name === "ComicVineBudgetError");
 }
 
 function labelOf(copy: CrossCopy): string {

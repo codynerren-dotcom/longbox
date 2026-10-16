@@ -147,6 +147,26 @@ describe("settings resolution", () => {
     expect((await migrated.view()).metron.username).toEqual({ kind: "plain", source: "database", value: "legacy-user", mask: null });
   });
 
+  it("stores the GCD password as ciphertext and leaves the username visible", async () => {
+    const repo = memoryRepo();
+    const service = createSettingsService({ repo, key, env: env() });
+    await service.savePlain("gcd.username", "gcd-user");
+    await service.saveSecret("gcd.password", "gcd-secret");
+    const username = repo.rows.find((row) => row.key === "gcd.username");
+    const password = repo.rows.find((row) => row.key === "gcd.password");
+    expect(username).toMatchObject({ secret: null, plain: "gcd-user" });
+    expect(password?.secret?.startsWith("v1.")).toBe(true);
+    expect(password?.secret).not.toContain("gcd-secret");
+    const saved = await service.get();
+    expect(saved.gcd.username).toBe("gcd-user");
+    expect(saved.gcd.password).toBe("gcd-secret");
+    expect(saved.gcd.configured).toBe(true);
+    const view = await service.view();
+    expect(view.gcd.username).toEqual({ kind: "plain", source: "database", value: "gcd-user", mask: null });
+    expect(view.gcd.password).toEqual({ kind: "secret", source: "database", value: null, mask: SECRET_MASK });
+    expect(JSON.stringify(view)).not.toContain("gcd-secret");
+  });
+
   it("stores secrets as ciphertext", async () => {
     const repo = memoryRepo();
     const service = createSettingsService({ repo, key, env: env() });
@@ -157,11 +177,53 @@ describe("settings resolution", () => {
     expect((await service.get()).comicvine.apiKey).toBe("cv-live-key");
   });
 
-  it("prefers basic auth when username and password are set", () => {
+  it("stores a Metron API token as ciphertext and sends it as Bearer ahead of a password", async () => {
+    const repo = memoryRepo();
+    const service = createSettingsService({
+      repo,
+      key,
+      env: env({ metronUsername: "cody", metronPassword: "secret", metronToken: "env-token" }),
+    });
+    await service.saveSecret("metron.token", "saved-token");
+    const row = repo.rows.find((item) => item.key === "metron.token");
+    expect(row?.secret?.startsWith("v1.")).toBe(true);
+    expect(row?.secret).not.toContain("saved-token");
+    const saved = await service.get();
+    expect(saved.metron.token).toBe("saved-token");
+    expect(saved.metron.tokenSource).toBe("database");
+    expect(metronAuthorization(saved)?.header).toBe("Bearer saved-token");
+    const view = await service.view();
+    expect(view.metron.token).toEqual({ kind: "secret", source: "database", value: null, mask: SECRET_MASK });
+    expect(JSON.stringify(view)).not.toContain("saved-token");
+    expect(JSON.stringify(view)).not.toContain("env-token");
+
+    const headers: string[] = [];
+    const result = await probeMetron(
+      applyCredentialOverrides(saved, { "metron.token": "typed-token", "metron.password": "typed-pass" }),
+      async (_url, init) => {
+        headers.push(String((init?.headers as { Authorization?: string }).Authorization));
+        return new Response("{}", { status: 200 });
+      },
+    );
+    expect(headers[0]).toBe("Bearer typed-token");
+    expect(result).toEqual({ ok: true, message: "Metron accepted the API token." });
+  });
+
+  it("sends a Bearer token when a token is saved, even if a username and password are also set", () => {
     const config = buildConfig(emptyStored(), env({ metronUsername: "cody", metronPassword: "secret", metronToken: "token-value" }));
+    expect(metronAuthorization(config)?.header).toBe("Bearer token-value");
+  });
+
+  it("sends basic auth when a username and password are the only Metron credentials", () => {
+    const config = buildConfig(emptyStored(), env({ metronUsername: "cody", metronPassword: "secret" }));
     const auth = metronAuthorization(config);
     expect(auth?.header.startsWith("Basic ")).toBe(true);
-    expect(auth?.header).not.toContain("token-value");
+    expect(auth?.header).toContain(Buffer.from("cody:secret").toString("base64"));
+  });
+
+  it("sends a Bearer token when that is the only Metron credential", () => {
+    const config = buildConfig(emptyStored(), env({ metronToken: "token-value" }));
+    expect(metronAuthorization(config)?.header).toBe("Bearer token-value");
   });
 
   it("seeds only when the toggle is on and the shelf is empty", () => {

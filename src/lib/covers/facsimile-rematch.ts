@@ -1,6 +1,9 @@
 import { mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createGcdCatalog, GcdBudgetError } from "@/lib/catalog/gcd";
+import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
+import { hintFromBlocks, type QueueSeed } from "@/lib/catalog/search-queue";
+import { runInLane } from "@/lib/catalog/rate-lane";
 import { readManualLink } from "@/lib/catalog/manual-link";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
@@ -12,7 +15,7 @@ import { coversDir, downloadCover } from "@/lib/covers/files";
 import { resolveGcdCover } from "@/lib/covers/gcd-match";
 import { readEditionJob, writeEditionJob } from "@/lib/covers/job-state";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
-import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport } from "@/lib/covers/metron-client";
+import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
@@ -166,6 +169,11 @@ function wakeLater(resumeAt: number): void {
 export function scheduleFacsimileRematch(): void {
   if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
   if (finishedForProcess || inflight || editionRematchLockHeld()) return;
+  const metronHeld = nextMetronQueueAt(Date.now());
+  if (metronHeld != null && metronHeld > Date.now()) {
+    wakeLater(metronHeld);
+    return;
+  }
   const persisted = readEditionJob();
   if (persisted?.metronResumeAt) {
     const at = Date.parse(persisted.metronResumeAt);
@@ -303,15 +311,15 @@ async function noteGcdPause(error: GcdBudgetError): Promise<void> {
 export async function rematchShelfCopy(
   comicId: string,
   options?: { metron?: boolean },
-): Promise<{ ok: boolean; message: string; outcome: RematchOutcome }> {
+): Promise<{ ok: boolean; message: string; outcome: RematchOutcome; notice: string | null; limitBlocks: LimitBlock[]; searchedSources: string[] }> {
   const comic = await prisma.comic.findUnique({ where: { id: comicId } });
-  if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched" };
+  if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched", notice: null, limitBlocks: [], searchedSources: [] };
   const link = readManualLink(comic.manualLink);
   if (link.metronIssueId || link.gcdIssueId || link.comicvineIssueId) {
-    return { ok: false, message: "This link was chosen by hand. Unlink it first.", outcome: "skipped" };
+    return { ok: false, message: "This link was chosen by hand. Unlink it first.", outcome: "skipped", notice: null, limitBlocks: [], searchedSources: [] };
   }
   if (link.userCover) {
-    return { ok: false, message: "This cover was uploaded. Unlink the catalog id if you want, and the photo stays.", outcome: "skipped" };
+    return { ok: false, message: "This cover was uploaded. Unlink the catalog id if you want, and the photo stays.", outcome: "skipped", notice: null, limitBlocks: [], searchedSources: [] };
   }
 
   const query = coverQuery(comic);
@@ -328,14 +336,28 @@ export async function rematchShelfCopy(
   let metronSkipped = options?.metron === false || metronClosedUntil > Date.now();
   let gcdTried = false;
   const needsCredentials = !metronReady && !metronSkipped;
+  const limitBlocks: LimitBlock[] = [];
+  const searchedSources: string[] = [];
+  const pack = (result: { ok: boolean; message: string; outcome: RematchOutcome }) => {
+    const notice = limitNotices(limitBlocks, searchedSources) || null;
+    const blocked = new Set(limitBlocks.map((block) => block.source));
+    const didSearch = searchedSources.some((name) => !blocked.has(name as LimitBlock["source"]));
+    if (notice && !didSearch && result.outcome !== "matched" && result.outcome !== "skipped") {
+      return { ...result, ok: false, message: notice, notice, limitBlocks, searchedSources };
+    }
+    return { ...result, notice, limitBlocks, searchedSources };
+  };
 
   const linkGcd = async (): Promise<{ ok: true; message: string } | { ok: false; reason: string }> => {
     if (Date.now() < gcdClosedUntil) return { ok: false, reason: "GCD is paused. Metron matching continues." };
+    searchedSources.push("GCD");
     let gcd;
     try {
       gcd = await resolveGcdCover(query, createGcdCatalog());
     } catch (error) {
       if (error instanceof GcdBudgetError) {
+        const block = limitBlockFromError(error);
+        if (block) limitBlocks.push(block);
         await noteGcdPause(error);
         return { ok: false, reason: "GCD is paused. Metron matching continues." };
       }
@@ -359,6 +381,8 @@ export async function rematchShelfCopy(
       return { ok: true, message };
     } catch (error) {
       if (error instanceof GcdBudgetError) {
+        const block = limitBlockFromError(error);
+        if (block) limitBlocks.push(block);
         await noteGcdPause(error);
         return { ok: false, reason: "GCD is paused. Metron matching continues." };
       }
@@ -366,8 +390,8 @@ export async function rematchShelfCopy(
     }
   };
 
-  const finish = async (matchedMessage: string | null): Promise<{ ok: boolean; message: string; outcome: RematchOutcome }> => {
-    if (matchedMessage) return { ok: true, message: matchedMessage, outcome: "matched" };
+  const finish = async (matchedMessage: string | null) => {
+    if (matchedMessage) return pack({ ok: true, message: matchedMessage, outcome: "matched" });
     const outcome = editionOutcome({ matched: false, metronSkipped, gcdTried });
     if (outcome === "unmatched") {
       if (keepPrintingCover) {
@@ -379,9 +403,9 @@ export async function rematchShelfCopy(
         await clearAutomaticLink(comicId, reason);
       }
       await writeLog({ level: "info", source: "covers/backfill", message: reason, details: { comicId } });
-      return { ok: true, message: reason, outcome };
+      return pack({ ok: true, message: reason, outcome });
     }
-    return { ok: false, message: reason, outcome };
+    return pack({ ok: false, message: reason, outcome });
   };
 
   try {
@@ -393,6 +417,7 @@ export async function rematchShelfCopy(
     }
 
     if (!metronSkipped && metronReady) {
+      searchedSources.push("Metron");
       try {
         const transport = await metronTransport();
         const decision = await resolveCover(query, createMetronCoverLookup(transport));
@@ -435,6 +460,8 @@ export async function rematchShelfCopy(
         reason = decision.reason;
       } catch (error) {
         if (!(error instanceof MetronBudgetError)) throw error;
+        const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
+        if (block) limitBlocks.push(block);
         await closeMetron(error);
         metronSkipped = true;
       }
@@ -456,7 +483,7 @@ export async function rematchShelfCopy(
   }
 
   if (needsCredentials) {
-    return { ok: false, message: "Set Metron username and password in Settings or the environment.", outcome: "unmatched" };
+    return pack({ ok: false, message: "Set a Metron API token, or a username and password, in Settings or the environment.", outcome: "unmatched" });
   }
   return finish(null);
 }
@@ -485,7 +512,7 @@ const linkedSelect = {
   manualLink: true,
 } as const;
 
-export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string }> {
+export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   armMetronJobBudget();
   try {
     return await rematchAllSuspectCopiesBody();
@@ -494,7 +521,13 @@ export async function rematchAllSuspectCopies(): Promise<{ ok: boolean; message:
   }
 }
 
-async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: string }> {
+function queueSeed(comicId: string, blocks: LimitBlock[]): QueueSeed | null {
+  const hint = hintFromBlocks("metron", blocks, "relink");
+  if (!hint) return null;
+  return { comicId, source: hint.source, resumeAt: hint.resumeAt, kind: hint.kind };
+}
+
+async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   const [comics, years, printings] = await Promise.all([
     prisma.comic.findMany({
       where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
@@ -507,6 +540,9 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
   let unmatched = 0;
   let skipped = 0;
   let metron = metronClosedUntil <= Date.now();
+  const limitBlocks: LimitBlock[] = [];
+  const searchedSources: string[] = [];
+  const queueItems: QueueSeed[] = [];
   for (const comic of comics) {
     const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
     if (!reason) continue;
@@ -517,6 +553,12 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
     }
     try {
       const result = await rematchShelfCopy(comic.id, { metron });
+      limitBlocks.push(...result.limitBlocks);
+      searchedSources.push(...result.searchedSources);
+      if (result.outcome !== "matched" && result.outcome !== "skipped") {
+        const seed = queueSeed(comic.id, result.limitBlocks);
+        if (seed) queueItems.push(seed);
+      }
       if (result.outcome === "deferred" || result.outcome === "metron-budget") {
         metron = false;
         unmatched += 1;
@@ -527,10 +569,22 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
       else unmatched += 1;
     } catch (error) {
       if (error instanceof MetronBudgetError) {
+        const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
+        if (block) {
+          limitBlocks.push(block);
+          const seed = queueSeed(comic.id, [block]);
+          if (seed) queueItems.push(seed);
+        }
         metron = false;
         continue;
       }
       if (error instanceof GcdBudgetError) {
+        const block = limitBlockFromError(error);
+        if (block) {
+          limitBlocks.push(block);
+          const seed = queueSeed(comic.id, [block]);
+          if (seed) queueItems.push(seed);
+        }
         await noteGcdPause(error);
         unmatched += 1;
         continue;
@@ -539,8 +593,9 @@ async function rematchAllSuspectCopiesBody(): Promise<{ ok: boolean; message: st
     }
   }
   const message = `Re-matched ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`;
-  await writeLog({ level: "info", source: "covers/backfill", message, details: { matched, unmatched, skipped } });
-  return { ok: true, message };
+  const notice = limitNotices(limitBlocks, searchedSources) || null;
+  await writeLog({ level: "info", source: "covers/backfill", message: notice ? `${message} ${notice}` : message, details: { matched, unmatched, skipped } });
+  return { ok: true, message, notice, queueItems };
 }
 
 async function rematchAlreadyDone(): Promise<boolean> {
@@ -549,6 +604,7 @@ async function rematchAlreadyDone(): Promise<boolean> {
 }
 
 async function runStoredFacsimileRematch(): Promise<boolean> {
+  return runInLane("background", async () => {
   if (await rematchAlreadyDone()) return true;
   if (!(await metronBasicAuth())) return false;
   return guardEditionPass(coversDir(), rematchAlreadyDone, async () => {
@@ -558,6 +614,7 @@ async function runStoredFacsimileRematch(): Promise<boolean> {
     } finally {
       clearMetronJobBudget();
     }
+  });
   });
 }
 

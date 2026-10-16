@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { manualLinkJson, withLinkedId, withoutLinkedId, type CatalogSource } from "@/lib/catalog/manual-link";
+import { manualLinkJson, readManualLink, withLinkedId, withoutLinkedId, type CatalogSource } from "@/lib/catalog/manual-link";
 import { blankCrossIds } from "@/lib/covers/cross-link";
 import { plainText, type MatchHit } from "@/lib/catalog/match-hits";
 import { planEnrichment, readFieldSources, type FieldSources, type MetronDetails, type MetronField } from "@/lib/covers/enrich";
@@ -100,8 +100,11 @@ export function linkUpdate(args: {
   } else {
     data.gcdIssueId = args.hit.id;
     if (args.hit.seriesId) data.gcdSeriesId = args.hit.seriesId;
-    data.coverNote = "Linked on GCD. Cover stays on GCD.";
-    if (!args.cover) data.coverStatus = "gcd";
+    const photoStays = readManualLink(nextLink).userCover;
+    if (!args.cover && !photoStays) {
+      data.coverNote = "Linked on GCD. Cover stays on GCD.";
+      data.coverStatus = "gcd";
+    }
   }
   const copyFilled = args.source === "gcd" && writing ? applyGcdShelfFields(data, sources, args, overwrite) : [];
   if (copyFilled.length > 0) data.fieldSources = sources;

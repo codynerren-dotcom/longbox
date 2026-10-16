@@ -5,17 +5,21 @@ import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "no
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
-import { emptyBudget, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
+import { noteImagePause, reserveImageDownload } from "@/lib/catalog/rate-gate";
+import { GCD_COVER_MISSED, isGcdScanHost } from "@/lib/catalog/match-row";
+import { normalizeMetronBudget, pauseLabel } from "@/lib/catalog/rate-limit";
+import { emptyBudget, retryAfterFromMessage, retryAfterMs, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
+import { METRON_USER_AGENT } from "@/lib/covers/metron-headers";
 
 const COVER_KEY = /^\d+(?:-[a-f0-9]{8})?$/;
-const CATALOG_FILE = "(?:metron|cv)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
+const CATALOG_FILE = "(?:metron|cv|gcd)-\\d+(?:-[a-f0-9]{8})?\\.(?:jpg|jpeg|png|webp|gif)";
 const USER_FILE = "user-[a-z0-9]{20,32}\\.webp";
 const USER_ORIGINAL = "user-[a-z0-9]{20,32}-original\\.(?:jpg|png|webp|heic|heif)";
 const PUBLIC_COVER = new RegExp(`^(?:${CATALOG_FILE}|${USER_FILE})$`);
 const STORED_COVER = new RegExp(`^(?:${CATALOG_FILE}|${USER_FILE}|${USER_ORIGINAL})$`);
 const COMIC_ID = /^[a-z0-9]{20,32}$/;
 const ORIGINAL_EXT = /^(?:jpg|png|webp|heic|heif)$/;
-export type CoverPrefix = "metron" | "cv";
+export type CoverPrefix = "metron" | "cv" | "gcd";
 const EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif"] as const;
 const LOCK_NAME = "backfill.lock";
 const BUDGET_NAME = "metron-budget.json";
@@ -87,12 +91,7 @@ export function fileBudgetStore(dir = coversDir()): BudgetStore {
   return {
     read(): MetronBudget {
       try {
-        const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MetronBudget>;
-        return {
-          day: typeof parsed.day === "string" ? parsed.day : "",
-          count: typeof parsed.count === "number" && parsed.count > 0 ? parsed.count : 0,
-          lastRequestAt: typeof parsed.lastRequestAt === "number" ? parsed.lastRequestAt : null,
-        };
+        return normalizeMetronBudget(JSON.parse(readFileSync(file, "utf8")));
       } catch {
         return emptyBudget();
       }
@@ -204,11 +203,17 @@ export async function downloadCover(
   }
   if (parsed.protocol === "http:") parsed.protocol = "https:";
   if (parsed.protocol !== "https:") throw new Error("Cover image URL is not https.");
+  if (isGcdScanHost(parsed.toString())) throw new Error(GCD_COVER_MISSED);
 
+  await reserveImageDownload(parsed);
   const started = Date.now();
   let response: Response;
   try {
-    response = await fetch(parsed, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+    response = await fetch(parsed, {
+      headers: { "User-Agent": METRON_USER_AGENT, Accept: "image/avif,image/webp,image/*,*/*" },
+      signal: AbortSignal.timeout(20_000),
+      redirect: "follow",
+    });
   } catch (error) {
     await recordFetch({
       source: "covers/backfill",
@@ -220,6 +225,13 @@ export async function downloadCover(
     throw error;
   }
   await recordFetch({ source: "covers/backfill", url: parsed.toString(), startedAt: started, status: response.status });
+  if (response.status === 429 || response.status === 420) {
+    const body = await response.text().catch(() => "");
+    const delay = retryAfterMs(response.headers, Date.now()) ?? retryAfterFromMessage(body) ?? 60_000;
+    const resumeAt = Date.now() + delay;
+    await noteImagePause(parsed, resumeAt);
+    throw new Error(pauseLabel("Cover download", resumeAt));
+  }
   if (!response.ok) throw new Error(`Cover image returned ${response.status}.`);
   const ext = extensionFor(response.headers.get("content-type") ?? "", parsed.toString());
   if (!ext) throw new Error("Cover image is not a jpeg, png, webp, or gif.");

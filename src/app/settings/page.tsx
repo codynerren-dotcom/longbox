@@ -12,6 +12,10 @@ import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
 import { duplicateGroups, isDemoCoreId } from "@/lib/maintenance";
 import { dateOptions, defaultPreferences } from "@/lib/settings/preferences";
+import { countBaseIssues } from "@/lib/series-view";
+import { loadApiUsage } from "@/lib/catalog/rate-store";
+import { pauseLabel, type UsageWindow } from "@/lib/catalog/rate-limit";
+import { formatResumeTime } from "@/lib/covers/limiter";
 import { getPreferences, getSettingsView } from "@/lib/settings/service";
 import { APP_VERSION, appCommit } from "@/lib/version";
 
@@ -40,6 +44,7 @@ export default async function SettingsPage() {
     loadCounts(),
   ]);
   const status = readBackfillStatus();
+  const usage = await loadApiUsage().catch(() => [] as UsageWindow[]);
   const groups = duplicateGroups(
     comics.map((comic) => ({
       id: comic.id,
@@ -113,6 +118,7 @@ export default async function SettingsPage() {
 
       {error ? <p className="text-sm text-red-300">{error}</p> : null}
       {view ? <SettingsForm view={view} /> : null}
+      <ApiUsage windows={usage} />
 
       <MaintenancePanel groups={visible} hiddenGroups={Math.max(0, groups.length - visible.length)} demoCount={demoCount} />
 
@@ -120,7 +126,7 @@ export default async function SettingsPage() {
         <dl className="grid gap-3 text-sm sm:grid-cols-2">
           <Stat label="Version" value={APP_VERSION} />
           <Stat label="Commit" value={appCommit()} />
-          <Stat label="Issues" value={String(counts.comics)} />
+          <Stat label="Comics" value={String(counts.comics)} />
           <Stat label="Copies" value={String(counts.copies)} />
           <Stat label="Series" value={String(counts.series)} />
           <Stat label="Wishlist" value={String(counts.wishlist)} />
@@ -129,6 +135,28 @@ export default async function SettingsPage() {
         </dl>
       </Panel>
     </div>
+  );
+}
+
+function ApiUsage({ windows }: { windows: UsageWindow[] }) {
+  return (
+    <Panel title="API usage" detail="Requests already counted in the open window. A pause holds the next request until that time.">
+      <ul className="space-y-3 text-sm">
+        {windows.map((row) => (
+          <li key={`${row.source}:${row.label}`} className="flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-paper">
+              {row.source} <span className="text-mist">{row.label}</span>
+              {row.signedIn ? <span className="text-mist"> · signed in</span> : null}
+            </span>
+            <span className="font-mono text-paper">
+              {row.used}/{row.limit}
+              {row.resetAt ? <span className="ml-2 font-sans text-mist">resets {formatResumeTime(row.resetAt)}</span> : null}
+            </span>
+            <span className="w-full text-mist">{row.pausedUntil ? pauseLabel(row.source, row.pausedUntil) : "Active"}</span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }
 
@@ -149,8 +177,8 @@ function groupLabel(group: Array<{ barcode: string | null; series: string; issue
 }
 
 async function loadCounts() {
-  const [comics, copySum, series, wishlist, unmatched, matched, pending, slabs] = await Promise.all([
-    prisma.comic.count(),
+  const [shelf, copySum, series, wishlist, unmatched, matched, pending, slabs] = await Promise.all([
+    prisma.comic.findMany({ select: { series: true, issueNo: true } }),
     prisma.comic.aggregate({ _sum: { quantity: true } }),
     prisma.comic.groupBy({ by: ["series"] }),
     prisma.wishlistItem.count(),
@@ -160,7 +188,7 @@ async function loadCounts() {
     prisma.comic.count({ where: { rawOrSlabbed: "Slabbed" } }),
   ]);
   return {
-    comics,
+    comics: countBaseIssues(shelf),
     copies: copySum._sum.quantity ?? 0,
     series: series.length,
     wishlist,

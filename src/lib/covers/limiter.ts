@@ -1,14 +1,22 @@
+import {
+  applyMetronHeaders,
+  commitMetronSend,
+  emptyMetronBudget,
+  METRON_FALLBACK_BURST,
+  METRON_FALLBACK_DAILY,
+  metronSpacingMs,
+  pauseLabel,
+  planMetronAcquire,
+  readMetronRateHeaders,
+  type MetronBudget,
+  type RateLane,
+} from "@/lib/catalog/rate-limit";
 import { MetronBudgetError } from "@/lib/covers/types";
 
-export const METRON_BURST_LIMIT = 20;
-export const METRON_DAILY_LIMIT = 5000;
+export type { MetronBudget, RateLane };
+export const METRON_BURST_LIMIT = METRON_FALLBACK_BURST;
+export const METRON_DAILY_LIMIT = METRON_FALLBACK_DAILY;
 export const METRON_MIN_INTERVAL_MS = 60_000 / METRON_BURST_LIMIT;
-
-export type MetronBudget = {
-  day: string;
-  count: number;
-  lastRequestAt: number | null;
-};
 
 export type BudgetStore = {
   read: () => MetronBudget;
@@ -16,7 +24,7 @@ export type BudgetStore = {
 };
 
 export function emptyBudget(): MetronBudget {
-  return { day: "", count: 0, lastRequestAt: null };
+  return emptyMetronBudget();
 }
 
 export function budgetDay(date: Date, timeZone = process.env.TZ || "America/Chicago"): string {
@@ -67,6 +75,50 @@ export function retryAfterMs(headers: HeaderBag, now: number): number | null {
   return Math.max(0, dated - now);
 }
 
+/** First 5xx wait. Each later wait doubles until `METRON_5XX_CAP_MS`. */
+export const METRON_5XX_BASE_MS = 1_000;
+/** Longest 5xx wait. Further 5xx responses are not retried. */
+export const METRON_5XX_CAP_MS = 60_000;
+
+export type MetronStatusPlan =
+  | { action: "ok" }
+  | { action: "fail" }
+  | { action: "retry"; waitMs: number }
+  | { action: "pause"; resumeAt: number };
+
+/**
+ * 429 waits for the Reset header or Retry-After, once, then pauses.
+ * 5xx backs off from 1s to 60s. Every other 4xx fails with no retry.
+ */
+export function metronStatusPlan(args: {
+  status: number;
+  headers: HeaderBag;
+  body: string;
+  attempt: number;
+  now: number;
+  lane: RateLane;
+}): MetronStatusPlan {
+  if (args.status === 304 || (args.status >= 200 && args.status < 300)) return { action: "ok" };
+  if (args.status === 429) {
+    const reset = readMetronRateHeaders(args.headers, args.now);
+    const resets = [reset.burstResetAt, reset.sustainedResetAt].filter((value): value is number => value != null && value > args.now);
+    const resetWait = resets.length > 0 ? Math.min(...resets) - args.now : null;
+    const retryAfter = retryAfterMs(args.headers, args.now) ?? retryAfterFromMessage(args.body);
+    const waitMs = resetWait ?? retryAfter ?? 60_000;
+    if (args.lane === "background" || args.attempt >= 2 || waitMs > 120_000) {
+      return { action: "pause", resumeAt: args.now + waitMs };
+    }
+    return { action: "retry", waitMs };
+  }
+  if (args.status >= 500 && args.status <= 599) {
+    if (args.attempt > 7) return { action: "fail" };
+    const waitMs = Math.min(METRON_5XX_CAP_MS, METRON_5XX_BASE_MS * 2 ** Math.max(0, args.attempt - 1));
+    return { action: "retry", waitMs };
+  }
+  if (args.status >= 400) return { action: "fail" };
+  return { action: "fail" };
+}
+
 /** Metron's 429 body says "Expected available in N seconds" when Retry-After is absent. */
 export function retryAfterFromMessage(body: string): number | null {
   const match = body.match(/expected available in\s+(\d+(?:\.\d+)?)\s+seconds?/i);
@@ -93,7 +145,7 @@ export class MetronLimiter {
     return { ...this.budget };
   }
 
-  async acquire(): Promise<void> {
+  async acquire(lane: RateLane = "interactive"): Promise<void> {
     const previous = this.pending;
     let release: () => void = () => undefined;
     this.pending = new Promise<void>((resolve) => {
@@ -101,30 +153,28 @@ export class MetronLimiter {
     });
     await previous;
     try {
-      await this.acquireTurn();
+      await this.acquireTurn(lane);
     } finally {
       release();
     }
   }
 
-  private async acquireTurn(): Promise<void> {
+  private async acquireTurn(lane: RateLane): Promise<void> {
     this.syncFromStore();
-    const day = this.day();
-    if (this.budget.day !== day) {
-      this.budget.day = day;
-      this.budget.count = 0;
-    }
-    if (this.budget.count >= METRON_DAILY_LIMIT) {
-      throw new MetronBudgetError("Metron daily limit reached (5000). Run again after the window resets.", {
-        budget: "Metron daily",
-        count: this.budget.count,
-        resumeAt: nextBudgetDayStart(this.now()),
+    const plan = planMetronAcquire(this.budget, this.now(), lane, this.day());
+    if (plan.kind === "pause") {
+      const resumeAt = plan.hold.resumeAt > 0 ? plan.hold.resumeAt : nextBudgetDayStart(this.now());
+      const pausedUntil = plan.hold.budget === "Metron reserve" ? plan.state.pausedUntil : resumeAt;
+      this.budget = { ...plan.state, pausedUntil };
+      this.store.write(this.budget);
+      throw new MetronBudgetError(pauseLabel("Metron", resumeAt), {
+        budget: plan.hold.budget,
+        count: plan.hold.count,
+        resumeAt,
       });
     }
-    const wait = this.msUntilNext();
-    if (wait > 0) await this.sleep(wait);
-    this.budget.count += 1;
-    this.budget.lastRequestAt = this.now();
+    if (plan.waitMs > 0) await this.sleep(plan.waitMs);
+    this.budget = commitMetronSend(plan.state, this.now(), this.day());
     this.store.write(this.budget);
   }
 
@@ -144,44 +194,24 @@ export class MetronLimiter {
 
   defer(ms: number): void {
     const capped = Math.min(Math.max(0, ms), 120_000);
-    const until = this.now() + capped - METRON_MIN_INTERVAL_MS;
+    const spacing = metronSpacingMs(this.budget.burstLimit);
+    const until = this.now() + capped - spacing;
     if (this.budget.lastRequestAt == null || this.budget.lastRequestAt < until) {
       this.budget.lastRequestAt = until;
       this.store.write(this.budget);
     }
   }
 
-  observe(headers: HeaderBag): void {
-    const sustainedRemaining = numberHeader(headers, "x-ratelimit-sustained-remaining");
-    const sustainedLimit = numberHeader(headers, "x-ratelimit-sustained-limit");
-    if (sustainedRemaining === 0) {
-      this.budget.count = METRON_DAILY_LIMIT;
+  /** Remember a Retry-After pause so the next send, including after a restart, waits it out. */
+  notePause(resumeAt: number): void {
+    if (this.budget.pausedUntil == null || resumeAt > this.budget.pausedUntil) {
+      this.budget.pausedUntil = resumeAt;
       this.store.write(this.budget);
-    } else if (sustainedRemaining != null && sustainedLimit != null) {
-      const used = Math.max(0, sustainedLimit - sustainedRemaining);
-      if (used > this.budget.count) {
-        this.budget.count = Math.min(used, METRON_DAILY_LIMIT);
-        this.store.write(this.budget);
-      }
-    }
-
-    const burstRemaining = numberHeader(headers, "x-ratelimit-burst-remaining");
-    const burstReset = numberHeader(headers, "x-ratelimit-burst-reset");
-    if (burstRemaining === 0 && burstReset != null) {
-      const delay = burstReset * 1000 - this.now();
-      if (delay > 0) this.defer(Math.min(delay, 65_000));
     }
   }
 
-  private msUntilNext(): number {
-    if (this.budget.lastRequestAt == null) return 0;
-    return Math.max(0, METRON_MIN_INTERVAL_MS - (this.now() - this.budget.lastRequestAt));
+  observe(headers: HeaderBag): void {
+    this.budget = applyMetronHeaders(this.budget, headers, this.now());
+    this.store.write(this.budget);
   }
-}
-
-function numberHeader(headers: HeaderBag, name: string): number | null {
-  const raw = headers.get(name);
-  if (raw == null || raw === "") return null;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : null;
 }

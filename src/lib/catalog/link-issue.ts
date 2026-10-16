@@ -1,20 +1,35 @@
 import { Prisma } from "@prisma/client";
 import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-plan";
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
-import { manualLinkJson, matchQuery, readManualLink, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
+import { manualLinkJson, matchQuery, readManualLink, shouldSaveCatalogCover, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
+import { findAlternateCover, type AlternateCover, type AlternateCoverSearch, type CoverWanted } from "@/lib/catalog/gcd-cover";
+import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
+import { GCD_COVER_MISSED, isGcdScanHost } from "@/lib/catalog/match-row";
+import { hintFromBlocks, type QueueHint } from "@/lib/catalog/search-queue";
 import { linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
 import { gcdDetails, gcdHit, searchGcdMatches } from "@/lib/covers/gcd-match";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { mapMetronDetails, METRON_FIELDS, type MetronField } from "@/lib/covers/enrich";
 import { acquireBackfillLock, backfillLockHeld, coverFileKey, downloadCover, releaseBackfillLock } from "@/lib/covers/files";
-import { fetchMetronIssueBody, metronBasicAuth, metronTransport } from "@/lib/covers/metron-client";
+import { fetchMetronIssueBody, metronBasicAuth, metronTransport, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { writeLog } from "@/lib/log/write";
 import { getSettings } from "@/lib/settings/service";
 
-export type MatchSearchResult = { ok: true; hits: MatchHit[] } | { ok: false; message: string };
+export type MatchSearchResult =
+  | { ok: true; hits: MatchHit[]; notice: string | null; queue: QueueHint | null }
+  | { ok: false; message: string; notice: string | null; queue: QueueHint | null };
+
+function limitBlocks(error: unknown): LimitBlock | null {
+  return limitBlockFromError(error, sharedMetronLimiter().snapshot());
+}
+
+function noticeText(blocks: LimitBlock[], searched: string[]): string | null {
+  const text = limitNotices(blocks, searched);
+  return text || null;
+}
 
 function issueLabel(series: string, issueNo: string | null, issue: string | null): string {
   return `${series} #${issueNo || issue || "?"}`;
@@ -114,36 +129,148 @@ export async function searchIssueCatalog(args: {
   comicId?: string | null;
 }): Promise<MatchSearchResult> {
   const needle = args.mode === "barcode" ? args.barcode.trim() : args.query.trim();
-  if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue." };
+  if (!needle) return { ok: false, message: args.mode === "barcode" ? "Enter a barcode." : "Enter a series or issue.", notice: null, queue: null };
   const stored = await storedShelf(args);
   const shelfSeries = mergeShelfSeries(args.shelfSeries, stored?.series);
   const query =
     args.mode === "barcode" && !args.query.trim() && shelfSeries
       ? matchQuery({ series: shelfSeries, issueNo: stored?.issueNo, year: null })
       : args.query;
+  const rank = (await loadShelfRank(args.comicId)) ?? {};
+  const request = { ...args, query, shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null, shelfSeries, ...rank };
   try {
-    const hits =
-      args.source === "metron"
-        ? await searchMetron({ ...args, query })
-        : args.source === "gcd"
-          ? await searchGcdMatches(query, args.barcode, args.mode, args.shelfFormat ?? stored?.shelfFormat, {
-              facsimile: args.facsimile,
-              shelfSeries,
-            })
-          : await searchComicVine({ ...args, query });
-    if ("ok" in hits) return hits;
+    const hits = await searchOne(args.source, request);
+    if ("ok" in hits) return { ...hits, notice: null, queue: null };
     await writeLog({
       level: "info",
       source: logSource(args.source),
       message: `Match search on ${catalogName(args.source)} returned ${hits.length}.`,
       details: { mode: args.mode, count: hits.length },
     });
-    return { ok: true, hits };
+    return { ok: true, hits, notice: null, queue: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Search failed.";
-    await writeLog({ level: "warn", source: logSource(args.source), message, details: { mode: args.mode } });
-    return { ok: false, message };
+    const block = limitBlocks(error);
+    if (!block) {
+      const message = error instanceof Error ? error.message : "Search failed.";
+      await writeLog({ level: "warn", source: logSource(args.source), message, details: { mode: args.mode } });
+      return { ok: false, message, notice: null, queue: null };
+    }
+    const blocks = [block];
+    const searched: string[] = [];
+    const hits: MatchHit[] = [];
+    for (const source of otherSources(args.source)) {
+      if (!(await sourceReady(source))) continue;
+      try {
+        const found = await searchOne(source, request);
+        if ("ok" in found) continue;
+        searched.push(catalogName(source));
+        hits.push(...found);
+      } catch (otherError) {
+        const other = limitBlocks(otherError);
+        if (other) blocks.push(other);
+      }
+    }
+    const notice = noticeText(blocks, searched);
+    const queue = hintFromBlocks(args.source, blocks, "search");
+    await writeLog({
+      level: "warn",
+      source: logSource(args.source),
+      message: notice ?? "Search paused.",
+      details: { mode: args.mode, count: hits.length },
+    });
+    return { ok: true, hits, notice, queue };
   }
+}
+
+/** One catalog, no fallback. The queued search uses this so a paused neighbor is not reported as a match. */
+export async function searchCatalogSource(args: {
+  source: CatalogSource;
+  query: string;
+  barcode: string;
+  mode: "query" | "barcode";
+  shelfFormat?: string | null;
+  shelfSeries?: string | null;
+  facsimile?: boolean;
+  comicId?: string | null;
+}): Promise<MatchHit[]> {
+  const stored = await storedShelf(args);
+  const shelfSeries = mergeShelfSeries(args.shelfSeries, stored?.series);
+  const query =
+    args.mode === "barcode" && !args.query.trim() && shelfSeries
+      ? matchQuery({ series: shelfSeries, issueNo: stored?.issueNo, year: null })
+      : args.query;
+  const rank = await loadShelfRank(args.comicId);
+  const found = await searchOne(args.source, {
+    query,
+    barcode: args.barcode,
+    mode: args.mode,
+    shelfFormat: args.shelfFormat ?? stored?.shelfFormat ?? null,
+    shelfSeries,
+    facsimile: args.facsimile,
+    publisher: rank?.publisher ?? null,
+    country: rank?.country ?? null,
+    language: rank?.language ?? null,
+    year: rank?.year ?? null,
+  });
+  if ("ok" in found) throw new Error(found.message);
+  return found;
+}
+
+function otherSources(source: CatalogSource): CatalogSource[] {
+  return (["gcd", "comicvine", "metron"] as const).filter((item) => item !== source);
+}
+
+async function sourceReady(source: CatalogSource): Promise<boolean> {
+  if (source === "metron") return Boolean(await metronBasicAuth());
+  if (source === "comicvine") return Boolean((await getSettings()).comicvine.apiKey);
+  return true;
+}
+
+async function searchOne(
+  source: CatalogSource,
+  args: {
+    query: string;
+    barcode: string;
+    mode: "query" | "barcode";
+    shelfFormat?: string | null;
+    shelfSeries?: string | null;
+    facsimile?: boolean;
+    publisher?: string | null;
+    country?: string | null;
+    language?: string | null;
+    year?: number | null;
+  },
+): Promise<MatchHit[] | { ok: false; message: string }> {
+  if (source === "metron") return searchMetron(args);
+  if (source === "gcd") {
+    return searchGcdMatches(args.query, args.barcode, args.mode, args.shelfFormat, {
+      facsimile: args.facsimile,
+      shelfSeries: args.shelfSeries,
+      publisher: args.publisher,
+      country: args.country,
+      language: args.language,
+      year: args.year,
+    });
+  }
+  return searchComicVine(args);
+}
+
+async function loadShelfRank(
+  comicId: string | null | undefined,
+): Promise<{ publisher: string | null; country: string | null; language: string | null; year: number | null } | null> {
+  const id = comicId?.trim() ?? "";
+  if (!id) return null;
+  const comic = await prisma.comic.findUnique({
+    where: { id },
+    select: { publisher: true, country: true, language: true, coverYear: true, releaseYear: true, seriesYear: true },
+  });
+  if (!comic) return null;
+  return {
+    publisher: comic.publisher,
+    country: comic.country,
+    language: comic.language,
+    year: comic.coverYear ?? comic.releaseYear ?? comic.seriesYear,
+  };
 }
 
 async function storedShelf(args: {
@@ -170,15 +297,27 @@ async function searchMetron(args: {
   barcode: string;
   mode: "query" | "barcode";
   shelfFormat?: string | null;
-}): Promise<MatchHit[] | MatchSearchResult> {
-  if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
-  return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode, args.shelfFormat);
+  shelfSeries?: string | null;
+}): Promise<MatchHit[] | { ok: false; message: string }> {
+  if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron API token, or a username and password, in Settings to search." };
+  return searchMetronMatches(await metronTransport(), args.query, args.barcode, args.mode, args.shelfFormat, args.shelfSeries);
 }
 
-async function searchComicVine(args: { query: string; barcode: string; mode: "query" | "barcode" }): Promise<MatchHit[] | MatchSearchResult> {
+async function searchComicVine(args: {
+  query: string;
+  barcode: string;
+  mode: "query" | "barcode";
+  shelfSeries?: string | null;
+}): Promise<MatchHit[] | { ok: false; message: string }> {
   const settings = await getSettings();
   if (!settings.comicvine.apiKey) return { ok: false, message: "Add a Comic Vine API key in Settings to search." };
-  return searchComicVineMatches({ apiKey: settings.comicvine.apiKey, query: args.query, barcode: args.barcode, mode: args.mode });
+  return searchComicVineMatches({
+    apiKey: settings.comicvine.apiKey,
+    query: args.query,
+    barcode: args.barcode,
+    mode: args.mode,
+    shelfSeries: args.shelfSeries,
+  });
 }
 
 export async function loadIssueCovers(source: CatalogSource, issueId: string): Promise<MatchCover[]> {
@@ -194,9 +333,14 @@ export async function loadIssueCovers(source: CatalogSource, issueId: string): P
   return body ? variantCoversFrom(body) : [];
 }
 
-async function downloadChosenCover(source: Exclude<CatalogSource, "gcd">, issueId: string, imageUrl: string, primaryUrl: string | null) {
-  const prefix = source === "metron" ? "metron" : "cv";
-  const file = await downloadCover(imageUrl, coverFileKey(issueId, imageUrl, primaryUrl), undefined, { force: true, prefix });
+function coverPrefix(source: CatalogSource): "metron" | "cv" | "gcd" {
+  if (source === "gcd") return "gcd";
+  if (source === "comicvine") return "cv";
+  return "metron";
+}
+
+async function downloadChosenCover(source: CatalogSource, issueId: string, imageUrl: string, primaryUrl: string | null) {
+  const file = await downloadCover(imageUrl, coverFileKey(issueId, imageUrl, primaryUrl), undefined, { force: true, prefix: coverPrefix(source) });
   return { file, url: coverPublicPath(file), imageUrl };
 }
 
@@ -207,22 +351,40 @@ export async function linkIssueToCatalog(args: {
   useCover: boolean;
   fillMissing: boolean;
   overwrite?: boolean;
+  replaceExisting?: boolean;
   coverImageUrl: string | null;
-}): Promise<{ ok: boolean; message: string }> {
-  if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish." };
+}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null; hits?: MatchHit[]; candidateNote?: string | null }> {
+  if (backfillLockHeld()) return { ok: false, message: "A Metron run is already going. Wait for it to finish.", notice: null, queue: null };
   const comic = await comicForLink(args.comicId);
-  if (!comic) return { ok: false, message: "That issue is not on the shelf." };
-  if (!/^\d+$/.test(args.hit.id) || args.hit.source !== args.source) return { ok: false, message: "Pick a result from that catalog." };
+  if (!comic) return { ok: false, message: "That issue is not on the shelf.", notice: null, queue: null };
+  if (!/^\d+$/.test(args.hit.id) || args.hit.source !== args.source) return { ok: false, message: "Pick a result from that catalog.", notice: null, queue: null };
   const label = issueLabel(comic.series, comic.issueNo, comic.issue);
+  let crossNotice: string | null = null;
   try {
     const loaded = await loadLinkTarget(args.source, args.hit);
-    if (!loaded.ok) return loaded;
-    const covers = loaded.covers.length > 0 ? loaded.covers : args.hit.covers;
+    if (!loaded.ok) return { ...loaded, notice: null, queue: null };
+    const covers = loaded.covers.length > 0 ? loaded.covers : loaded.hit.covers;
+    const fromLoaded = covers[0]?.imageUrl ?? loaded.hit.coverUrl;
+    const requested = args.coverImageUrl && !isGcdScanHost(args.coverImageUrl) ? args.coverImageUrl : null;
     const chosen =
-      args.coverImageUrl && (covers.some((cover) => cover.imageUrl === args.coverImageUrl) || args.coverImageUrl === args.hit.coverUrl)
-        ? args.coverImageUrl
-        : covers[0]?.imageUrl ?? args.hit.coverUrl;
-    const cover = args.source !== "gcd" && args.useCover && chosen ? await downloadChosenCover(args.source, args.hit.id, chosen, covers[0]?.imageUrl ?? chosen) : null;
+      requested && (covers.some((cover) => cover.imageUrl === requested) || requested === loaded.hit.coverUrl) ? requested : fromLoaded;
+    const safeChosen = chosen && !isGcdScanHost(chosen) ? chosen : null;
+    const manual = readManualLink(comic.manualLink);
+    const saveCover = shouldSaveCatalogCover({
+      useCover: args.useCover,
+      userCover: manual.userCover,
+      replaceExisting: args.replaceExisting === true,
+    });
+    let cover: { file: string; url: string; imageUrl: string } | null = null;
+    let alternate: AlternateCover | null = null;
+    let gcdCoverMiss = false;
+    if (saveCover && args.source === "gcd") {
+      alternate = await findAlternateCover(wantedFromHit(loaded.hit), await alternateCoverSearch());
+      if (alternate) cover = await downloadChosenCover(alternate.source, alternate.issueId, alternate.imageUrl, alternate.primaryUrl);
+      else gcdCoverMiss = true;
+    } else if (saveCover && safeChosen) {
+      cover = await downloadChosenCover(args.source, args.hit.id, safeChosen, covers[0]?.imageUrl ?? safeChosen);
+    }
     const update = linkUpdate({
       source: args.source,
       hit: loaded.hit,
@@ -236,19 +398,27 @@ export async function linkIssueToCatalog(args: {
       issueUrl: loaded.issueUrl,
       seriesUrl: loaded.seriesUrl,
     });
-    await prisma.comic.update({ where: { id: comic.id }, data: { ...update.data, manualLink: storedLink(update.data.manualLink) } });
+    if (gcdCoverMiss) update.data.coverNote = GCD_COVER_MISSED;
+    await prisma.comic.update({ where: { id: comic.id }, data: { ...update.data, manualLink: storedLink(rememberAlternate(update.data.manualLink, alternate)) } });
     let message = `Linked ${label} to ${catalogName(args.source)} ${args.hit.id}.`;
+    if (gcdCoverMiss) message = `${message} ${GCD_COVER_MISSED}`;
     if (args.source === "metron") {
       if (typeof update.data.comicvineIssueId === "string") message += ` Stored Comic Vine ${update.data.comicvineIssueId}.`;
       if (typeof update.data.gcdIssueId === "string") message += ` Stored GCD ${update.data.gcdIssueId}.`;
     }
+    let candidateHits: MatchHit[] = [];
+    let candidateNote: string | null = null;
     if ((args.source === "comicvine" || args.source === "gcd") && !comic.metronIssueId && !readManualLink(comic.manualLink).metronIssueId) {
       try {
         const follow = await linkMetronFromForeignIds(comic.id, loaded.embeddedMetronIssueId);
-        if (follow) message = `${message} ${follow}`;
+        if (follow.line) message = `${message} ${follow.line}`;
+        candidateHits = follow.hits;
+        candidateNote = follow.candidateNote;
       } catch (error) {
         const note = error instanceof Error ? error.message : "Metron cross-link failed.";
-        await writeLog({ level: "warn", source: "metron", message: note, details: { comicId: comic.id } });
+        const block = limitBlocks(error);
+        if (block) crossNotice = noticeText([block], []);
+        await writeLog({ level: "warn", source: "metron", message: crossNotice ?? note, details: { comicId: comic.id } });
       }
     }
     await writeLog({
@@ -257,11 +427,14 @@ export async function linkIssueToCatalog(args: {
       message,
       details: { comicId: comic.id, externalId: args.hit.id, useCover: args.useCover, fillMissing: args.fillMissing, filled: update.filled },
     });
-    return { ok: true, message };
+    return { ok: true, message, notice: crossNotice, queue: null, hits: candidateHits, candidateNote };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not link this issue.";
+    const block = limitBlocks(error);
+    const notice = block ? noticeText([block], []) : null;
+    const queue = block ? hintFromBlocks(args.source, [block], "relink") : null;
+    const message = notice ?? (error instanceof Error ? error.message : "Could not link this issue.");
     await writeLog({ level: "error", source: logSource(args.source), message, details: { comicId: args.comicId } });
-    return { ok: false, message };
+    return { ok: false, message, notice, queue };
   }
 }
 
@@ -275,10 +448,18 @@ async function loadLinkTarget(
   if (source === "gcd") {
     const issue = await createGcdCatalog().issue(hit.id);
     const detail = issue ? gcdDetails(issue) : null;
-    return { ok: true, hit: issue ? gcdHit(issue) : hit, detail, covers: [], issueUrl: null, seriesUrl: null, embeddedMetronIssueId: issue?.metronIssueId ?? null };
+    return {
+      ok: true,
+      hit: issue ? gcdHit(issue) : hit,
+      detail,
+      covers: [],
+      issueUrl: null,
+      seriesUrl: null,
+      embeddedMetronIssueId: issue?.metronIssueId ?? null,
+    };
   }
   if (source === "metron") {
-    if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron username and password in Settings to search." };
+    if (!(await metronBasicAuth())) return { ok: false, message: "Add a Metron API token, or a username and password, in Settings to search." };
     const body = await fetchMetronIssueBody(await metronTransport(), hit.id);
     const detail = body ? mapMetronDetails(body) : null;
     const mapped = body ? mapMetronMatchHit(body) : null;
@@ -328,17 +509,21 @@ export async function repullLinkedCover(comicId: string): Promise<{ ok: boolean;
   }
 }
 
-export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; message: string }> {
+export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; message: string; notice: string | null }> {
   const comic = await prisma.comic.findUnique({
     where: { id: comicId },
-    select: { id: true, series: true, issue: true, issueNo: true, metronIssueId: true, comicvineIssueId: true, manualLink: true },
+    select: { id: true, series: true, issue: true, issueNo: true, metronIssueId: true, comicvineIssueId: true, gcdIssueId: true, manualLink: true },
   });
-  if (!comic) return { ok: false, message: "That issue is not on the shelf." };
+  if (!comic) return { ok: false, message: "That issue is not on the shelf.", notice: null };
   const label = issueLabel(comic.series, comic.issueNo, comic.issue);
   const link = readManualLink(comic.manualLink);
   try {
-    const chosen = await chosenImage(link, comic.comicvineIssueId);
-    if (!chosen) return { ok: false, message: "Link an issue before re-pulling its cover." };
+    const chosen = await chosenImage(link, comic.comicvineIssueId, comic.gcdIssueId);
+    if (!chosen) {
+      const gcdLinked = Boolean(link.gcdIssueId || (comic.gcdIssueId && /^\d+$/.test(comic.gcdIssueId)));
+      if (gcdLinked) return { ok: true, message: GCD_COVER_MISSED, notice: null };
+      return { ok: false, message: "Link an issue before re-pulling its cover.", notice: null };
+    }
     const saved = await downloadChosenCover(chosen.source, chosen.issueId, chosen.imageUrl, chosen.primaryUrl);
     const next = withoutUserCover(link);
     await prisma.comic.update({
@@ -354,34 +539,91 @@ export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; m
     });
     const message = `Re-pulled the cover for ${label}.`;
     await writeLog({ level: "info", source: "covers/backfill", message, details: { comicId, source: chosen.source } });
-    return { ok: true, message };
+    return { ok: true, message, notice: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not re-pull the cover.";
+    const block = limitBlocks(error);
+    const notice = block ? noticeText([block], []) : null;
+    const message = notice ?? (error instanceof Error ? error.message : "Could not re-pull the cover.");
     await writeLog({ level: "error", source: "covers/backfill", message, details: { comicId } });
-    return { ok: false, message };
+    return { ok: false, message, notice };
   }
 }
 
 async function chosenImage(
   link: ReturnType<typeof readManualLink>,
   comicvineIssueId: string | null,
-): Promise<{ source: "metron" | "comicvine"; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
-  if (link.coverImageUrl && link.coverSource) {
-    const issueId = link.coverSource === "metron" ? link.metronIssueId : link.comicvineIssueId;
+  gcdIssueId: string | null,
+): Promise<{ source: CatalogSource; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
+  if (link.coverImageUrl && link.coverSource && !isGcdScanHost(link.coverImageUrl)) {
+    const issueId = link.coverSource === "metron" ? link.metronIssueId : link.coverSource === "comicvine" ? link.comicvineIssueId : link.gcdIssueId;
     if (issueId) return { source: link.coverSource, issueId, imageUrl: link.coverImageUrl, primaryUrl: link.coverImageUrl };
   }
   if (link.metronIssueId) {
-    if (!(await metronBasicAuth())) throw new Error("Add a Metron username and password in Settings to search.");
+    if (!(await metronBasicAuth())) throw new Error("Add a Metron API token, or a username and password, in Settings to search.");
     const body = await fetchMetronIssueBody(await metronTransport(), link.metronIssueId);
     const imageUrl = body ? mapMetronMatchHit(body)?.coverUrl ?? null : null;
     if (imageUrl) return { source: "metron", issueId: link.metronIssueId, imageUrl, primaryUrl: imageUrl };
   }
   const cvId = link.comicvineIssueId ?? (comicvineIssueId && /^\d+$/.test(comicvineIssueId) ? comicvineIssueId : null);
-  if (!cvId) return null;
-  const settings = await getSettings();
-  if (!settings.comicvine.apiKey) throw new Error("Add a Comic Vine API key in Settings to search.");
-  const body = await comicVineIssue(settings.comicvine.apiKey, cvId);
-  const imageUrl = body ? variantCoversFrom(body)[0]?.imageUrl ?? null : null;
-  if (!imageUrl) return null;
-  return { source: "comicvine", issueId: cvId, imageUrl, primaryUrl: imageUrl };
+  if (cvId) {
+    const settings = await getSettings();
+    if (!settings.comicvine.apiKey) throw new Error("Add a Comic Vine API key in Settings to search.");
+    const body = await comicVineIssue(settings.comicvine.apiKey, cvId);
+    const imageUrl = body ? variantCoversFrom(body)[0]?.imageUrl ?? null : null;
+    if (imageUrl) return { source: "comicvine", issueId: cvId, imageUrl, primaryUrl: imageUrl };
+  }
+  const gcdId = link.gcdIssueId ?? (gcdIssueId && /^\d+$/.test(gcdIssueId) ? gcdIssueId : null);
+  if (!gcdId) return null;
+  const issue = await createGcdCatalog().issue(gcdId);
+  if (!issue) return null;
+  const alternate = await findAlternateCover(
+    {
+      series: issue.seriesName,
+      issueNo: issue.number,
+      variant: issue.variant,
+      barcode: issue.barcode ?? issue.isbn ?? null,
+      year: issue.coverYear,
+    },
+    await alternateCoverSearch(),
+  );
+  if (!alternate) return null;
+  return { source: alternate.source, issueId: alternate.issueId, imageUrl: alternate.imageUrl, primaryUrl: alternate.primaryUrl };
+}
+
+function wantedFromHit(hit: MatchHit): CoverWanted {
+  return {
+    series: hit.series,
+    issueNo: hit.issueNo,
+    variant: hit.variant,
+    barcode: hit.barcode ?? hit.isbn ?? null,
+    year: yearIn(hit.coverDate),
+  };
+}
+
+function yearIn(value: string | null | undefined): number | null {
+  const match = (value ?? "").match(/\b((?:18|19|20)\d{2})\b/);
+  return match?.[1] ? Number(match[1]) : null;
+}
+
+async function alternateCoverSearch(): Promise<AlternateCoverSearch> {
+  const metron = await metronBasicAuth();
+  const transport = metron ? await metronTransport() : null;
+  const apiKey = (await getSettings()).comicvine.apiKey;
+  return {
+    metronBarcode: transport ? (code) => searchMetronMatches(transport, "", code, "barcode") : null,
+    metronQuery: transport ? (query) => searchMetronMatches(transport, query, "", "query") : null,
+    comicVineBarcode: apiKey ? (code) => searchComicVineMatches({ apiKey, query: "", barcode: code, mode: "barcode" }) : null,
+    comicVineQuery: apiKey ? (query) => searchComicVineMatches({ apiKey, query, barcode: "", mode: "query" }) : null,
+  };
+}
+
+function rememberAlternate(manualLink: unknown, alternate: AlternateCover | null): unknown {
+  if (!alternate) return manualLink;
+  const link = readManualLink(manualLink);
+  link.coverImageUrl = alternate.imageUrl;
+  link.coverSource = alternate.source;
+  link.userCover = false;
+  if (alternate.source === "metron" && !link.metronIssueId) link.metronIssueId = alternate.issueId;
+  if (alternate.source === "comicvine" && !link.comicvineIssueId) link.comicvineIssueId = alternate.issueId;
+  return link;
 }

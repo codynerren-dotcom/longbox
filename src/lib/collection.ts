@@ -1,6 +1,6 @@
 import type { CollectionSort } from "@/lib/settings/preferences";
 import { seriesRouteId, type SeriesIdentity } from "@/lib/series";
-import { copyGroupKey, copyQuantity } from "@/lib/series-view";
+import { baseIssueKey, copyGroupKey, copyQuantity } from "@/lib/series-view";
 import { seriesHeaderFormat } from "@/lib/shelf-format";
 
 export type ShelfComic = SeriesIdentity & {
@@ -74,8 +74,9 @@ export function groupSeries(comics: ShelfComic[]): SeriesCardModel[] {
       variantDescription: comic.variantDescription,
       quantity: comic.quantity,
     });
-    if (!card.seen.has(identity)) {
-      card.seen.add(identity);
+    const base = baseIssueKey(comic, comic.id);
+    if (!card.seen.has(base)) {
+      card.seen.add(base);
       card.count += 1;
     }
     card.copies += copyQuantity(comic);

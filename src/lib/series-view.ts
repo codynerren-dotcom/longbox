@@ -142,32 +142,62 @@ export function groupQuantity(items: Array<{ quantity: number }>): number {
   return items.reduce((sum, item) => sum + copyQuantity(item), 0);
 }
 
+/** Distinct base issues, then copies when a number has more than one. `3G` and `3H` are one comic. */
 export function copyCountLabel(comics: CopyIdentity[]): string {
-  const comicsCount = groupCopies(comics).length;
+  const issues = distinctBaseIssues(comics);
   const copies = groupQuantity(comics);
-  const comicLabel = comicsCount === 1 ? "1 comic" : `${comicsCount} comics`;
-  if (copies === comicsCount) return comicLabel;
+  const comicLabel = issues === 1 ? "1 comic" : `${issues} comics`;
+  if (copies === issues) return comicLabel;
   const copyLabel = copies === 1 ? "1 copy" : `${copies} copies`;
   return `${comicLabel} · ${copyLabel}`;
 }
 
-/** Owned numeric span, `Have: 1-12`, or `Have: 5` when only one number is on the shelf. */
+function distinctBaseIssues(comics: CopyIdentity[]): number {
+  return countBaseIssues(comics);
+}
+
+/**
+ * One key per series and base issue. `#1A` and `#1B` share it.
+ * A blank issue number stays its own row via `unlabeledId`.
+ */
+export function baseIssueKey(comic: { series: string; issueNo: string | null | undefined }, unlabeledId: string): string {
+  const series = comic.series.trim().toLowerCase();
+  const label = baseIssueLabel(comic.issueNo ?? "");
+  if (!label) return `${series}|unlabeled:${unlabeledId}`;
+  return `${series}|${issueKey(label)}`;
+}
+
+/** Distinct base issues. Cover letters and printings of one number count once. */
+export function countBaseIssues(comics: Array<{ series: string; issueNo: string | null | undefined; id?: string }>): number {
+  const seen = new Set<string>();
+  let blank = 0;
+  for (const comic of comics) {
+    const label = baseIssueLabel(comic.issueNo ?? "");
+    const unlabeledId = label ? "" : (comic.id ?? `blank-${blank++}`);
+    seen.add(baseIssueKey(comic, unlabeledId));
+  }
+  return seen.size;
+}
+
+/** Owned base numbers, grouped only when they are consecutive. `#7E` and `#55A` are `Have: #7, #55`, not `Have: #7-#55`. */
 export function haveRange(comics: SeriesCopy[]): string | null {
   const numbers = ownedIssueNumbers(comics);
   if (numbers.length === 0) return null;
-  const min = numbers[0];
-  const max = numbers[numbers.length - 1];
-  return min === max ? `Have: ${min}` : `Have: ${min}-${max}`;
+  return `Have: ${collapseNumbers(numbers, "have").parts.join(", ")}`;
 }
 
-/** A catalog run. `numbers` wins when it is non-empty; otherwise issues are `1..issueCount`. */
+/**
+ * A catalog run. `issueCount` is the length of the run (`1..N`) once variant
+ * rows have been folded out. `numbers` adds labels such as annuals. With neither,
+ * Missing is only the holes between the first and last owned issue.
+ */
 export type CatalogRun = {
   numbers: string[];
   issueCount: number | null;
 };
 
 export type MissingChip = {
-  kind: "missing" | "gaps";
+  kind: "missing";
   count: number;
   parts: string[];
 };
@@ -186,15 +216,34 @@ export function catalogIssueCount(value: unknown): number | null {
   return parsed;
 }
 
+const BRACKETED = /\[[^\]]*\]/g;
+const PAREN_VARIANT = /\s*\([^)]*\b(?:cover|variant|var\.?|printing|print|facsimile|reprint)[^)]*\)/gi;
+const LETTER_SUFFIX = /^(\d+)([A-Za-z])$/;
+const VARIANT_WORDS = /\b(?:alternate\s+covers?|alt(?:ernate)?\s+covers?|covers?|variants?|var\.?|printings?|prints?|facsimiles?|reprints?|incentive|virgin|foil|sketch)\b/i;
+
 /**
- * One label per issue. Integers collapse so `01` and `1` are the same.
- * Non-numeric labels such as annuals stay as written.
+ * A cover, later printing, facsimile, or lettered suffix such as `1K`.
+ * Annuals are their own issues.
+ */
+export function isVariantDescriptor(raw: string): boolean {
+  const label = raw.trim();
+  if (!label) return false;
+  if (/\[[^\]]+\]/.test(label)) return true;
+  if (LETTER_SUFFIX.test(label)) return true;
+  if (VARIANT_WORDS.test(label) && !/\bannuals?\b/i.test(label)) return true;
+  return false;
+}
+
+/**
+ * One label per base issue. `01`, `1 [Cover A]`, and `1K` are all `1`.
+ * Alternate covers, later printings, facsimiles, and other variant notes drop out.
+ * Annuals and halves such as `1.5` stay as written.
  */
 export function distinctIssueLabels(raw: string[]): string[] {
   const seen = new Set<string>();
   const labels: string[] = [];
   for (const item of raw) {
-    const label = canonicalIssueLabel(item);
+    const label = baseIssueLabel(item);
     if (!label) continue;
     const key = issueKey(label);
     if (seen.has(key)) continue;
@@ -204,12 +253,60 @@ export function distinctIssueLabels(raw: string[]): string[] {
   return labels;
 }
 
-function canonicalIssueLabel(raw: string): string | null {
+/**
+ * Reported `issue_count` values count every cover. When variant rows explain
+ * that gap, the run length is the distinct base numbers.
+ */
+export function catalogBaseCount(raw: string[], reported: number | null): number | null {
+  const numbers = distinctIssueLabels(raw);
+  if (numbers.length === 0 || reported == null || reported <= numbers.length) return reported;
+  const variantRows = raw.filter((item) => isVariantDescriptor(item)).length;
+  if (variantRows > 0 && reported - numbers.length <= variantRows) return numbers.length;
+  return reported;
+}
+
+/** Base issue. `1 [Cover A - Ryan Browne]`, `2 [Second Printing]`, and `1K` are `1` / `2` / `1`. */
+export function baseIssueLabel(raw: string): string | null {
   const label = raw.trim();
   if (!label) return null;
-  const value = issueNumberValue(label);
-  if (value == null) return label;
-  return value > 0 ? String(value) : null;
+  const stripped = label.replace(BRACKETED, " ").replace(PAREN_VARIANT, " ").replace(/\s+/g, " ").trim();
+  const number = numericBase(stripped) ?? variantLeadingNumber(stripped);
+  if (number != null) return String(number);
+  if (!stripped || variantNote(label) || variantNote(stripped)) return null;
+  return stripped;
+}
+
+function numericBase(label: string): number | null {
+  if (/^\d+$/.test(label)) {
+    const parsed = Number.parseInt(label, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  const lettered = LETTER_SUFFIX.exec(label);
+  if (!lettered) return null;
+  const parsed = Number.parseInt(lettered[1], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** `1 Cover A` is issue 1. `1.5` and `Annual 1` are not. */
+function variantLeadingNumber(label: string): number | null {
+  const match = /^#?\s*(\d+)[A-Za-z]?\b(.*)$/.exec(label);
+  if (!match) return null;
+  const rest = (match[2] ?? "").trim();
+  if (!rest || rest.startsWith(".")) return null;
+  if (!variantNote(rest)) return null;
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function variantNote(label: string): boolean {
+  const text = label.trim();
+  if (!text) return false;
+  if (/\[[^\]]+\]/.test(text) && !/\d/.test(text.replace(/\[[^\]]*\]/g, ""))) return true;
+  return VARIANT_WORDS.test(text);
+}
+
+function canonicalIssueLabel(raw: string): string | null {
+  return baseIssueLabel(raw);
 }
 
 function issueKey(label: string): string {
@@ -217,16 +314,49 @@ function issueKey(label: string): string {
   return value != null && value > 0 ? `n:${value}` : `s:${label.toLowerCase()}`;
 }
 
+/** True when Metron, GCD, or Comic Vine supplied an issue count or an issue list. */
+export function seriesCatalogKnown(run: CatalogRun | null): boolean {
+  if (!run) return false;
+  if (catalogIssueCount(run.issueCount) != null) return true;
+  return run.numbers.length > 0;
+}
+
 /**
- * Missing issues against a catalog run, or holes between the lowest and highest
- * owned number when no run is known. Variants of one number count as owned.
- * Null when nothing is missing, so the header can omit the clause.
+ * Missing issues for the header. A known issue count is `1..N`, so it includes
+ * numbers before the first owned issue and after the last. With no catalog,
+ * only the holes between the first and last owned number are listed.
+ * Variants of one number count as owned. Null when nothing is missing.
  */
 export function seriesMissing(comics: SeriesCopy[], run: CatalogRun | null): MissingChip | null {
-  if (run && run.numbers.length > 0) return missingFromLabels(comics, run.numbers);
-  const count = catalogIssueCount(run?.issueCount);
-  if (count != null) return missingFromCount(comics, count);
-  return gapsBetweenOwned(comics);
+  const numeric = new Set<number>();
+  const text: string[] = [];
+  const owned = ownedKeys(comics);
+  const ownedNumbers = ownedIssueNumbers(comics);
+  if (seriesCatalogKnown(run) && run) {
+    const ceiling = catalogBaseCount(run.numbers, catalogIssueCount(run.issueCount));
+    if (ceiling != null) {
+      const present = new Set(ownedNumbers);
+      for (let issue = 1; issue <= ceiling; issue += 1) {
+        if (!present.has(issue)) numeric.add(issue);
+      }
+    }
+    for (const label of distinctIssueLabels(run.numbers)) {
+      const value = issueNumberValue(label);
+      if (value != null && value > 0) {
+        if (!owned.has(`n:${value}`)) numeric.add(value);
+      } else if (!owned.has(issueKey(label))) {
+        text.push(label);
+      }
+    }
+  } else {
+    for (let index = 0; index < ownedNumbers.length - 1; index += 1) {
+      for (let hole = ownedNumbers[index] + 1; hole < ownedNumbers[index + 1]; hole += 1) numeric.add(hole);
+    }
+  }
+  const collapsed = collapseNumbers([...numeric], "missing");
+  const count = collapsed.count + text.length;
+  if (count === 0) return null;
+  return { kind: "missing", count, parts: [...collapsed.parts, ...text] };
 }
 
 export function seriesHeaderSummary(comics: SeriesCopy[], run: CatalogRun | null): string {
@@ -235,12 +365,12 @@ export function seriesHeaderSummary(comics: SeriesCopy[], run: CatalogRun | null
   if (have) parts.push(have);
   const missing = seriesMissing(comics, run);
   if (missing) parts.push(missingClause(missing));
+  if (!seriesCatalogKnown(run)) parts.push("(catalog unknown)");
   return parts.join(" · ");
 }
 
 export function missingClause(missing: MissingChip, parts = missing.parts): string {
-  const word = missing.kind === "gaps" ? "Gaps" : "Missing";
-  return `${word} ${missing.count}: ${parts.join(", ")}`;
+  return `Missing ${missing.count}: ${parts.join(", ")}`;
 }
 
 /** Keep the first collapsed parts that fit, so a long list can offer "show all". */
@@ -258,71 +388,17 @@ export function truncateMissingParts(parts: string[], maxChars = 56): { shown: s
   return { shown, rest: parts.length - shown.length };
 }
 
-function missingFromLabels(comics: SeriesCopy[], labels: string[]): MissingChip | null {
-  const owned = ownedKeys(comics);
-  const numeric: number[] = [];
-  const text: string[] = [];
-  for (const label of distinctIssueLabels(labels)) {
-    const value = issueNumberValue(label);
-    if (value != null && value > 0) {
-      if (!owned.has(`n:${value}`)) numeric.push(value);
-    } else if (!owned.has(issueKey(label))) {
-      text.push(label);
-    }
-  }
-  const collapsed = collapseNumbers(numeric);
-  const count = collapsed.count + text.length;
-  if (count === 0) return null;
-  return { kind: "missing", count, parts: [...collapsed.parts, ...text] };
-}
-
-function missingFromCount(comics: SeriesCopy[], max: number): MissingChip | null {
-  const present = ownedIssueNumbers(comics).filter((value) => value >= 1 && value <= max);
-  const collapsed = missingThrough(max, present);
-  if (collapsed.count === 0) return null;
-  return { kind: "missing", count: collapsed.count, parts: collapsed.parts };
-}
-
-function gapsBetweenOwned(comics: SeriesCopy[]): MissingChip | null {
-  const owned = ownedIssueNumbers(comics);
-  if (owned.length === 0) return null;
-  const parts: string[] = [];
-  let count = 0;
-  for (let index = 0; index < owned.length - 1; index += 1) {
-    const from = owned[index] + 1;
-    const to = owned[index + 1] - 1;
-    if (from > to) continue;
-    count += to - from + 1;
-    parts.push(from === to ? `#${from}` : `#${from}-${to}`);
-  }
-  if (count === 0) return null;
-  return { kind: "gaps", count, parts };
-}
-
-function missingThrough(max: number, present: number[]): { count: number; parts: string[] } {
-  const parts: string[] = [];
-  let count = 0;
-  let cursor = 1;
-  for (const value of present) {
-    if (value > cursor) {
-      count += value - cursor;
-      parts.push(cursor === value - 1 ? `#${cursor}` : `#${cursor}-${value - 1}`);
-    }
-    cursor = value + 1;
-  }
-  if (cursor <= max) {
-    count += max - cursor + 1;
-    parts.push(cursor === max ? `#${cursor}` : `#${cursor}-${max}`);
-  }
-  return { count, parts };
-}
-
-function collapseNumbers(values: number[]): { count: number; parts: string[] } {
+/** Have marks both ends (`#1-#3`). Missing marks the start (`#1-14`), matching Alpha Flight. */
+function collapseNumbers(values: number[], style: "have" | "missing"): { count: number; parts: string[] } {
   const sorted = [...new Set(values)].sort((a, b) => a - b);
   const parts: string[] = [];
   let count = 0;
   let start: number | null = null;
   let prev: number | null = null;
+  const part = (from: number, to: number) => {
+    if (from === to) return `#${from}`;
+    return style === "have" ? `#${from}-#${to}` : `#${from}-${to}`;
+  };
   for (const value of sorted) {
     if (start == null || prev == null) {
       start = value;
@@ -333,13 +409,13 @@ function collapseNumbers(values: number[]): { count: number; parts: string[] } {
       prev = value;
       continue;
     }
-    parts.push(start === prev ? `#${start}` : `#${start}-${prev}`);
+    parts.push(part(start, prev));
     count += prev - start + 1;
     start = value;
     prev = value;
   }
   if (start != null && prev != null) {
-    parts.push(start === prev ? `#${start}` : `#${start}-${prev}`);
+    parts.push(part(start, prev));
     count += prev - start + 1;
   }
   return { count, parts };
@@ -357,8 +433,9 @@ function ownedKeys(comics: SeriesCopy[]): Set<string> {
 function ownedIssueNumbers(comics: SeriesCopy[]): number[] {
   const owned = new Set<number>();
   for (const comic of comics) {
-    const value = issueNumberValue(comic.issueNo);
-    if (value != null) owned.add(value);
+    const label = baseIssueLabel(comic.issueNo ?? "");
+    if (!label || !/^\d+$/.test(label)) continue;
+    owned.add(Number.parseInt(label, 10));
   }
   return [...owned].sort((a, b) => a - b);
 }
@@ -366,8 +443,8 @@ function ownedIssueNumbers(comics: SeriesCopy[]): number[] {
 export function ownedIssueCount(comics: SeriesCopy[]): number {
   const seen = new Set<string>();
   for (const comic of comics) {
-    const value = issueNumberValue(comic.issueNo);
-    seen.add(value != null ? `#${value}` : (comic.issueNo?.trim() || comic.id));
+    const label = baseIssueLabel(comic.issueNo ?? "");
+    seen.add(label ?? (comic.issueNo?.trim() || comic.id));
   }
   return seen.size;
 }

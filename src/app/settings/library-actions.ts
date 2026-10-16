@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { limitBlockFromError, limitNotices } from "@/lib/catalog/limit-notice";
+import { pausedLimitNotice } from "@/lib/catalog/limit-status";
 import { refetchOneCover, startCoverBackfillInBackground, startMetronEnrichmentInBackground } from "@/lib/covers/run";
+import { sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { prisma } from "@/lib/db";
 import { changedKeys } from "@/lib/log/query";
 import { logSettingsChange } from "@/lib/log/events";
@@ -10,7 +13,7 @@ import { DEMO_WISHLIST, isDemoCoreId, searchIndexFields } from "@/lib/maintenanc
 import { preferencesFromForm } from "@/lib/settings/preferences";
 import { getPreferences, savePreferences, setCoversPaused } from "@/lib/settings/service";
 
-export type LibraryState = { status: "idle" | "ok" | "error"; message: string };
+export type LibraryState = { status: "idle" | "ok" | "error"; message: string; notice?: string };
 
 export async function savePreferencesAction(_prev: LibraryState, formData: FormData): Promise<LibraryState> {
   try {
@@ -27,14 +30,15 @@ export async function savePreferencesAction(_prev: LibraryState, formData: FormD
 }
 
 export async function runCoversAction(): Promise<LibraryState> {
+  const notice = (await pausedLimitNotice(["Metron", "GCD"])) ?? "";
   const result = await startCoverBackfillInBackground();
   revalidatePath("/settings");
   revalidatePath("/covers");
   if (result === "unconfigured") {
-    return { status: "error", message: "Add Metron username and password, then start the backfill again." };
+    return { status: "error", message: "Add a Metron API token, or a username and password, then start the backfill again.", notice };
   }
-  if (result === "busy") return { status: "ok", message: "A cover backfill is already running." };
-  return { status: "ok", message: "Backfill started." };
+  if (result === "busy") return { status: "ok", message: "A cover backfill is already running.", notice };
+  return { status: "ok", message: "Backfill started.", notice };
 }
 
 export async function saveFillMissingAction(fillMissing: boolean): Promise<LibraryState> {
@@ -54,13 +58,14 @@ export async function enrichMatchedAction(): Promise<LibraryState> {
   if (!(await getPreferences()).covers.fillMissing) {
     return { status: "error", message: "Turn on Fill missing details from Metron to enrich matched issues." };
   }
+  const notice = (await pausedLimitNotice(["Metron"])) ?? "";
   const result = await startMetronEnrichmentInBackground();
   revalidatePath("/settings");
   revalidatePath("/covers");
-  if (result === "unconfigured") return { status: "error", message: "Add Metron username and password, then try enrichment again." };
-  if (result === "disabled") return { status: "error", message: "Turn on Fill missing details from Metron to enrich matched issues." };
-  if (result === "busy") return { status: "ok", message: "A Metron run is already going." };
-  return { status: "ok", message: "Enrichment started for matched issues." };
+  if (result === "unconfigured") return { status: "error", message: "Add a Metron API token, or a username and password, then try enrichment again.", notice };
+  if (result === "disabled") return { status: "error", message: "Turn on Fill missing details from Metron to enrich matched issues.", notice };
+  if (result === "busy") return { status: "ok", message: "A Metron run is already going.", notice };
+  return { status: "ok", message: "Enrichment started for matched issues.", notice };
 }
 
 export async function pauseCoversAction(): Promise<LibraryState> {
@@ -78,9 +83,14 @@ export async function refetchCoverAction(_prev: LibraryState, formData: FormData
     if ("error" in found) return { status: "error", message: found.error };
     const message = await refetchOneCover(found.id);
     revalidatePath("/", "layout");
-    return { status: message.startsWith("Fetched") ? "ok" : "error", message };
+    const live = await pausedLimitNotice(["Metron", "GCD"]);
+    const missed = Boolean(live) && (message.includes("paused until") || message.startsWith("No cover matched"));
+    const succeeded = message.startsWith("Fetched") || message.startsWith("Linked");
+    return { status: missed ? "error" : succeeded ? "ok" : "error", message: missed ? live ?? message : message, notice: live ?? "" };
   } catch (error) {
-    return { status: "error", message: error instanceof Error ? error.message : "Could not re-fetch that cover." };
+    const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
+    const notice = block ? limitNotices([block], []) : "";
+    return { status: "error", message: notice || (error instanceof Error ? error.message : "Could not re-fetch that cover."), notice };
   }
 }
 

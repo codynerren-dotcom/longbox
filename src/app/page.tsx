@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/page-header";
 import { prisma } from "@/lib/db";
 import { formatMoney } from "@/lib/format";
 import { getPreferences } from "@/lib/settings/service";
-import { computeStats } from "@/lib/stats";
+import { computeStats, topSeriesLabel } from "@/lib/stats";
 
 export const metadata = { title: "Dashboard" };
 
@@ -19,6 +19,7 @@ export default async function DashboardPage() {
       coverYear: true,
       purchasePrice: true,
       shelfFormat: true,
+      issueNo: true,
     },
   });
   const stats = computeStats(comics);
@@ -97,7 +98,7 @@ export default async function DashboardPage() {
                 </Link>
               </span>
               <span className="text-sm text-mist">
-                {series.count} issues · {series.copies} copies
+                {topSeriesLabel(series.count, series.copies)}
               </span>
             </li>
           ))}

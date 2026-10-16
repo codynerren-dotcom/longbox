@@ -1,9 +1,11 @@
 import type { CatalogMatch } from "@/lib/catalog/types";
 import type { ParsedBarcode } from "@/lib/barcode";
+import { pauseLabel, planGcdAcquire, noteGcdRetry, type GcdRateMode } from "@/lib/catalog/rate-limit";
 import { formatResumeTime, retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
-import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
+import { GcdNameMiss, GCD_NAME_PAGE_CAP, gcdSeriesNameKey, gcdSeriesNameQueries, gcdSeriesNameSegment } from "@/lib/catalog/gcd-name";
+import { catalogBaseCount, catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { readCollectedIssues } from "@/lib/shelf-format";
 
 type UnknownRecord = Record<string, unknown>;
@@ -75,6 +77,13 @@ export type GcdSeriesRow = {
   issues: Array<{ id: string; descriptor: string }>;
   /** From `issue_count` when the payload sends it. Absent on older rows. */
   issueCount?: number | null;
+  /** Publisher name when the payload includes one. A URL is kept as `publisherId`. */
+  publisher?: string | null;
+  publisherId?: string | null;
+  /** Country code from the series payload (`us`). */
+  country?: string | null;
+  /** Language code from the series payload (`en`). */
+  language?: string | null;
 };
 
 export type GcdIssueRow = {
@@ -105,14 +114,39 @@ export type GcdIssueRow = {
   comicvineIssueId: string | null;
   metronIssueId: string | null;
   collects?: string | null;
+  /**
+   * Scan URL from the issue `cover` field, or null when that field is blank.
+   * files1.comics.org blocks automated fetches, so match rows do not render it and backfill leaves `imageUrl` empty.
+   */
+  coverUrl?: string | null;
+};
+
+export type GcdNameSearch = {
+  /** Stop paging once a series with this normalized name is already in hand. */
+  matchName?: string | null;
+};
+
+/** Series and issue payloads are reused for a week. A hit does not spend a GCD request. */
+export const GCD_RESPONSE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type GcdCachedResponse = {
+  body: unknown;
+  fetchedAt: string;
+};
+
+export type GcdResponseCache = {
+  read(key: string): Promise<GcdCachedResponse | null>;
+  write(key: string, row: GcdCachedResponse): Promise<void>;
 };
 
 export type GcdCatalog = {
-  seriesByName: (name: string) => Promise<GcdSeriesRow[]>;
+  seriesByName: (name: string, options?: GcdNameSearch) => Promise<GcdSeriesRow[]>;
   /** Series detail. Optional so older test catalogs still typecheck. */
   seriesById?: (id: string) => Promise<GcdSeriesRow | null>;
   issue: (id: string) => Promise<GcdIssueRow | null>;
   issuesByBarcode: (code: string) => Promise<GcdIssueRow[]>;
+  /** Publisher name. Optional so older test catalogs still typecheck. */
+  publisher?: (id: string) => Promise<string | null>;
 };
 
 const MIN_GAP_MS = 2_000;
@@ -180,7 +214,7 @@ export function gcdRatePauseMessage(delayMs: number, resumeAt: number): string {
 async function pauseForRateLimit(response: Response, now = Date.now()): Promise<never> {
   const body = await response.text().catch(() => "");
   const explicit = retryAfterMs(response.headers, now) ?? retryAfterFromMessage(body);
-  const delay = gcdRetryDelay(explicit);
+  const delay = await takeGcdRetry(explicit, now);
   const resumeAt = now + delay;
   await writeLog({
     level: "info",
@@ -188,11 +222,24 @@ async function pauseForRateLimit(response: Response, now = Date.now()): Promise<
     message: gcdRatePauseMessage(delay, resumeAt),
     details: { delayMs: delay, resumeAt: new Date(resumeAt).toISOString() },
   });
-  throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
-    budget: "GCD rate limit",
+  const mode = await gcdRateMode();
+  throw new GcdBudgetError(pauseLabel("GCD", resumeAt), {
+    budget: mode === "authenticated" ? "GCD daily" : "GCD hourly",
     count: gcdHits.length,
     resumeAt,
   });
+}
+
+/** Retry-After is waited out in full. A missing hint uses the 30s, 1m, 2m, 5m, 10m ladder. */
+async function takeGcdRetry(explicitMs: number | null, now: number): Promise<number> {
+  if (process.env.VITEST === "true") return gcdRetryDelay(explicitMs);
+  const { ensureRateHydrated, readGcdWindow, saveGcdWindow } = await import("@/lib/catalog/rate-store");
+  await ensureRateHydrated();
+  const state = readGcdWindow();
+  const delay = explicitMs != null ? explicitMs : gcdBackoffMs(state.strikes);
+  const strikes = explicitMs != null ? state.strikes : state.strikes + 1;
+  await saveGcdWindow({ ...noteGcdRetry(state, delay, now), strikes });
+  return delay;
 }
 
 /**
@@ -210,17 +257,91 @@ export function gcdHourlyHold(now: number): number | null {
 }
 
 async function gcdPause(now = Date.now()): Promise<void> {
-  const resumeAt = gcdHourlyHold(now);
-  if (resumeAt != null) {
-    throw new GcdBudgetError("GCD rate limit reached. Later copies will stay unmatched.", {
-      budget: "GCD hourly",
-      count: gcdHits.length,
-      resumeAt,
+  if (process.env.VITEST === "true") {
+    const resumeAt = gcdHourlyHold(now);
+    if (resumeAt != null) {
+      throw new GcdBudgetError(pauseLabel("GCD", resumeAt), {
+        budget: "GCD hourly",
+        count: gcdHits.length,
+        resumeAt,
+      });
+    }
+    const wait = Math.max(0, nextGcdAt - now);
+    nextGcdAt = Math.max(nextGcdAt, now) + MIN_GAP_MS;
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    return;
+  }
+  const { ensureRateHydrated, readGcdWindow, saveGcdWindow } = await import("@/lib/catalog/rate-store");
+  await ensureRateHydrated();
+  const mode = await gcdRateMode();
+  const plan = planGcdAcquire(readGcdWindow(), now, mode);
+  if (plan.kind === "pause") {
+    await saveGcdWindow(plan.state);
+    throw new GcdBudgetError(pauseLabel("GCD", plan.hold.resumeAt), {
+      budget: plan.hold.budget,
+      count: plan.hold.count,
+      resumeAt: plan.hold.resumeAt,
     });
   }
-  const wait = Math.max(0, nextGcdAt - now);
-  nextGcdAt = Math.max(nextGcdAt, now) + MIN_GAP_MS;
-  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  await saveGcdWindow(plan.state);
+  if (plan.waitMs > 0) await new Promise((resolve) => setTimeout(resolve, plan.waitMs));
+}
+
+/** One outbound GCD request. Match, backfill, and the Settings probe all call this. */
+export async function reserveGcdRequest(now = Date.now()): Promise<void> {
+  await gcdPause(now);
+}
+
+/** Store a Retry-After so the next GCD call, including after a restart, waits it out. */
+export async function rememberGcdPause(resumeAt: number, now = Date.now()): Promise<void> {
+  const delay = Math.max(0, resumeAt - now);
+  await takeGcdRetry(delay > 0 ? delay : 0, now);
+}
+
+async function gcdRateMode(): Promise<GcdRateMode> {
+  const creds = await gcdCredentials();
+  return creds ? "authenticated" : "anonymous";
+}
+
+/** True when a saved username and password will be sent as Basic auth. */
+export async function gcdAccountSignedIn(): Promise<boolean> {
+  return (await gcdCredentials()) != null;
+}
+
+async function gcdCredentials(): Promise<{ username: string; password: string } | null> {
+  if (process.env.VITEST === "true") {
+    const username = process.env.GCD_USERNAME?.trim() ?? "";
+    const password = process.env.GCD_PASSWORD?.trim() ?? "";
+    if (!username || !password) return null;
+    return { username, password };
+  }
+  const { getSettings } = await import("@/lib/settings/service");
+  const settings = await getSettings();
+  if (!settings.gcd.username || !settings.gcd.password) return null;
+  return { username: settings.gcd.username, password: settings.gcd.password };
+}
+
+async function gcdAuthHeader(): Promise<string | null> {
+  const creds = await gcdCredentials();
+  if (!creds) return null;
+  return `Basic ${Buffer.from(`${creds.username}:${creds.password}`).toString("base64")}`;
+}
+
+async function withGcdAuth(headers: Record<string, string>): Promise<Record<string, string>> {
+  const authorization = await gcdAuthHeader();
+  if (!authorization) return headers;
+  return { ...headers, Authorization: authorization };
+}
+
+async function clearGcdStrikes(): Promise<void> {
+  if (process.env.VITEST === "true") {
+    gcdRateStrikes = 0;
+    return;
+  }
+  const { readGcdWindow, saveGcdWindow } = await import("@/lib/catalog/rate-store");
+  const state = readGcdWindow();
+  if (state.strikes === 0 && state.pausedUntil == null) return;
+  await saveGcdWindow({ ...state, strikes: 0, pausedUntil: null });
 }
 
 function gcdBase(): string {
@@ -250,6 +371,13 @@ function idFromApiUrl(value: unknown): string | null {
   if (!raw) return null;
   const match = raw.match(/\/(\d+)\/?(?:\?.*)?$/);
   return match?.[1] && match[1] !== "0" ? match[1] : null;
+}
+
+function seriesYearFromName(name: string): number | null {
+  const match = name.match(/\(((?:18|19|20)\d{2})\s+series\)\s*$/i);
+  if (!match?.[1]) return null;
+  const year = Number.parseInt(match[1], 10);
+  return Number.isFinite(year) ? year : null;
 }
 
 function yearFrom(value: unknown): number | null {
@@ -282,6 +410,7 @@ export function parseGcdSeries(value: unknown): GcdSeriesRow | null {
       return { id: issueId, descriptor: text(descriptors[index]) ?? "" };
     })
     .filter((issue): issue is { id: string; descriptor: string } => issue !== null);
+  const publisher = publisherOf(row.publisher);
   return {
     id,
     name: name.replace(/\s*\((?:18|19|20)\d{2}\s+series\)\s*$/i, "").trim(),
@@ -290,16 +419,34 @@ export function parseGcdSeries(value: unknown): GcdSeriesRow | null {
     format: text(row.publishing_format),
     issues,
     issueCount: catalogIssueCount(row.issue_count),
+    publisher: publisher.name,
+    publisherId: publisher.id,
+    country: text(row.country),
+    language: text(row.language),
   };
 }
 
-/** Issue descriptors when the series lists them, otherwise `issue_count` as `1..N`. */
+function publisherOf(value: unknown): { name: string | null; id: string | null } {
+  const record = asRecord(value);
+  if (record) {
+    return {
+      name: text(record.name) ?? text(record.publisher_name),
+      id: idFromApiUrl(record.api_url) ?? idFromApiUrl(record.url),
+    };
+  }
+  const raw = text(value);
+  if (!raw) return { name: null, id: null };
+  if (/^https?:\/\//i.test(raw)) return { name: null, id: idFromApiUrl(raw) };
+  return { name: raw, id: null };
+}
+
+/** Issue descriptors when the series lists them, otherwise `issue_count` as `1..N`. Variant rows collapse to the base number. */
 export function parseGcdSeriesRun(value: unknown): { numbers: string[]; issueCount: number | null } | null {
   const row = seriesRecord(value);
   if (!row) return null;
   const descriptors = Array.isArray(row.issue_descriptors) ? row.issue_descriptors.map((item) => text(item)).filter((item): item is string => item != null) : [];
-  const issueCount = catalogIssueCount(row.issue_count);
   const numbers = distinctIssueLabels(descriptors);
+  const issueCount = catalogBaseCount(descriptors, catalogIssueCount(row.issue_count));
   if (numbers.length > 0) return { numbers, issueCount };
   if (issueCount != null) return { numbers: [], issueCount };
   return null;
@@ -319,7 +466,22 @@ export async function fetchGcdSeriesRun(
 ): Promise<{ numbers: string[]; issueCount: number | null } | null> {
   if (!/^\d{1,12}$/.test(seriesId) || seriesId === "0") return null;
   const body = await gcdFetch(fetchImpl, `/api/series/${seriesId}/`);
+  if (body == null) return null;
   return parseGcdSeriesRun(body);
+}
+
+/** The issue `cover` field is a scan URL or "". Anything that is not https is dropped. */
+export function gcdCoverScan(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "http:") url.protocol = "https:";
+    if (url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 export function parseGcdIssue(value: unknown, seriesYear: number | null = null): GcdIssueRow | null {
@@ -328,6 +490,7 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
   const id = idFromApiUrl(row.api_url) ?? text(row.id);
   const seriesName = text(row.series_name);
   if (!id || !seriesName) return null;
+  const namedYear = seriesYearFromName(seriesName);
   const stories = Array.isArray(row.story_set) ? row.story_set.map(asRecord).filter((story): story is UnknownRecord => story !== null) : [];
   const story = stories.find((item) => text(item.type) === "comic story") ?? stories.find((item) => text(item.type) !== "cover") ?? null;
   const cover = stories.find((item) => text(item.type) === "cover") ?? null;
@@ -353,10 +516,11 @@ export function parseGcdIssue(value: unknown, seriesYear: number | null = null):
     artist: creditText(story?.pencils),
     coverArtist: creditText(cover?.pencils),
     characters: creditText(story?.characters),
-    seriesYear,
+    seriesYear: seriesYear ?? namedYear,
     comicvineIssueId: foreignDigits(row, ["cv_id", "comicvine_id", "comicvine_issue_id"]),
     metronIssueId: foreignDigits(row, ["metron_id", "metron_issue_id"]),
     collects: readCollectedIssues(row),
+    coverUrl: gcdCoverScan(row.cover),
   };
 }
 
@@ -395,10 +559,10 @@ async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS):
   let response: Response;
   try {
     response = await fetch(url, {
-      headers: {
+      headers: await withGcdAuth({
         Accept: "application/json",
         "User-Agent": "longbox/1.0 (personal comic shelf)",
-      },
+      }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
@@ -413,7 +577,9 @@ async function gcdGet(pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS):
   }
   await recordFetch({ source: "system", url, startedAt: started, status: response.status });
   if (response.status === 429) await pauseForRateLimit(response);
-  gcdRateStrikes = 0;
+  await clearGcdStrikes();
+  const missed = await missGcdStatus(response, pathAndQuery, url);
+  if (missed === "empty") return null;
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) {
@@ -433,34 +599,128 @@ export async function gcdByBarcode(_parsed: ParsedBarcode): Promise<CatalogMatch
 
 export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
   return {
-    async seriesByName(name) {
-      const body = await gcdFetch(fetchImpl, `/api/series/name/${encodeURIComponent(name.trim())}/`);
-      return asArray(body).map(parseGcdSeries).filter((row): row is GcdSeriesRow => row !== null);
+    async seriesByName(name, options) {
+      return readGcdNamePages(fetchImpl, name, options?.matchName);
     },
     async seriesById(id) {
       if (!/^\d{1,12}$/.test(id) || id === "0") return null;
       const body = await gcdFetch(fetchImpl, `/api/series/${id}/`);
+      if (body == null) return null;
       return parseGcdSeries(body);
     },
     async issue(id) {
       if (!/^\d{1,12}$/.test(id)) return null;
       const body = await gcdFetch(fetchImpl, `/api/issue/${id}/`);
+      if (body == null) return null;
       return parseGcdIssue(body);
     },
     async issuesByBarcode() {
       return [];
     },
+    async publisher(id) {
+      if (!/^\d{1,12}$/.test(id) || id === "0") return null;
+      const body = await gcdFetch(fetchImpl, `/api/publisher/${id}/`);
+      if (body == null) return null;
+      return text(asRecord(body)?.name);
+    },
   };
 }
 
+/**
+ * A slash in the name is not put in the path. The rarest long part is queried,
+ * then the same title with the slash removed. Paging stops once `matchName`
+ * is already in the results, and the later name queries are skipped.
+ * Every live page reserves one GCD request.
+ */
+async function readGcdNamePages(fetchImpl: typeof fetch, name: string, matchName?: string | null): Promise<GcdSeriesRow[]> {
+  const target = gcdSeriesNameKey((matchName ?? "").trim() || name);
+  const queries = gcdSeriesNameQueries(name);
+  const rows: GcdSeriesRow[] = [];
+  const seen = new Set<string>();
+  let missed = 0;
+  for (const query of queries) {
+    const segment = gcdSeriesNameSegment(query);
+    if (!segment) continue;
+    try {
+      const pageRows = await readOneGcdName(fetchImpl, segment, target);
+      for (const row of pageRows) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        rows.push(row);
+      }
+    } catch (error) {
+      if (error instanceof GcdNameMiss) {
+        missed += 1;
+        continue;
+      }
+      throw error;
+    }
+    if (target && rows.some((row) => gcdSeriesNameKey(row.name) === target)) break;
+  }
+  if (rows.length === 0 && missed > 0 && missed === queries.length) throw new GcdNameMiss(name.trim());
+  return rows;
+}
+
+async function readOneGcdName(fetchImpl: typeof fetch, segment: string, target: string): Promise<GcdSeriesRow[]> {
+  const rows: GcdSeriesRow[] = [];
+  const seen = new Set<string>();
+  const seenPaths = new Set<string>();
+  let path: string | null = `/api/series/name/${segment}/`;
+  for (let page = 0; page < GCD_NAME_PAGE_CAP && path; page += 1) {
+    if (seenPaths.has(path)) break;
+    seenPaths.add(path);
+    let body: unknown;
+    try {
+      body = await gcdFetch(fetchImpl, path);
+    } catch (error) {
+      if (error instanceof GcdNameMiss) {
+        if (page === 0) throw error;
+        break;
+      }
+      throw error;
+    }
+    if (body == null) break;
+    for (const row of asArray(body).map(parseGcdSeries)) {
+      if (!row || seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+    }
+    if (target && rows.some((row) => gcdSeriesNameKey(row.name) === target)) break;
+    path = nextGcdNamePage(body);
+  }
+  return rows;
+}
+
+function nextGcdNamePage(body: unknown): string | null {
+  const next = text(asRecord(body)?.next);
+  if (!next) return null;
+  try {
+    const url = new URL(next, `${gcdBase()}/`);
+    const base = new URL(gcdBase());
+    if (url.host !== base.host) return null;
+    if (!url.pathname.startsWith("/api/series/name/")) return null;
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
 async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS): Promise<unknown> {
+  const cacheKey = gcdResponseCacheKey(pathAndQuery);
+  if (cacheKey) {
+    const cached = await readFreshGcdResponse(cacheKey);
+    if (cached.hit) return cached.body;
+  }
   await gcdPause();
   const url = `${gcdBase()}${pathAndQuery}`;
   const started = Date.now();
   let response: Response;
   try {
     response = await fetchImpl(url, {
-      headers: { Accept: "application/json", "User-Agent": "longbox/1.0 (personal comic shelf; CC BY-SA)" },
+      headers: await withGcdAuth({
+        Accept: "application/json",
+        "User-Agent": "longbox/1.0 (personal comic shelf; CC BY-SA)",
+      }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
@@ -475,29 +735,148 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs
   }
   await recordFetch({ source: "gcd", url, startedAt: started, status: response.status });
   if (response.status === 429) await pauseForRateLimit(response);
-  gcdRateStrikes = 0;
+  await clearGcdStrikes();
+  const missed = await missGcdStatus(response, pathAndQuery, url);
+  if (missed === "empty") return null;
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) throw new Error("GCD response was not JSON");
-  return response.json();
+  const body: unknown = await response.json();
+  if (cacheKey) await writeGcdResponse(cacheKey, body);
+  return body;
+}
+
+/** `/api/series/` and `/api/issue/` payloads, including a name-search page. Publisher lookups stay live. */
+function gcdResponseCacheKey(pathAndQuery: string): string | null {
+  const path = pathAndQuery.split("?")[0] ?? "";
+  if (/^\/api\/issue\/\d+\/?$/.test(path)) return `gcd-cache:${pathAndQuery}`;
+  if (/^\/api\/series\/\d+\/?$/.test(path)) return `gcd-cache:${pathAndQuery}`;
+  if (path.startsWith("/api/series/name/")) return `gcd-cache:${pathAndQuery}`;
+  return null;
+}
+
+let injectedGcdResponseCache: GcdResponseCache | null | undefined;
+
+/** Tests inject a store. Production uses `AppSetting`. Vitest leaves the cache off unless injected. */
+export function setGcdResponseCacheForTests(cache: GcdResponseCache | null): void {
+  injectedGcdResponseCache = cache;
+}
+
+function activeGcdResponseCache(): GcdResponseCache | null {
+  if (injectedGcdResponseCache !== undefined) return injectedGcdResponseCache;
+  if (process.env.VITEST === "true") return null;
+  return prismaGcdResponseCache;
+}
+
+const prismaGcdResponseCache: GcdResponseCache = {
+  async read(key) {
+    const { prisma } = await import("@/lib/db");
+    const row = await prisma.appSetting.findUnique({ where: { key } });
+    return parseGcdCachedResponse(row?.plain ?? null);
+  },
+  async write(key, row) {
+    const { prisma } = await import("@/lib/db");
+    const plain = JSON.stringify(row);
+    await prisma.appSetting.upsert({
+      where: { key },
+      create: { key, secret: null, plain },
+      update: { secret: null, plain },
+    });
+  },
+};
+
+function parseGcdCachedResponse(plain: string | null): GcdCachedResponse | null {
+  if (!plain) return null;
+  try {
+    const value = JSON.parse(plain) as { body?: unknown; fetchedAt?: unknown };
+    if (!value || typeof value !== "object" || typeof value.fetchedAt !== "string") return null;
+    if (!("body" in value)) return null;
+    return { body: value.body, fetchedAt: value.fetchedAt };
+  } catch {
+    return null;
+  }
+}
+
+async function readFreshGcdResponse(key: string): Promise<{ hit: true; body: unknown } | { hit: false }> {
+  const cache = activeGcdResponseCache();
+  if (!cache) return { hit: false };
+  try {
+    const row = await cache.read(key);
+    if (!row) return { hit: false };
+    const then = Date.parse(row.fetchedAt);
+    if (Number.isNaN(then)) return { hit: false };
+    const age = Date.now() - then;
+    if (age < 0 || age >= GCD_RESPONSE_MAX_AGE_MS) return { hit: false };
+    return { hit: true, body: row.body };
+  } catch {
+    return { hit: false };
+  }
+}
+
+async function writeGcdResponse(key: string, body: unknown): Promise<void> {
+  const cache = activeGcdResponseCache();
+  if (!cache) return;
+  try {
+    await cache.write(key, { body, fetchedAt: new Date().toISOString() });
+  } catch {
+    return;
+  }
+}
+
+/** A 404 on `/api/series/name/` is an empty name search. Any other 404 is a missing record. */
+async function missGcdStatus(response: Response, pathAndQuery: string, url: string): Promise<"empty" | null> {
+  if (response.ok) return null;
+  if (response.status !== 404) return null;
+  if (!isSeriesNamePath(pathAndQuery)) return "empty";
+  const label = seriesNameLabel(pathAndQuery);
+  await writeLog({
+    level: "info",
+    source: "gcd",
+    message: `No GCD series named ${label}`,
+    details: { url },
+  });
+  throw new GcdNameMiss(label);
+}
+
+function isSeriesNamePath(path: string): boolean {
+  return path.startsWith("/api/series/name/");
+}
+
+function seriesNameLabel(path: string): string {
+  const match = path.match(/\/api\/series\/name\/([^/?]+)/);
+  const raw = match?.[1] ?? "";
+  if (!raw) return path;
+  try {
+    const decoded = decodeURIComponent(raw).replace(/\s+/g, " ").trim();
+    return decoded || raw;
+  } catch {
+    return raw;
+  }
 }
 
 export async function gcdSearch(query: string, issueNo?: string): Promise<CatalogMatch[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
-  const seriesPath = `/api/series/name/${encodeURIComponent(trimmed)}/`;
-  try {
-    const body = await gcdGet(seriesPath);
-    const seriesList = asArray(body);
-    const first = asRecord(seriesList[0] ?? body);
-    const seriesId = text(first?.id);
-    if (!seriesId) return [];
-    const issueBody = await gcdGet(`/api/series/${seriesId}/issues/`);
-    return asArray(issueBody)
-      .map((item) => toMatch(item, ""))
-      .filter((match): match is CatalogMatch => match !== null)
-      .filter((match) => (issueNo?.trim() ? match.issueNo === issueNo.trim() : true));
-  } catch {
-    return [];
+  for (const name of gcdSeriesNameQueries(trimmed)) {
+    const segment = gcdSeriesNameSegment(name);
+    if (!segment) continue;
+    try {
+      const body = await gcdGet(`/api/series/name/${segment}/`);
+      if (body == null) continue;
+      const seriesList = asArray(body);
+      const first = asRecord(seriesList[0] ?? body);
+      const seriesId = text(first?.id);
+      if (!seriesId) continue;
+      const issueBody = await gcdGet(`/api/series/${seriesId}/issues/`);
+      if (issueBody == null) continue;
+      return asArray(issueBody)
+        .map((item) => toMatch(item, ""))
+        .filter((match): match is CatalogMatch => match !== null)
+        .filter((match) => (issueNo?.trim() ? match.issueNo === issueNo.trim() : true));
+    } catch (error) {
+      if (error instanceof GcdNameMiss) continue;
+      return [];
+    }
   }
+  return [];
 }

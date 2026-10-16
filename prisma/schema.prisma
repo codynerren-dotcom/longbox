@@ -115,6 +115,7 @@ model Comic {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   priceSnapshots     PriceSnapshot[]
+  searchQueues       SearchQueue[]
 
   @@index([seriesSort])
   @@index([coreSeriesId])
@@ -176,6 +177,29 @@ model AppLog {
   @@index([createdAt])
   @@index([level, createdAt])
   @@index([source, createdAt])
+}
+
+/// A manual search or re-link waiting for a source window to reset. One row per comic and source.
+model SearchQueue {
+  id        String   @id @default(cuid())
+  comicId   String
+  comic     Comic    @relation(fields: [comicId], references: [id], onDelete: Cascade)
+  source    String
+  kind      String
+  label     String
+  resumeAt  DateTime
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@unique([comicId, source])
+  @@index([resumeAt])
+}
+
+/// Rate-limit windows, connect pauses, and job cursors. Survives an app restart.
+model ApiWindow {
+  key       String   @id
+  payload   Json
+  updatedAt DateTime @updatedAt
 }
 
 /// History table for a future PriceProvider. v1 does not write rows.

@@ -3,7 +3,10 @@
 import { unlink } from "node:fs/promises";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { linkIssueToCatalog, loadIssueCovers, repullLinkedCover, searchIssueCatalog, unlinkIssueCatalog } from "@/lib/catalog/link-issue";
+import { linkIssueToCatalog, loadIssueCovers, repullLinkedCover, searchIssueCatalog, unlinkIssueCatalog, type MatchSearchResult } from "@/lib/catalog/link-issue";
+import { readCrossMiss } from "@/lib/covers/cross-miss";
+import { matchHitFromIssue } from "@/lib/catalog/match-hits";
+import { hintFromBlocks, type QueueHint } from "@/lib/catalog/search-queue";
 import { parseGcdIssueRef } from "@/lib/catalog/gcd-ref";
 import { loadGcdIssueHits } from "@/lib/covers/gcd-match";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
@@ -93,7 +96,7 @@ export async function searchMatchesAction(args: {
   shelfSeries?: string | null;
   facsimile?: boolean;
   comicId?: string | null;
-}): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
+}): Promise<MatchSearchResult> {
   return searchIssueCatalog(args);
 }
 
@@ -101,23 +104,28 @@ export async function loadMatchCoversAction(source: CatalogSource, issueId: stri
   return loadIssueCovers(source, issueId);
 }
 
-export async function loadGcdMatchAction(ref: string): Promise<{ ok: true; hits: MatchHit[] } | { ok: false; message: string }> {
+export async function loadGcdMatchAction(ref: string): Promise<{ ok: true; hits: MatchHit[]; notice: string | null; queue: QueueHint | null } | { ok: false; message: string; notice: string | null; queue: QueueHint | null }> {
   const id = parseGcdIssueRef(ref);
-  if (!id) return { ok: false, message: "Enter a GCD issue id or a comics.org issue URL." };
+  if (!id) return { ok: false, message: "Enter a GCD issue id or a comics.org issue URL.", notice: null, queue: null };
   try {
     const hits = await loadGcdIssueHits(ref);
-    if (hits.length === 0) return { ok: false, message: `GCD has no issue ${id}.` };
+    if (hits.length === 0) return { ok: false, message: `GCD has no issue ${id}.`, notice: null, queue: null };
     await writeLog({
       level: "info",
       source: "gcd",
       message: `Match load of GCD ${id} returned ${hits.length}.`,
       details: { id, count: hits.length },
     });
-    return { ok: true, hits };
+    return { ok: true, hits, notice: null, queue: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "GCD load failed.";
+    const { limitBlockFromError, limitNotices } = await import("@/lib/catalog/limit-notice");
+    const { sharedMetronLimiter } = await import("@/lib/covers/metron-client");
+    const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
+    const notice = block ? limitNotices([block], []) || null : null;
+    const queue = block ? hintFromBlocks("gcd", [block], "search") : null;
+    const message = notice ?? (error instanceof Error ? error.message : "GCD load failed.");
     await writeLog({ level: "warn", source: "gcd", message, details: { id } });
-    return { ok: false, message };
+    return { ok: false, message, notice, queue };
   }
 }
 
@@ -128,11 +136,34 @@ export async function linkMatchAction(args: {
   useCover: boolean;
   fillMissing: boolean;
   overwrite?: boolean;
+  replaceExisting?: boolean;
   coverImageUrl: string | null;
-}): Promise<{ ok: boolean; message: string }> {
+}): Promise<{ ok: boolean; message: string; notice: string | null; queue: QueueHint | null; hits?: MatchHit[]; candidateNote?: string | null }> {
   const result = await linkIssueToCatalog(args);
   if (result.ok) await refreshIssue(args.comicId);
   return result;
+}
+
+export async function loadCrossCandidatesAction(comicId: string): Promise<{ message: string; hits: MatchHit[] } | null> {
+  const comic = await prisma.comic.findUnique({
+    where: { id: comicId },
+    select: { metronIssueId: true, comicvineIssueId: true, gcdIssueId: true },
+  });
+  if (!comic || comic.metronIssueId) return null;
+  const cv = digitsId(comic.comicvineIssueId);
+  const gcd = digitsId(comic.gcdIssueId);
+  if (!cv && !gcd) return null;
+  const stored = await readCrossMiss(cv, gcd);
+  if (!stored || stored.hits.length === 0) return null;
+  const hits = stored.hits.map(matchHitFromIssue).filter((hit): hit is MatchHit => hit !== null);
+  if (hits.length === 0) return null;
+  return { message: stored.reason, hits };
+}
+
+function digitsId(value: string | null): string | null {
+  const text = value?.trim() ?? "";
+  if (!/^\d{1,12}$/.test(text) || text === "0") return null;
+  return text;
 }
 
 export async function unlinkMatchAction(comicId: string, source: CatalogSource): Promise<{ ok: boolean; message: string }> {

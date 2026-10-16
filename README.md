@@ -43,6 +43,7 @@ See `.env.example`. Nothing secret is committed.
 | `METRON_API_BASE` | Default `https://metron.cloud/api`. |
 | `COVERS_DIR` | Where downloaded covers are stored. Compose uses `/data/covers` on the `longbox_covers` volume. Unset on the host, the app uses `./data/covers`. |
 | `GCD_API_BASE` | Default `https://www.comics.org`. |
+| `GCD_USERNAME` / `GCD_PASSWORD` | Host fallback only. Compose does not pass them. Save the pair in Settings (the password is encrypted). Blank stays anonymous (30 per hour). A saved pair uses 2,000 per day. |
 | `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | Reserved for the eBay price stub. Unused in v1. |
 | `LONGBOX_LOG` | Set to `off` to stop writing Logs. Unset, logging stays on. |
 | `LONGBOX_COMMIT` | Shown on Settings → About. Compose passes the git commit when it is set. |
@@ -77,13 +78,13 @@ Issues start without cover art. The backfill asks Metron for each one that does 
 
 A Comic Vine id with no Metron id is looked up on Metron with `/api/issue/?cv_id=`. A GCD id uses `/api/issue/?gcd_id=`. One exact issue is linked, and its cover and blank fields follow the usual backfill rules. A hand-picked Metron id and an uploaded cover stay as they are. A Metron match stores the Comic Vine id and GCD id from that Metron issue when those fields are empty. The same pass runs at the start of cover backfill for copies that already have a Comic Vine or GCD id.
 
-When Metron has no confident match, the Grand Comics Database (`GCD_API_BASE`, default `https://www.comics.org`) is the fallback. GCD calls stay at least two seconds apart and stop after 30 in an hour. Issue data is CC BY-SA: enriched fields show “Data from GCD”. Cover scans are not downloaded or hotlinked. The issue page links to “View on GCD” and the GCD cover page. The Match panel has a GCD tab.
+When Metron has no confident match, the Grand Comics Database (`GCD_API_BASE`, default `https://www.comics.org`) is the fallback. GCD calls stay at least two seconds apart and stop after 30 in an hour. Issue data is CC BY-SA: enriched fields show “Data from GCD”. The Match panel GCD tab does not hotlink `files1.comics.org` scans, because that host returns 403 to automated fetches. Each row shows a “Cover on GCD” placeholder and a View on GCD link. Use this cover starts unchecked on a GCD row. Checking it looks up the same issue on Metron or Comic Vine, by barcode and then by series name and number, and downloads that catalog's cover, preferring the exact variant. If neither has one, the shelf cover stays and the link is still saved. Linking a Comic Vine issue with Use this cover downloads that image. Use this cover starts checked for Metron and Comic Vine when the copy has no cover or only an automatic one. An uploaded or photographed cover stays until Replace existing is checked. The issue page still links to “View on GCD”.
 
 A linked copy whose release year and cover year differ by more than two years, or that looks like a facsimile or other reprint edition, shows up under **Review suspect matches** on Cover backfill (also linked from Settings). Unlink and Re-match are explicit. A hand-picked Metron, Comic Vine, or GCD link is left in place until you unlink it.
 
 A confident Metron image is downloaded onto the `longbox_covers` volume and served by the app at `/covers/files/…`. The grid and the issue page use that file, and fall back to the gradient placeholder when it is missing.
 
-Requests stay under Metron's burst (about 20 per minute) and daily cap (5000). A `429` waits for `Retry-After` and then resumes. The run is safe to start again: matched files are skipped, and unmatched issues stay on **Cover backfill** until you queue them again or paste a Metron issue id.
+Requests go through the shared limiter described under External API rate limits. A `429` waits for `Retry-After` and then resumes. The run is safe to start again: matched files are skipped, and unmatched issues stay on **Cover backfill** until you queue them again or paste a Metron issue id. A paused job continues from the last comic after the window resets, including after a restart.
 
 ```bash
 npm run covers:backfill
@@ -97,6 +98,21 @@ docker compose exec app npm run covers:backfill
 
 The same job is the **Backfill covers** button on the Cover backfill page.
 
+## External API rate limits
+
+Catalog calls to Metron, the Grand Comics Database, and Comic Vine share one limiter. Each window and its resume time is stored in Postgres (`ApiWindow`), so a restart keeps the same counters.
+
+- **Metron.** Read `X-RateLimit-Burst-*` and `X-RateLimit-Sustained-*` on every response. Before the first response the fallback is 20 per minute and 5,000 per day. Stop while one request is still remaining. Space the burst (about one request every 3 seconds at 20 per minute). A `429` waits out `Retry-After`.
+- **GCD.** Anonymous calls use 30 per sliding hour. Saved basic auth in Settings uses 2,000 per day. `Retry-After` is waited out in full.
+- **Comic Vine.** 200 requests per resource (issues, volumes, search, and the other endpoint types) per hour, at most one per second. HTTP 420, HTTP 429, and JSON status 107 pause that resource.
+- **Cover images.** `files1.comics.org` returns 403 for automated cover fetches, so those scans are not downloaded or hotlinked. Comic Vine image downloads use their own persisted gap of at most one per second and do not spend the Comic Vine API budget. Metron cover files use the shared cover window. Comic Vine's 200 per resource per hour applies to API resources, not image files.
+
+Background jobs pause with a reason and a resume time, then continue from a saved cursor. Match-panel searches use the same budget and keep a small slice so the shelf can still search while a job runs. When a source is paused, the UI says so, for example `Metron paused until 2:14 PM`. Settings → API usage shows used, limit, reset, and that pause for each source.
+
+A new integration has to route through that limiter, cite its published limits in code, read rate-limit headers, honor `Retry-After`, and persist its window across restarts. `npm run validate` fails if `src` calls `fetch()` to an external host without reserving a window first.
+
+A manual search, re-match, or backfill shows a notice when a source is already at its limit, for example `Metron limit reached (20/min). Resets at 11:42 AM.` If another source was still searched, the notice says so. A Metron connect pause says `Metron unreachable, retrying at 11:42 AM.` The time is America/Chicago. Queue it on a search or re-link keeps that request until the window resets, runs it before background jobs, and shows it under Logs with the reset time until you cancel it or it finishes.
+
 ## Settings
 
 **Settings** is in the desktop sidebar and on the mobile More tab. The page is grouped into cards:
@@ -109,11 +125,12 @@ The same job is the **Backfill covers** button on the Cover backfill page.
 - Scanning sets the camera, confirm versus auto-add, and beep or vibrate.
 - Data maintenance lists possible duplicates, rebuilds the search sort fields, and can clear the synthetic demo shelf (core ids 900001–900030).
 - About shows the version, commit, and database counts.
-- Metron, Comic Vine, and eBay credentials, plus the `SEED_ON_EMPTY` toggle, stay on the same page.
+- API usage shows each source's used count, limit, reset time, and whether it is paused.
+- Metron, GCD, Comic Vine, and eBay credentials, plus the `SEED_ON_EMPTY` toggle, stay on the same page.
 
 A value saved in the database overrides the environment variable. Clear removes the database value and the environment is the fallback again.
 
-Passwords, API keys, and client secrets are encrypted with AES-GCM. The key is `LONGBOX_SECRET_KEY`, or a key file written on the data volume the first time that variable is empty. Those fields show a mask, plus Replace and Clear. Usernames and client ids stay visible, including the saved value. Test connection checks Metron, Comic Vine, and eBay without returning a saved secret.
+Passwords, API keys, and client secrets are encrypted with AES-GCM. The key is `LONGBOX_SECRET_KEY`, or a key file written on the data volume the first time that variable is empty. Those fields show a mask, plus Replace and Clear. Usernames and client ids stay visible, including the saved value. Test connection checks Metron, GCD, Comic Vine, and eBay without returning a saved secret.
 
 ## ZimaOS
 

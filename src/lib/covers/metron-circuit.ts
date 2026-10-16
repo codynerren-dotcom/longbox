@@ -9,8 +9,8 @@ import { writeLog } from "@/lib/log/write";
 
 /** Consecutive connect failures before every Metron call waits. */
 export const METRON_CIRCUIT_FAILURES = 3;
-/** First pause after the circuit opens. */
-export const METRON_CIRCUIT_BASE_MS = 15 * 60 * 1000;
+/** First pause after the circuit opens. A probe is not sent more often than this. */
+export const METRON_CIRCUIT_BASE_MS = 30 * 60 * 1000;
 /** Longest pause while the host is still failing. */
 export const METRON_CIRCUIT_MAX_MS = 2 * 60 * 60 * 1000;
 
@@ -27,7 +27,14 @@ function fresh(): CircuitState {
 }
 
 let memory = fresh();
+let hydratedFromDb = false;
 const memoryOnly = process.env.VITEST === "true";
+
+/** Copy a database row into the in-process breaker after boot. */
+export function hydrateMetronCircuit(state: CircuitState): void {
+  memory = normalize(state);
+  hydratedFromDb = true;
+}
 
 function circuitFile(): string {
   return path.join(coversDir(), FILE_NAME);
@@ -47,7 +54,7 @@ function normalize(value: unknown): CircuitState {
 }
 
 function readState(): CircuitState {
-  if (memoryOnly) return memory;
+  if (memoryOnly || hydratedFromDb) return memory;
   try {
     return normalize(JSON.parse(readFileSync(circuitFile(), "utf8")));
   } catch {
@@ -57,12 +64,14 @@ function readState(): CircuitState {
 
 function writeState(state: CircuitState): void {
   memory = state;
+  hydratedFromDb = true;
   if (memoryOnly) return;
+  void import("@/lib/catalog/rate-store").then((store) => store.saveCircuitWindow(state));
   try {
     mkdirSync(coversDir(), { recursive: true });
     writeFileSync(circuitFile(), JSON.stringify(state));
   } catch {
-    // The next call reads whatever is on disk.
+    // The database row is the copy that survives a restart.
   }
 }
 
