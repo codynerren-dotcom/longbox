@@ -142,14 +142,14 @@ export function groupQuantity(items: Array<{ quantity: number }>): number {
   return items.reduce((sum, item) => sum + copyQuantity(item), 0);
 }
 
-/** Distinct base issues, then copies when a number has more than one. `3G` and `3H` are one issue. */
+/** Distinct base issues, then copies when a number has more than one. `3G` and `3H` are one comic. */
 export function copyCountLabel(comics: CopyIdentity[]): string {
   const issues = distinctBaseIssues(comics);
   const copies = groupQuantity(comics);
-  const issueLabel = issues === 1 ? "1 issue" : `${issues} issues`;
-  if (copies === issues) return issueLabel;
+  const comicLabel = issues === 1 ? "1 comic" : `${issues} comics`;
+  if (copies === issues) return comicLabel;
   const copyLabel = copies === 1 ? "1 copy" : `${copies} copies`;
-  return `${issueLabel} · ${copyLabel}`;
+  return `${comicLabel} · ${copyLabel}`;
 }
 
 function distinctBaseIssues(comics: CopyIdentity[]): number {
@@ -167,13 +167,11 @@ function distinctBaseIssues(comics: CopyIdentity[]): number {
   return seen.size + unlabeled;
 }
 
-const RANGE_DASH = "\u2013";
-
-/** Owned numbers only, collapsed into ranges: `Have: #1–3, #5–6`, or `Have: #5`. */
+/** Owned numbers only. Every number has a `#`, including both ends of a range: `Have: #1-#3, #5-#6`. */
 export function haveRange(comics: SeriesCopy[]): string | null {
   const numbers = ownedIssueNumbers(comics);
   if (numbers.length === 0) return null;
-  return `Have: ${collapseNumbers(numbers).parts.join(", ")}`;
+  return `Have: ${collapseNumbers(numbers, "have").parts.join(", ")}`;
 }
 
 /**
@@ -343,7 +341,7 @@ export function seriesMissing(comics: SeriesCopy[], run: CatalogRun | null): Mis
       for (let hole = ownedNumbers[index] + 1; hole < ownedNumbers[index + 1]; hole += 1) numeric.add(hole);
     }
   }
-  const collapsed = collapseNumbers([...numeric]);
+  const collapsed = collapseNumbers([...numeric], "missing");
   const count = collapsed.count + text.length;
   if (count === 0) return null;
   return { kind: "missing", count, parts: [...collapsed.parts, ...text] };
@@ -378,12 +376,17 @@ export function truncateMissingParts(parts: string[], maxChars = 56): { shown: s
   return { shown, rest: parts.length - shown.length };
 }
 
-function collapseNumbers(values: number[]): { count: number; parts: string[] } {
+/** Have marks both ends (`#1-#3`). Missing marks the start (`#1-14`), matching Alpha Flight. */
+function collapseNumbers(values: number[], style: "have" | "missing"): { count: number; parts: string[] } {
   const sorted = [...new Set(values)].sort((a, b) => a - b);
   const parts: string[] = [];
   let count = 0;
   let start: number | null = null;
   let prev: number | null = null;
+  const part = (from: number, to: number) => {
+    if (from === to) return `#${from}`;
+    return style === "have" ? `#${from}-#${to}` : `#${from}-${to}`;
+  };
   for (const value of sorted) {
     if (start == null || prev == null) {
       start = value;
@@ -394,13 +397,13 @@ function collapseNumbers(values: number[]): { count: number; parts: string[] } {
       prev = value;
       continue;
     }
-    parts.push(start === prev ? `#${start}` : `#${start}${RANGE_DASH}${prev}`);
+    parts.push(part(start, prev));
     count += prev - start + 1;
     start = value;
     prev = value;
   }
   if (start != null && prev != null) {
-    parts.push(start === prev ? `#${start}` : `#${start}${RANGE_DASH}${prev}`);
+    parts.push(part(start, prev));
     count += prev - start + 1;
   }
   return { count, parts };

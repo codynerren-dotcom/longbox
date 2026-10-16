@@ -129,11 +129,11 @@ describe("series rows", () => {
       copy({ id: "c", issueNo: "1", variant: "A", seriesYear: 1800, publisher: "Image" }),
       copy({ id: "annual", issueNo: "Annual 1", publisher: "Other" }),
     ];
-    expect(copyCountLabel(comics)).toBe("3 issues · 5 copies");
-    expect(copyCountLabel([copy({ id: "only" })])).toBe("1 issue");
+    expect(copyCountLabel(comics)).toBe("3 comics · 5 copies");
+    expect(copyCountLabel([copy({ id: "only" })])).toBe("1 comic");
     expect(haveRange(comics)).toBe("Have: #1, #12");
     expect(haveRange([copy({ id: "only", issueNo: "5" })])).toBe("Have: #5");
-    expect(seriesMissing(comics, null)).toEqual({ kind: "missing", count: 10, parts: ["#2\u201311"] });
+    expect(seriesMissing(comics, null)).toEqual({ kind: "missing", count: 10, parts: ["#2-11"] });
     expect(seriesMissing([copy({ id: "only", issueNo: "5" })], null)).toBeNull();
     expect(seriesMissing([copy({ id: "annual", issueNo: "Annual 1" })], null)).toBeNull();
     expect(ownedIssueCount(comics)).toBe(3);
@@ -153,7 +153,7 @@ describe("series rows", () => {
     expect(seriesMissing(comics, null)).toEqual({
       kind: "missing",
       count: 15,
-      parts: ["#2\u201311", "#13", "#15\u201317", "#20"],
+      parts: ["#2-11", "#13", "#15-17", "#20"],
     });
     expect(
       seriesMissing(
@@ -164,7 +164,7 @@ describe("series rows", () => {
     expect(seriesMissing([copy({ id: "first", issueNo: "1" }), copy({ id: "last", issueNo: "400" })], null)).toEqual({
       kind: "missing",
       count: 398,
-      parts: ["#2\u2013399"],
+      parts: ["#2-399"],
     });
   });
 
@@ -172,10 +172,10 @@ describe("series rows", () => {
     const owned = [copy({ id: "a", issueNo: "1" }), copy({ id: "variant", issueNo: "1", variant: "B" })];
     const run = { numbers: ["1", "01", "2", "3", "4", "5"], issueCount: 20 };
     expect(distinctIssueLabels(run.numbers)).toEqual(["1", "2", "3", "4", "5"]);
-    expect(seriesMissing(owned, run)).toEqual({ kind: "missing", count: 19, parts: ["#2\u201320"] });
-    expect(seriesHeaderSummary(owned, run)).toBe("1 issue · 2 copies · Have: #1 · Missing 19: #2\u201320");
+    expect(seriesMissing(owned, run)).toEqual({ kind: "missing", count: 19, parts: ["#2-20"] });
+    expect(seriesHeaderSummary(owned, run)).toBe("1 comic · 2 copies · Have: #1 · Missing 19: #2-20");
     expect(seriesHeaderSummary([copy({ id: "only", issueNo: "1" })], { numbers: ["1", "2", "3", "4", "5"], issueCount: null })).toBe(
-      "1 issue · Have: #1 · Missing 4: #2\u20135",
+      "1 comic · Have: #1 · Missing 4: #2-5",
     );
     expect(seriesMissing([copy({ id: "only", issueNo: "01" })], { numbers: ["1", "2"], issueCount: null })).toEqual({
       kind: "missing",
@@ -187,10 +187,10 @@ describe("series rows", () => {
         numbers: [],
         issueCount: 5,
       }),
-    ).toEqual({ kind: "missing", count: 4, parts: ["#2\u20135"] });
+    ).toEqual({ kind: "missing", count: 4, parts: ["#2-5"] });
     expect(
       seriesMissing([copy({ id: "a", issueNo: "1" }), copy({ id: "outside", issueNo: "8" })], { numbers: [], issueCount: 5 }),
-    ).toEqual({ kind: "missing", count: 4, parts: ["#2\u20135"] });
+    ).toEqual({ kind: "missing", count: 4, parts: ["#2-5"] });
     expect(seriesMissing([copy({ id: "a", issueNo: "1" })], { numbers: ["1", "2", "Annual 1", "1.5"], issueCount: null })).toEqual({
       kind: "missing",
       count: 3,
@@ -203,7 +203,7 @@ describe("series rows", () => {
       }),
     ).toBeNull();
     expect(seriesHeaderSummary([copy({ id: "a", issueNo: "1" }), copy({ id: "b", issueNo: "2" })], { numbers: ["1", "2"], issueCount: 9 })).toBe(
-      "2 issues · Have: #1\u20132 · Missing 7: #3\u20139",
+      "2 comics · Have: #1-#2 · Missing 7: #3-9",
     );
     const genies = eightBillionGeniesDescriptors();
     expect(distinctIssueLabels(genies)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8"]);
@@ -215,17 +215,17 @@ describe("series rows", () => {
     ];
     const geniesRun = { numbers: genies, issueCount: 40 };
     expect(seriesMissing(ownedGenies, geniesRun)).toBeNull();
-    expect(haveRange(ownedGenies)).toBe("Have: #1\u20138");
+    expect(haveRange(ownedGenies)).toBe("Have: #1-#8");
     expect(ownedIssueCount(ownedGenies)).toBe(8);
-    expect(seriesHeaderSummary(ownedGenies, geniesRun)).toBe("8 issues · 9 copies · Have: #1\u20138");
+    expect(seriesHeaderSummary(ownedGenies, geniesRun)).toBe("8 comics · 9 copies · Have: #1-#8");
     expect(seriesHeaderSummary(ownedGenies, geniesRun)).not.toContain("Missing");
     expect(seriesMissing(ownedGenies.slice(0, 7), geniesRun)).toEqual({ kind: "missing", count: 1, parts: ["#8"] });
     const pandora = ["1", "2", "3", "5", "6"].map((issueNo, index) =>
       copy({ id: `pandora-${index}`, series: "Frank Miller's Pandora", issueNo }),
     );
-    expect(haveRange(pandora)).toBe("Have: #1\u20133, #5\u20136");
+    expect(haveRange(pandora)).toBe("Have: #1-#3, #5-#6");
     expect(seriesMissing(pandora, null)).toEqual({ kind: "missing", count: 1, parts: ["#4"] });
-    expect(seriesHeaderSummary(pandora, null)).toBe("5 issues · Have: #1\u20133, #5\u20136 · Missing 1: #4 · (catalog unknown)");
+    expect(seriesHeaderSummary(pandora, null)).toBe("5 comics · Have: #1-#3, #5-#6 · Missing 1: #4 · (catalog unknown)");
     expect(seriesHeaderSummary(pandora, null)).not.toContain("Gaps");
     const fantasticFour = [
       copy({ id: "ff-g", series: "Fantastic Four", issueNo: "3G" }),
@@ -236,21 +236,25 @@ describe("series rows", () => {
     const fantasticFourRun = { numbers: [] as string[], issueCount: 48 };
     expect(haveRange(fantasticFour)).toBe("Have: #3, #10, #17");
     expect(seriesHeaderSummary(fantasticFour, fantasticFourRun)).toBe(
-      "3 issues · 4 copies · Have: #3, #10, #17 · Missing 45: #1\u20132, #4\u20139, #11\u201316, #18\u201348",
+      "3 comics · 4 copies · Have: #3, #10, #17 · Missing 45: #1-2, #4-9, #11-16, #18-48",
     );
     expect(seriesHeaderSummary(fantasticFour, fantasticFourRun)).not.toContain("catalog unknown");
     expect(seriesHeaderSummary(fantasticFour, fantasticFourRun)).not.toContain("Gaps");
     expect(seriesHeaderSummary(fantasticFour, null)).toBe(
-      "3 issues · 4 copies · Have: #3, #10, #17 · Missing 12: #4\u20139, #11\u201316 · (catalog unknown)",
+      "3 comics · 4 copies · Have: #3, #10, #17 · Missing 12: #4-9, #11-16 · (catalog unknown)",
+    );
+    const alphaFlight = [copy({ id: "alpha", series: "Alpha Flight", issueNo: "15" })];
+    expect(seriesHeaderSummary(alphaFlight, { numbers: [], issueCount: 130 })).toBe(
+      "1 comic · Have: #15 · Missing 129: #1-14, #16-130",
     );
     expect(seriesMissing(pandora, { numbers: ["1", "2", "3", "4", "5", "6", "7", "8"], issueCount: 8 })).toEqual({
       kind: "missing",
       count: 3,
-      parts: ["#4", "#7\u20138"],
+      parts: ["#4", "#7-8"],
     });
     const holes = ["1", "12", "14", "18", "19", "21"].map((issueNo, index) => copy({ id: `g${index}`, issueNo }));
     expect(seriesHeaderSummary(holes, null)).toBe(
-      "6 issues · Have: #1, #12, #14, #18\u201319, #21 · Missing 15: #2\u201311, #13, #15\u201317, #20 · (catalog unknown)",
+      "6 comics · Have: #1, #12, #14, #18-#19, #21 · Missing 15: #2-11, #13, #15-17, #20 · (catalog unknown)",
     );
     const parts = Array.from({ length: 20 }, (_, index) => `#${index + 2}`);
     const cut = truncateMissingParts(parts);
@@ -397,8 +401,8 @@ describe("series rows", () => {
 
     const header = Array.from({ length: 14 }, (_, index) => copy({ id: `c${index}`, issueNo: String(index + 1) }));
     header.push(copy({ id: "dup", issueNo: "1" }));
-    expect(copyCountLabel(header)).toBe("14 issues · 15 copies");
-    expect(copyCountLabel([copy({ id: "pair", quantity: 2 })])).toBe("1 issue · 2 copies");
+    expect(copyCountLabel(header)).toBe("14 comics · 15 copies");
+    expect(copyCountLabel([copy({ id: "pair", quantity: 2 })])).toBe("1 comic · 2 copies");
   });
 
   it("keeps grouped rows as separate records on the issue page", () => {
