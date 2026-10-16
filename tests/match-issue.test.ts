@@ -214,6 +214,12 @@ describe("issue page", () => {
     expect(page).not.toContain("Raw copy");
     expect(panel).toContain("Match / Link");
     expect(panel).toContain("Use this cover");
+    expect(panel).toContain("Cover on GCD");
+    expect(panel).toContain("{GCD_COVER_NOTE}");
+    const copy = readFileSync("src/lib/catalog/match-row.ts", "utf8");
+    expect(copy).toContain("GCD doesn't allow cover downloads. Check this to try Metron or Comic Vine.");
+    expect(copy).toContain("View on GCD");
+    expect(panel).not.toContain("Cover image returned 403");
     expect(panel).toContain("Fill missing details");
     expect(panel).toContain("Unlink GCD");
     expect(panel).toContain("GCD data is CC BY-SA");

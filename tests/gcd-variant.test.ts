@@ -84,8 +84,8 @@ describe("recorded GCD variant", () => {
     expect(foil.coverUrl).toBeNull();
     expect(hit.coverUrl).toBeNull();
     expect(hit.covers).toEqual([]);
-    expect(gcdHit(parent).coverUrl).toBe(parent.coverUrl);
-    expect(gcdHit(parent).coverUrl).not.toBe(hit.coverUrl);
+    expect(gcdHit(parent).coverUrl).toBeNull();
+    expect(gcdHit(parent).covers).toEqual([]);
     expect(hit.coverPageUrl).toBe("https://www.comics.org/issue/2514867/cover/4/");
     expect(hit.barcode).toBe("76194137966100121");
     expect(hit.price).toBe("7.99 USD");

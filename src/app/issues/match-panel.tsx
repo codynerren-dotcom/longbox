@@ -10,7 +10,7 @@ import { LimitToast } from "@/components/limit-toast";
 import { matchPanelNote } from "@/lib/catalog/limit-notice";
 import type { QueueHint, QueueRequest } from "@/lib/catalog/search-queue";
 import type { MatchCover, MatchHit } from "@/lib/catalog/match-hits";
-import { catalogIssueHref, catalogViewLabel, exactBarcodeMatch, fullSizeCoverUrl } from "@/lib/catalog/match-row";
+import { catalogIssueHref, catalogViewLabel, defaultUseCover, exactBarcodeMatch, fullSizeCoverUrl, GCD_COVER_NOTE, isGcdScanHost } from "@/lib/catalog/match-row";
 import type { CatalogSource } from "@/lib/catalog/manual-link";
 import { isCollected, shelfFormatOf } from "@/lib/shelf-format";
 
@@ -168,6 +168,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
   const metronEmptyNote = props.facsimile
     ? "Metron may not list facsimiles, try GCD."
     : "Metron may not list this trade, try GCD.";
+  const visibleCovers = covers.filter((cover) => !isGcdScanHost(cover.imageUrl));
 
   function selectSource(next: CatalogSource) {
     setSource(next);
@@ -262,7 +263,8 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
   }
 
   function coverChoice(hit: MatchHit) {
-    setUseCover(!props.userCover && Boolean(hit.coverUrl || hit.covers.length > 0));
+    const hasImage = Boolean(hit.coverUrl && !isGcdScanHost(hit.coverUrl)) || hit.covers.some((cover) => !isGcdScanHost(cover.imageUrl));
+    setUseCover(defaultUseCover(hit.source, hasImage, props.userCover));
     setReplaceExisting(false);
   }
 
@@ -435,9 +437,9 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
               Link {selected.series} {selected.issueNo ? `#${selected.issueNo}` : ""} on {selected.source === "metron" ? "Metron" : selected.source === "gcd" ? "GCD" : "Comic Vine"}{" "}
               <CatalogIdLink kind={source === "metron" ? "metron-issue" : source === "gcd" ? "gcd-issue" : "comicvine-issue"} id={selected.id} />. The other catalogs stay as they are.
             </p>
-            {covers.length > 1 ? (
+            {visibleCovers.length > 1 ? (
               <div className="mt-3 flex gap-2 overflow-x-auto">
-                {covers.map((cover) => (
+                {visibleCovers.map((cover) => (
                   <button
                     key={cover.imageUrl}
                     type="button"
@@ -455,6 +457,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
               <input type="checkbox" checked={useCover} onChange={(event) => setUseCover(event.target.checked)} />
               Use this cover
             </label>
+            {selected.source === "gcd" ? <p className="mt-1 text-sm text-mist">{GCD_COVER_NOTE}</p> : null}
             {props.userCover ? (
               <label className="mt-2 flex items-center gap-2 text-sm text-paper">
                 <input type="checkbox" checked={replaceExisting} onChange={(event) => setReplaceExisting(event.target.checked)} />
@@ -495,6 +498,16 @@ function gcdFactLine(hit: MatchHit): string {
 }
 
 function CoverMark({ hit }: { hit: MatchHit }) {
+  if (hit.source === "gcd" || isGcdScanHost(hit.coverUrl)) {
+    return (
+      <span
+        aria-label="Cover on GCD"
+        className="flex h-16 w-14 shrink-0 items-center justify-center rounded-md bg-panel2 px-1 text-center text-[9px] font-semibold uppercase leading-tight text-mist"
+      >
+        Cover on GCD
+      </span>
+    );
+  }
   const full = fullSizeCoverUrl(hit.coverUrl);
   if (!full) return <Thumb src={null} alt="" />;
   return (
@@ -505,11 +518,12 @@ function CoverMark({ hit }: { hit: MatchHit }) {
 }
 
 function Thumb({ src, alt }: { src: string | null; alt: string }) {
-  return src ? (
+  if (!src || isGcdScanHost(src)) {
+    return <span aria-label="No cover" className="block h-16 w-11 rounded-md bg-panel2" />;
+  }
+  return (
     // Catalog thumbs are remote https images. Lazy so a long variant list does not fetch every scan at once.
     // eslint-disable-next-line @next/next/no-img-element
     <img src={src} alt={alt} loading="lazy" decoding="async" className="h-16 w-11 rounded-md object-cover" />
-  ) : (
-    <span aria-label="No cover" className="block h-16 w-11 rounded-md bg-panel2" />
   );
 }

@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { findAlternateCover, pickAlternateCover, type AlternateCoverSearch } from "@/lib/catalog/gcd-cover";
 import { gcdCoverScan, parseGcdIssue, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
 import { linkUpdate } from "@/lib/catalog/link-plan";
 import { readManualLink, shouldSaveCatalogCover, withUserCover } from "@/lib/catalog/manual-link";
-import { exactBarcodeMatch, fullSizeCoverUrl } from "@/lib/catalog/match-row";
+import { defaultUseCover, exactBarcodeMatch, fullSizeCoverUrl, GCD_COVER_MISSED, isGcdScanHost } from "@/lib/catalog/match-row";
+import type { MatchHit } from "@/lib/catalog/match-hits";
 import { imagePaceName } from "@/lib/catalog/rate-limit";
 import { gcdDetails, gcdHit, gcdMatchIssueIds, orderGcdMatchHits, searchGcdMatches } from "@/lib/covers/gcd-match";
-import { coverContentType, coverFilename } from "@/lib/covers/files";
+import { coverContentType, coverFilename, downloadCover } from "@/lib/covers/files";
 
 function coverRow(id: string, variant: string, barcode: string, variantOf: string | null): GcdIssueRow {
   return {
@@ -60,8 +62,8 @@ describe("GCD cover scans", () => {
     expect(variant?.coverUrl).toBe(VARIANT);
     expect(variant?.coverUrl).not.toBe(parent?.coverUrl);
     expect(gcdDetails(parent!).imageUrl).toBeNull();
-    expect(gcdHit(variant!).coverUrl).toBe(VARIANT);
-    expect(gcdHit(variant!).covers).toEqual([{ label: "Cover", imageUrl: VARIANT }]);
+    expect(gcdHit(variant!).coverUrl).toBeNull();
+    expect(gcdHit(variant!).covers).toEqual([]);
     expect(gcdHit(issue("12", "")!).coverUrl).toBeNull();
     expect(gcdHit(issue("12", "")!).covers).toEqual([]);
   });
@@ -116,9 +118,8 @@ describe("GCD cover scans", () => {
     expect(exactBarcodeMatch(shelf, "70985302446000111")).toBe(true);
     expect(exactBarcodeMatch(shelf, "70985302446000131")).toBe(false);
     expect(exactBarcodeMatch(shelf, "709853024460")).toBe(false);
-    expect(fullSizeCoverUrl("https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg")).toBe(
-      "https://files1.comics.org/img/gcd/covers_by_id/1/1.jpg",
-    );
+    expect(fullSizeCoverUrl("https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg")).toBeNull();
+    expect(fullSizeCoverUrl("https://static.metron.cloud/media/issue/batman-1.jpg")).toBe("https://static.metron.cloud/media/issue/batman-1.jpg");
 
     const special: GcdSeriesRow = {
       id: "special",
@@ -181,5 +182,141 @@ describe("GCD cover scans", () => {
     expect(imagePaceName("comicvine.gamespot.com")).toBe("comicvine-images");
     expect(imagePaceName("static.metron.cloud")).toBe("covers");
     expect(imagePaceName("www.comics.org")).toBe("covers");
+  });
+});
+
+const BARCODE = "76194137888600134";
+const METRON_REGULAR = "https://static.metron.cloud/media/issue/batman-1.jpg";
+const METRON_VARIANT = "https://static.metron.cloud/media/issue/batman-1-mcfarlane.jpg";
+const CV_COVER = "https://comicvine.gamespot.com/a/uploads/scale_large/batman-1.jpg";
+
+function hit(partial: Partial<MatchHit> & Pick<MatchHit, "source" | "id" | "coverUrl">): MatchHit {
+  return {
+    seriesId: "1",
+    series: "Batman",
+    issueNo: "1",
+    variant: null,
+    coverDate: "December 2022",
+    publisher: "DC",
+    covers: partial.coverUrl ? [{ label: "Cover", imageUrl: partial.coverUrl }] : [],
+    ...partial,
+  };
+}
+
+describe("GCD covers from another catalog", () => {
+  const wanted = {
+    series: "Batman",
+    issueNo: "1",
+    variant: "Todd McFarlane Variant Cover",
+    barcode: BARCODE,
+    year: 2022,
+  };
+
+  it("leaves Use this cover off for a GCD row and refuses to fetch files1", async () => {
+    expect(defaultUseCover("gcd", true, false)).toBe(false);
+    expect(defaultUseCover("metron", true, false)).toBe(true);
+    expect(defaultUseCover("comicvine", true, true)).toBe(false);
+    expect(isGcdScanHost("https://files1.comics.org//img/gcd/covers_by_id/1657/w400/1657357.jpg")).toBe(true);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("should not fetch"));
+    await expect(
+      downloadCover("https://files1.comics.org//img/gcd/covers_by_id/1657/w400/1657357.jpg", "2567072", undefined, { force: true, prefix: "gcd" }),
+    ).rejects.toThrow(GCD_COVER_MISSED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("prefers the exact variant cover from a barcode match", () => {
+    const metron = hit({
+      source: "metron",
+      id: "88",
+      coverUrl: METRON_REGULAR,
+      variant: "Todd McFarlane Variant Cover",
+      barcode: BARCODE,
+      covers: [
+        { label: "Cover", imageUrl: METRON_REGULAR },
+        { label: "Todd McFarlane Variant Cover", imageUrl: METRON_VARIANT },
+      ],
+    });
+    const vine = hit({
+      source: "comicvine",
+      id: "400",
+      coverUrl: CV_COVER,
+      variant: "Cover A",
+      barcode: "76194137888600111",
+    });
+    const picked = pickAlternateCover(wanted, [
+      { ...vine, via: "barcode" },
+      { ...metron, via: "barcode" },
+    ]);
+    expect(picked?.imageUrl).toBe(METRON_VARIANT);
+    expect(picked?.source).toBe("metron");
+    expect(picked?.issueId).toBe("88");
+  });
+
+  it("uses a name and number match when the barcode search has no cover, and ignores a files1 image", async () => {
+    const calls: string[] = [];
+    const search: AlternateCoverSearch = {
+      async metronBarcode() {
+        calls.push("metron-barcode");
+        return [hit({ source: "metron", id: "1", coverUrl: "https://files1.comics.org/img/a.jpg", barcode: BARCODE })];
+      },
+      async comicVineBarcode() {
+        calls.push("cv-barcode");
+        return [];
+      },
+      async metronQuery() {
+        calls.push("metron-name");
+        return [];
+      },
+      async comicVineQuery(query) {
+        calls.push(`cv-name:${query}`);
+        return [hit({ source: "comicvine", id: "400", coverUrl: CV_COVER, variant: "Todd McFarlane Variant Cover" })];
+      },
+    };
+    const picked = await findAlternateCover(wanted, search);
+    expect(calls).toEqual(["metron-barcode", "cv-barcode", "metron-name", "cv-name:Batman #1 2022"]);
+    expect(picked).toMatchObject({ source: "comicvine", issueId: "400", imageUrl: CV_COVER });
+  });
+
+  it("stops after a barcode hit whose cover is the exact variant", async () => {
+    const calls: string[] = [];
+    const search: AlternateCoverSearch = {
+      async metronBarcode() {
+        calls.push("metron-barcode");
+        return [
+          hit({
+            source: "metron",
+            id: "88",
+            coverUrl: METRON_VARIANT,
+            variant: "Todd McFarlane Variant Cover",
+            barcode: BARCODE,
+            covers: [{ label: "Todd McFarlane Variant Cover", imageUrl: METRON_VARIANT }],
+          }),
+        ];
+      },
+      async comicVineBarcode() {
+        calls.push("cv-barcode");
+        return [];
+      },
+      async metronQuery() {
+        calls.push("metron-name");
+        return [];
+      },
+      comicVineQuery: null,
+    };
+    const picked = await findAlternateCover(wanted, search);
+    expect(calls).toEqual(["metron-barcode", "cv-barcode"]);
+    expect(picked?.imageUrl).toBe(METRON_VARIANT);
+  });
+
+  it("reports no other cover when every candidate is empty", async () => {
+    const picked = await findAlternateCover(wanted, {
+      metronBarcode: async () => [],
+      metronQuery: async () => [],
+      comicVineBarcode: async () => [],
+      comicVineQuery: async () => [],
+    });
+    expect(picked).toBeNull();
+    expect(GCD_COVER_MISSED).toBe("GCD doesn't allow cover downloads; no other source had this cover. Use Upload cover or Take photo.");
   });
 });

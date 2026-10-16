@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { recordFetch } from "@/lib/log/api";
 import path from "node:path";
 import { noteImagePause, reserveImageDownload } from "@/lib/catalog/rate-gate";
+import { GCD_COVER_MISSED, isGcdScanHost } from "@/lib/catalog/match-row";
 import { normalizeMetronBudget, pauseLabel } from "@/lib/catalog/rate-limit";
 import { emptyBudget, retryAfterFromMessage, retryAfterMs, type BudgetStore, type MetronBudget } from "@/lib/covers/limiter";
 
@@ -201,6 +202,7 @@ export async function downloadCover(
   }
   if (parsed.protocol === "http:") parsed.protocol = "https:";
   if (parsed.protocol !== "https:") throw new Error("Cover image URL is not https.");
+  if (isGcdScanHost(parsed.toString())) throw new Error(GCD_COVER_MISSED);
 
   await reserveImageDownload(parsed);
   const started = Date.now();

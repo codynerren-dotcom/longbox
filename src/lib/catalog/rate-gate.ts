@@ -45,9 +45,10 @@ export async function noteCoverPause(resumeAt: number): Promise<void> {
 }
 
 /**
- * One image download. files1.comics.org and comicvine.gamespot.com each have
- * their own one-per-second window, separate from the GCD and Comic Vine API budgets.
- * Other cover hosts stay on the shared cover window.
+ * One image download from a host that serves the file.
+ * comicvine.gamespot.com has its own one-per-second window, separate from the Comic Vine API budget.
+ * Metron and other cover hosts stay on the shared cover window.
+ * files1.comics.org is refused before this runs.
  */
 export async function reserveImageDownload(url: URL, now = Date.now()): Promise<void> {
   const name = imagePaceName(url.hostname);

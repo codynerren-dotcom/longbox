@@ -115,8 +115,8 @@ export type GcdIssueRow = {
   metronIssueId: string | null;
   collects?: string | null;
   /**
-   * Scan URL from the issue `cover` field (`https://files1.comics.org/.../w400/...`), or null when that field is blank.
-   * Match rows show it. Automatic backfill still leaves `imageUrl` empty so a pass does not download every scan.
+   * Scan URL from the issue `cover` field, or null when that field is blank.
+   * files1.comics.org blocks automated fetches, so match rows do not render it and backfill leaves `imageUrl` empty.
    */
   coverUrl?: string | null;
 };

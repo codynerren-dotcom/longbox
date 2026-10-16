@@ -276,10 +276,8 @@ describe("GCD catalog", () => {
     expect(details.imageUrl).toBeNull();
     expect(details.writer).toBe("Stan Lee");
     expect(details.releaseDate?.toISOString()).toBe("2022-03-09T12:00:00.000Z");
-    expect(gcdHit(parsed as GcdIssueRow).coverUrl).toBe("https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg");
-    expect(gcdHit(parsed as GcdIssueRow).covers).toEqual([
-      { label: "Cover", imageUrl: "https://files1.comics.org/img/gcd/covers_by_id/1/w400/1.jpg" },
-    ]);
+    expect(gcdHit(parsed as GcdIssueRow).coverUrl).toBeNull();
+    expect(gcdHit(parsed as GcdIssueRow).covers).toEqual([]);
   });
 
   it("does not call a GCD barcode URL", async () => {

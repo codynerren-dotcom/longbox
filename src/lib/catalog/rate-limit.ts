@@ -430,11 +430,12 @@ export function noteComicVinePause(state: ComicVineRateState, resumeAt: number):
  * and this shelf does not call that yet. Both still wait out Retry-After.
  *
  * Image hosts are separate from those API budgets:
- * - files1.comics.org has no published per-image cap. GCD's 30/hour and 2,000/day
- *   limits are for `/api/` (https://github.com/GrandComicsDatabase/gcd-django/wiki/API).
+ * - files1.comics.org returns 403 for automated cover fetches. GCD's 30/hour and
+ *   2,000/day limits are for `/api/` (https://github.com/GrandComicsDatabase/gcd-django/wiki/API).
  *   Staff asked tools not to bulk-download scans, because Cloudflare will block that
- *   (https://github.com/GrandComicsDatabase/gcd-django/discussions/614). This shelf
- *   uses at most one download per second on `pace:gcd-images`.
+ *   (https://github.com/GrandComicsDatabase/gcd-django/discussions/614). This shelf does
+ *   not hotlink or download those scans. A GCD accept looks up the same issue on Metron
+ *   or Comic Vine instead.
  * - comicvine.gamespot.com image files are not an API resource. The published cap is
  *   200 requests per resource per hour, plus velocity detection
  *   (https://comicvine.gamespot.com/api/). Image downloads use `pace:comicvine-images`

@@ -3,7 +3,9 @@ import { comicVineDetails, linkUpdate, unlinkUpdate } from "@/lib/catalog/link-p
 import { mapComicVineMatchHit, mapMetronMatchHit, variantCoversFrom, type MatchCover, type MatchHit } from "@/lib/catalog/match-hits";
 import { manualLinkJson, matchQuery, readManualLink, shouldSaveCatalogCover, withoutUserCover, type CatalogSource } from "@/lib/catalog/manual-link";
 import { createGcdCatalog } from "@/lib/catalog/gcd";
+import { findAlternateCover, type AlternateCover, type AlternateCoverSearch, type CoverWanted } from "@/lib/catalog/gcd-cover";
 import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
+import { GCD_COVER_MISSED, isGcdScanHost } from "@/lib/catalog/match-row";
 import { hintFromBlocks, type QueueHint } from "@/lib/catalog/search-queue";
 import { linkMetronFromForeignIds } from "@/lib/covers/cross-link-run";
 import { comicVineIssue, metronCovers, searchComicVineMatches, searchMetronMatches } from "@/lib/catalog/match-search";
@@ -351,17 +353,26 @@ export async function linkIssueToCatalog(args: {
     if (!loaded.ok) return { ...loaded, notice: null, queue: null };
     const covers = loaded.covers.length > 0 ? loaded.covers : loaded.hit.covers;
     const fromLoaded = covers[0]?.imageUrl ?? loaded.hit.coverUrl;
+    const requested = args.coverImageUrl && !isGcdScanHost(args.coverImageUrl) ? args.coverImageUrl : null;
     const chosen =
-      args.coverImageUrl && (covers.some((cover) => cover.imageUrl === args.coverImageUrl) || args.coverImageUrl === loaded.hit.coverUrl)
-        ? args.coverImageUrl
-        : fromLoaded;
+      requested && (covers.some((cover) => cover.imageUrl === requested) || requested === loaded.hit.coverUrl) ? requested : fromLoaded;
+    const safeChosen = chosen && !isGcdScanHost(chosen) ? chosen : null;
     const manual = readManualLink(comic.manualLink);
     const saveCover = shouldSaveCatalogCover({
       useCover: args.useCover,
       userCover: manual.userCover,
       replaceExisting: args.replaceExisting === true,
     });
-    const cover = saveCover && chosen ? await downloadChosenCover(args.source, args.hit.id, chosen, covers[0]?.imageUrl ?? chosen) : null;
+    let cover: { file: string; url: string; imageUrl: string } | null = null;
+    let alternate: AlternateCover | null = null;
+    let gcdCoverMiss = false;
+    if (saveCover && args.source === "gcd") {
+      alternate = await findAlternateCover(wantedFromHit(loaded.hit), await alternateCoverSearch());
+      if (alternate) cover = await downloadChosenCover(alternate.source, alternate.issueId, alternate.imageUrl, alternate.primaryUrl);
+      else gcdCoverMiss = true;
+    } else if (saveCover && safeChosen) {
+      cover = await downloadChosenCover(args.source, args.hit.id, safeChosen, covers[0]?.imageUrl ?? safeChosen);
+    }
     const update = linkUpdate({
       source: args.source,
       hit: loaded.hit,
@@ -375,8 +386,10 @@ export async function linkIssueToCatalog(args: {
       issueUrl: loaded.issueUrl,
       seriesUrl: loaded.seriesUrl,
     });
-    await prisma.comic.update({ where: { id: comic.id }, data: { ...update.data, manualLink: storedLink(update.data.manualLink) } });
+    if (gcdCoverMiss) update.data.coverNote = GCD_COVER_MISSED;
+    await prisma.comic.update({ where: { id: comic.id }, data: { ...update.data, manualLink: storedLink(rememberAlternate(update.data.manualLink, alternate)) } });
     let message = `Linked ${label} to ${catalogName(args.source)} ${args.hit.id}.`;
+    if (gcdCoverMiss) message = `${message} ${GCD_COVER_MISSED}`;
     if (args.source === "metron") {
       if (typeof update.data.comicvineIssueId === "string") message += ` Stored Comic Vine ${update.data.comicvineIssueId}.`;
       if (typeof update.data.gcdIssueId === "string") message += ` Stored GCD ${update.data.gcdIssueId}.`;
@@ -419,12 +432,11 @@ async function loadLinkTarget(
   if (source === "gcd") {
     const issue = await createGcdCatalog().issue(hit.id);
     const detail = issue ? gcdDetails(issue) : null;
-    const scan = issue?.coverUrl?.trim() ? issue.coverUrl : null;
     return {
       ok: true,
       hit: issue ? gcdHit(issue) : hit,
       detail,
-      covers: scan ? [{ label: "Cover", imageUrl: scan }] : [],
+      covers: [],
       issueUrl: null,
       seriesUrl: null,
       embeddedMetronIssueId: issue?.metronIssueId ?? null,
@@ -491,7 +503,11 @@ export async function saveChosenCover(comicId: string): Promise<{ ok: boolean; m
   const link = readManualLink(comic.manualLink);
   try {
     const chosen = await chosenImage(link, comic.comicvineIssueId, comic.gcdIssueId);
-    if (!chosen) return { ok: false, message: "Link an issue before re-pulling its cover.", notice: null };
+    if (!chosen) {
+      const gcdLinked = Boolean(link.gcdIssueId || (comic.gcdIssueId && /^\d+$/.test(comic.gcdIssueId)));
+      if (gcdLinked) return { ok: true, message: GCD_COVER_MISSED, notice: null };
+      return { ok: false, message: "Link an issue before re-pulling its cover.", notice: null };
+    }
     const saved = await downloadChosenCover(chosen.source, chosen.issueId, chosen.imageUrl, chosen.primaryUrl);
     const next = withoutUserCover(link);
     await prisma.comic.update({
@@ -522,7 +538,7 @@ async function chosenImage(
   comicvineIssueId: string | null,
   gcdIssueId: string | null,
 ): Promise<{ source: CatalogSource; issueId: string; imageUrl: string; primaryUrl: string | null } | null> {
-  if (link.coverImageUrl && link.coverSource) {
+  if (link.coverImageUrl && link.coverSource && !isGcdScanHost(link.coverImageUrl)) {
     const issueId = link.coverSource === "metron" ? link.metronIssueId : link.coverSource === "comicvine" ? link.comicvineIssueId : link.gcdIssueId;
     if (issueId) return { source: link.coverSource, issueId, imageUrl: link.coverImageUrl, primaryUrl: link.coverImageUrl };
   }
@@ -543,7 +559,55 @@ async function chosenImage(
   const gcdId = link.gcdIssueId ?? (gcdIssueId && /^\d+$/.test(gcdIssueId) ? gcdIssueId : null);
   if (!gcdId) return null;
   const issue = await createGcdCatalog().issue(gcdId);
-  const scan = issue?.coverUrl?.trim() ? issue.coverUrl : null;
-  if (!scan) return null;
-  return { source: "gcd", issueId: gcdId, imageUrl: scan, primaryUrl: scan };
+  if (!issue) return null;
+  const alternate = await findAlternateCover(
+    {
+      series: issue.seriesName,
+      issueNo: issue.number,
+      variant: issue.variant,
+      barcode: issue.barcode ?? issue.isbn ?? null,
+      year: issue.coverYear,
+    },
+    await alternateCoverSearch(),
+  );
+  if (!alternate) return null;
+  return { source: alternate.source, issueId: alternate.issueId, imageUrl: alternate.imageUrl, primaryUrl: alternate.primaryUrl };
+}
+
+function wantedFromHit(hit: MatchHit): CoverWanted {
+  return {
+    series: hit.series,
+    issueNo: hit.issueNo,
+    variant: hit.variant,
+    barcode: hit.barcode ?? hit.isbn ?? null,
+    year: yearIn(hit.coverDate),
+  };
+}
+
+function yearIn(value: string | null | undefined): number | null {
+  const match = (value ?? "").match(/\b((?:18|19|20)\d{2})\b/);
+  return match?.[1] ? Number(match[1]) : null;
+}
+
+async function alternateCoverSearch(): Promise<AlternateCoverSearch> {
+  const metron = await metronBasicAuth();
+  const transport = metron ? await metronTransport() : null;
+  const apiKey = (await getSettings()).comicvine.apiKey;
+  return {
+    metronBarcode: transport ? (code) => searchMetronMatches(transport, "", code, "barcode") : null,
+    metronQuery: transport ? (query) => searchMetronMatches(transport, query, "", "query") : null,
+    comicVineBarcode: apiKey ? (code) => searchComicVineMatches({ apiKey, query: "", barcode: code, mode: "barcode" }) : null,
+    comicVineQuery: apiKey ? (query) => searchComicVineMatches({ apiKey, query, barcode: "", mode: "query" }) : null,
+  };
+}
+
+function rememberAlternate(manualLink: unknown, alternate: AlternateCover | null): unknown {
+  if (!alternate) return manualLink;
+  const link = readManualLink(manualLink);
+  link.coverImageUrl = alternate.imageUrl;
+  link.coverSource = alternate.source;
+  link.userCover = false;
+  if (alternate.source === "metron" && !link.metronIssueId) link.metronIssueId = alternate.issueId;
+  if (alternate.source === "comicvine" && !link.comicvineIssueId) link.comicvineIssueId = alternate.issueId;
+  return link;
 }

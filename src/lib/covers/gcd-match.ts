@@ -200,11 +200,11 @@ export async function searchGcdMatches(
 }
 
 /**
- * The issue `cover` field is that issue's scan (a variant has its own, not the parent's).
- * An empty string stays a placeholder. `gcdDetails` still leaves imageUrl null so backfill does not download scans.
+ * Match row for one GCD issue. The files1 scan stays on the issue record and is not copied
+ * onto the row: that host blocks hotlinks, so the panel shows a placeholder instead.
+ * `gcdDetails` still leaves imageUrl null so backfill does not download scans.
  */
 export function gcdHit(issue: GcdIssueRow): MatchHit {
-  const coverUrl = issue.coverUrl?.trim() ? issue.coverUrl : null;
   return {
     source: "gcd",
     id: issue.id,
@@ -214,8 +214,8 @@ export function gcdHit(issue: GcdIssueRow): MatchHit {
     variant: issue.variant,
     coverDate: issue.coverDate,
     publisher: issue.publisher,
-    coverUrl,
-    covers: coverUrl ? [{ label: "Cover", imageUrl: coverUrl }] : [],
+    coverUrl: null,
+    covers: [],
     barcode: issue.barcode,
     isbn: issue.isbn ?? null,
     price: issue.price,
