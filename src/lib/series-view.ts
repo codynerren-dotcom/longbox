@@ -186,15 +186,34 @@ export function catalogIssueCount(value: unknown): number | null {
   return parsed;
 }
 
+const BRACKETED = /\[[^\]]*\]/g;
+const PAREN_VARIANT = /\s*\([^)]*\b(?:cover|variant|var\.?|printing|print|facsimile|reprint)[^)]*\)/gi;
+const LETTER_SUFFIX = /^(\d+)([A-Za-z])$/;
+const VARIANT_WORDS = /\b(?:alternate\s+covers?|alt(?:ernate)?\s+covers?|covers?|variants?|var\.?|printings?|prints?|facsimiles?|reprints?|incentive|virgin|foil|sketch)\b/i;
+
 /**
- * One label per issue. Integers collapse so `01` and `1` are the same.
- * Non-numeric labels such as annuals stay as written.
+ * A cover, later printing, facsimile, or lettered suffix such as `1K`.
+ * Annuals are their own issues.
+ */
+export function isVariantDescriptor(raw: string): boolean {
+  const label = raw.trim();
+  if (!label) return false;
+  if (/\[[^\]]+\]/.test(label)) return true;
+  if (LETTER_SUFFIX.test(label)) return true;
+  if (VARIANT_WORDS.test(label) && !/\bannuals?\b/i.test(label)) return true;
+  return false;
+}
+
+/**
+ * One label per base issue. `01`, `1 [Cover A]`, and `1K` are all `1`.
+ * Alternate covers, later printings, facsimiles, and other variant notes drop out.
+ * Annuals and halves such as `1.5` stay as written.
  */
 export function distinctIssueLabels(raw: string[]): string[] {
   const seen = new Set<string>();
   const labels: string[] = [];
   for (const item of raw) {
-    const label = canonicalIssueLabel(item);
+    const label = baseIssueLabel(item);
     if (!label) continue;
     const key = issueKey(label);
     if (seen.has(key)) continue;
@@ -204,12 +223,60 @@ export function distinctIssueLabels(raw: string[]): string[] {
   return labels;
 }
 
-function canonicalIssueLabel(raw: string): string | null {
+/**
+ * Reported `issue_count` values count every cover. When variant rows explain
+ * that gap, the run length is the distinct base numbers.
+ */
+export function catalogBaseCount(raw: string[], reported: number | null): number | null {
+  const numbers = distinctIssueLabels(raw);
+  if (numbers.length === 0 || reported == null || reported <= numbers.length) return reported;
+  const variantRows = raw.filter((item) => isVariantDescriptor(item)).length;
+  if (variantRows > 0 && reported - numbers.length <= variantRows) return numbers.length;
+  return reported;
+}
+
+/** Base issue. `1 [Cover A - Ryan Browne]`, `2 [Second Printing]`, and `1K` are `1` / `2` / `1`. */
+export function baseIssueLabel(raw: string): string | null {
   const label = raw.trim();
   if (!label) return null;
-  const value = issueNumberValue(label);
-  if (value == null) return label;
-  return value > 0 ? String(value) : null;
+  const stripped = label.replace(BRACKETED, " ").replace(PAREN_VARIANT, " ").replace(/\s+/g, " ").trim();
+  const number = numericBase(stripped) ?? variantLeadingNumber(stripped);
+  if (number != null) return String(number);
+  if (!stripped || variantNote(label) || variantNote(stripped)) return null;
+  return stripped;
+}
+
+function numericBase(label: string): number | null {
+  if (/^\d+$/.test(label)) {
+    const parsed = Number.parseInt(label, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  const lettered = LETTER_SUFFIX.exec(label);
+  if (!lettered) return null;
+  const parsed = Number.parseInt(lettered[1], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** `1 Cover A` is issue 1. `1.5` and `Annual 1` are not. */
+function variantLeadingNumber(label: string): number | null {
+  const match = /^#?\s*(\d+)[A-Za-z]?\b(.*)$/.exec(label);
+  if (!match) return null;
+  const rest = (match[2] ?? "").trim();
+  if (!rest || rest.startsWith(".")) return null;
+  if (!variantNote(rest)) return null;
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function variantNote(label: string): boolean {
+  const text = label.trim();
+  if (!text) return false;
+  if (/\[[^\]]+\]/.test(text) && !/\d/.test(text.replace(/\[[^\]]*\]/g, ""))) return true;
+  return VARIANT_WORDS.test(text);
+}
+
+function canonicalIssueLabel(raw: string): string | null {
+  return baseIssueLabel(raw);
 }
 
 function issueKey(label: string): string {
@@ -357,8 +424,9 @@ function ownedKeys(comics: SeriesCopy[]): Set<string> {
 function ownedIssueNumbers(comics: SeriesCopy[]): number[] {
   const owned = new Set<number>();
   for (const comic of comics) {
-    const value = issueNumberValue(comic.issueNo);
-    if (value != null) owned.add(value);
+    const label = baseIssueLabel(comic.issueNo ?? "");
+    if (!label || !/^\d+$/.test(label)) continue;
+    owned.add(Number.parseInt(label, 10));
   }
   return [...owned].sort((a, b) => a - b);
 }
@@ -366,8 +434,8 @@ function ownedIssueNumbers(comics: SeriesCopy[]): number[] {
 export function ownedIssueCount(comics: SeriesCopy[]): number {
   const seen = new Set<string>();
   for (const comic of comics) {
-    const value = issueNumberValue(comic.issueNo);
-    seen.add(value != null ? `#${value}` : (comic.issueNo?.trim() || comic.id));
+    const label = baseIssueLabel(comic.issueNo ?? "");
+    seen.add(label ?? (comic.issueNo?.trim() || comic.id));
   }
   return seen.size;
 }

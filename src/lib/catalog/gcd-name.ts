@@ -183,11 +183,34 @@ export function rankGcdSeries(rows: GcdSeriesRow[], hint: GcdSeriesRankHint): Gc
     .map((item) => item.row);
 }
 
+const PUBLISHER_RANK = 100;
+
 function rankScore(row: GcdSeriesRow, hint: GcdSeriesRankHint): number {
   let score = 0;
-  if (hint.publisher && row.publisher && publisherAgrees(hint.publisher, row.publisher)) score += 100;
+  if (hint.publisher && row.publisher && publisherAgrees(hint.publisher, row.publisher)) score += PUBLISHER_RANK;
   if (hint.year != null && yearFits(row, hint.year)) score += 40;
   if (hint.year != null && row.yearBegan === hint.year) score += 10;
   if (hint.usBook && isUsEnglishSeries(row.country, row.language)) score += 20;
   return score;
+}
+
+/**
+ * The next publisher id that could change which series ranks first.
+ * Null once the leader cannot be passed, so a confident match does not look up every publisher.
+ */
+export function nextGcdPublisherLookup(rows: GcdSeriesRow[], hint: GcdSeriesRankHint): string | null {
+  if (!hint.publisher?.trim() || rows.length === 0) return null;
+  const scored = rows.map((row) => {
+    const score = rankScore(row, hint);
+    const ceiling = row.publisher || !row.publisherId ? score : score + PUBLISHER_RANK;
+    return { row, score, ceiling };
+  });
+  const leader = scored.reduce((best, item) => (item.score > best.score ? item : best));
+  const threatened = scored.some((item) => item.row.id !== leader.row.id && item.ceiling > leader.score);
+  if (!threatened) return null;
+  if (!leader.row.publisher && leader.row.publisherId) return leader.row.publisherId;
+  const contender = scored
+    .filter((item) => item.row.id !== leader.row.id && !item.row.publisher && item.row.publisherId && item.ceiling > leader.score)
+    .sort((a, b) => b.ceiling - a.ceiling)[0];
+  return contender?.row.publisherId ?? null;
 }

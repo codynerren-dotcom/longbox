@@ -1,6 +1,18 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGcdCatalog, parseGcdIssue, parseGcdSeries, resetGcdBudget, type GcdCatalog, type GcdIssueRow, type GcdSeriesRow } from "@/lib/catalog/gcd";
+import {
+  createGcdCatalog,
+  GCD_RESPONSE_MAX_AGE_MS,
+  parseGcdIssue,
+  parseGcdSeries,
+  resetGcdBudget,
+  setGcdResponseCacheForTests,
+  type GcdCachedResponse,
+  type GcdCatalog,
+  type GcdIssueRow,
+  type GcdResponseCache,
+  type GcdSeriesRow,
+} from "@/lib/catalog/gcd";
 import {
   gcdSeriesNameKey,
   gcdSeriesNameQueries,
@@ -35,6 +47,7 @@ function named(rows: GcdSeriesRow[]): GcdSeriesRow[] {
 describe("GCD series names that contain a slash", () => {
   afterEach(() => {
     resetGcdBudget();
+    setGcdResponseCacheForTests(null);
     vi.restoreAllMocks();
     delete process.env.GCD_USERNAME;
     delete process.env.GCD_PASSWORD;
@@ -104,7 +117,7 @@ describe("GCD series names that contain a slash", () => {
       country: "United States",
       language: "English",
     });
-    expect(asked).toEqual(["Spawn", "Batman Spawn"]);
+    expect(asked).toEqual(["Spawn"]);
     expect(asked.some((name) => name.includes("/"))).toBe(false);
     expect(hits[0]?.id).toBe("2430001");
     expect(hits[0]?.seriesId).toBe("203583");
@@ -177,7 +190,7 @@ describe("GCD series names that contain a slash", () => {
       year: 2022,
     });
     expect(barcodeCalls).toBe(0);
-    expect(asked).toEqual(["Spawn", "Batman Spawn"]);
+    expect(asked).toEqual(["Spawn"]);
     expect(asked.some((name) => name.includes("/"))).toBe(false);
     expect(hits[0]?.id).toBe("2430001");
     expect(hits[0]?.seriesId).toBe("203583");
@@ -186,7 +199,8 @@ describe("GCD series names that contain a slash", () => {
     expect(hits.map((hit) => hit.id)).toContain("2430010");
     expect(hits.map((hit) => hit.id)).not.toContain("2430088");
     expect(fetched).toContain("2430001");
-    expect(fetched).toContain("2430088");
+    expect(fetched).toContain("2430010");
+    expect(fetched).not.toContain("2430088");
     expect(fetched).not.toContain("2430003");
     expect(fetched.some((id) => id.startsWith("890"))).toBe(false);
 
@@ -201,7 +215,7 @@ describe("GCD series names that contain a slash", () => {
       year: 2022,
     });
     expect(barcodeCalls).toBe(0);
-    expect(asked).toEqual(["Spawn", "Batman Spawn"]);
+    expect(asked).toEqual(["Spawn"]);
     expect(fromShelf[0]?.id).toBe("2430001");
     expect(fromShelf[0]?.barcode).toBe(barcode);
     expect(fromShelf[0]?.variant).toMatch(/McFarlane/i);
@@ -234,13 +248,10 @@ describe("GCD series names that contain a slash", () => {
     expect(urls).toEqual([
       "https://www.comics.org/api/series/name/Spawn/",
       "https://www.comics.org/api/series/name/Spawn/?page=2",
-      "https://www.comics.org/api/series/name/Spawn/?page=3",
-      "https://www.comics.org/api/series/name/Batman%20Spawn/",
       "https://www.comics.org/api/publisher/54/",
-      "https://www.comics.org/api/publisher/200/",
-      "https://www.comics.org/api/publisher/480/",
       "https://www.comics.org/api/issue/2430001/",
     ]);
+    expect(urls.length).toBeLessThanOrEqual(5);
     for (const url of urls) {
       expect(url).not.toMatch(/%2f/i);
       expect(url.toLowerCase()).not.toContain("barcode");
@@ -271,8 +282,6 @@ describe("GCD series names that contain a slash", () => {
     expect(urls).toEqual([
       "https://www.comics.org/api/series/name/Spawn/",
       "https://www.comics.org/api/series/name/Spawn/?page=2",
-      "https://www.comics.org/api/series/name/Spawn/?page=3",
-      "https://www.comics.org/api/series/name/Batman%20Spawn/",
     ]);
     for (const url of urls) {
       const segment = new URL(url).pathname.split("/").filter(Boolean).at(-1) ?? "";
@@ -283,6 +292,94 @@ describe("GCD series names that contain a slash", () => {
     expect(rows.map((row) => row.id)).toContain("193753");
     expect(rows.map((row) => row.id)).toContain("211707");
   }, 20_000);
+
+  it("stops a typical search at the confident series and reuses series and issue payloads for a week", async () => {
+    resetGcdBudget();
+    const urls: string[] = [];
+    const cache = memoryGcdCache();
+    setGcdResponseCacheForTests(cache);
+    const catalog = createGcdCatalog(async (url) => {
+      urls.push(String(url));
+      const path = new URL(String(url)).pathname + new URL(String(url)).search;
+      if (path === "/api/series/name/Saga/") {
+        return json({
+          count: 2,
+          next: "https://www.comics.org/api/series/name/Saga/?page=2",
+          results: [
+            {
+              api_url: "https://www.comics.org/api/series/9/?format=json",
+              name: "Saga",
+              country: "us",
+              language: "en",
+              publisher: "Image",
+              year_began: 2012,
+              publishing_format: "ongoing series",
+              issue_count: 70,
+              active_issues: [
+                "https://www.comics.org/api/issue/101/?format=json",
+                "https://www.comics.org/api/issue/102/?format=json",
+                "https://www.comics.org/api/issue/103/?format=json",
+              ],
+              issue_descriptors: ["1", "1 [Cover B]", "2"],
+            },
+          ],
+        });
+      }
+      if (path === "/api/issue/101/" || path === "/api/issue/102/") {
+        const id = path.includes("102") ? "102" : "101";
+        return json({
+          api_url: `https://www.comics.org/api/issue/${id}/?format=json`,
+          series_name: "Saga",
+          series: "https://www.comics.org/api/series/9/",
+          number: "1",
+          variant_name: id === "102" ? "Cover B" : null,
+          barcode: id === "102" ? "70985300001100121" : "70985300001100111",
+        });
+      }
+      return new Response("missing", { status: 500 });
+    });
+    const hits = await searchGcdMatches("Saga #1 2012", "70985300001100121", "query", null, {
+      catalog,
+      publisher: "Image",
+      country: "United States",
+      language: "English",
+    });
+    expect(urls).toEqual([
+      "https://www.comics.org/api/series/name/Saga/",
+      "https://www.comics.org/api/issue/101/",
+      "https://www.comics.org/api/issue/102/",
+    ]);
+    expect(urls.length).toBeLessThanOrEqual(5);
+    expect(urls.some((url) => url.includes("page=2"))).toBe(false);
+    expect(urls.some((url) => url.includes("/issue/103/"))).toBe(false);
+    expect(hits.map((hit) => hit.id)).toEqual(["102", "101"]);
+    expect(hits[0]?.variant).toMatch(/Cover B/i);
+    expect(GCD_RESPONSE_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+
+    urls.length = 0;
+    const again = await searchGcdMatches("Saga #1 2012", "70985300001100121", "query", null, {
+      catalog,
+      publisher: "Image",
+      country: "United States",
+      language: "English",
+    });
+    expect(urls).toEqual([]);
+    expect(again[0]?.id).toBe("102");
+    expect(cache.rows.size).toBeGreaterThan(0);
+
+    for (const row of cache.rows.values()) {
+      row.fetchedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    }
+    urls.length = 0;
+    await searchGcdMatches("Saga #1 2012", "70985300001100121", "query", null, {
+      catalog,
+      publisher: "Image",
+      country: "United States",
+      language: "English",
+    });
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.length).toBeLessThanOrEqual(5);
+  }, 30_000);
 
   it("turns a name-search 404 into No GCD series named, and logs the URL", async () => {
     resetGcdBudget();
@@ -311,4 +408,17 @@ describe("GCD series names that contain a slash", () => {
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function memoryGcdCache(): GcdResponseCache & { rows: Map<string, GcdCachedResponse> } {
+  const rows = new Map<string, GcdCachedResponse>();
+  return {
+    rows,
+    async read(key) {
+      return rows.get(key) ?? null;
+    },
+    async write(key, row) {
+      rows.set(key, row);
+    },
+  };
 }

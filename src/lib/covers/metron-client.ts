@@ -2,7 +2,7 @@ import { variantCoversFrom } from "@/lib/catalog/match-hits";
 import { pauseLabel } from "@/lib/catalog/rate-limit";
 import { currentLane } from "@/lib/catalog/rate-lane";
 import { readMetronWindow, saveMetronWindow } from "@/lib/catalog/rate-store";
-import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
+import { catalogBaseCount, catalogIssueCount, distinctIssueLabels, isVariantDescriptor } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
 import { budgetDay, formatResumeTime, retryAfterFromMessage, retryAfterMs, MetronLimiter, type BudgetStore } from "@/lib/covers/limiter";
@@ -462,9 +462,29 @@ export function readMetronIssueNumber(value: unknown): string | null {
   return row ? text(row.number) : null;
 }
 
+/** Base number, with a variant mark when the row is a cover, printing, facsimile, or `variant_of`. */
+export function metronSeriesRunLabel(value: unknown): string | null {
+  const number = readMetronIssueNumber(value);
+  if (!number) return null;
+  if (isVariantDescriptor(number) || !metronVariantRecord(value)) return number;
+  return `${number} [variant]`;
+}
+
+function metronVariantRecord(value: unknown): boolean {
+  const row = record(value);
+  if (!row) return false;
+  const parent = row.variant_of ?? row.variantOf;
+  if (typeof parent === "number" && parent > 0) return true;
+  if (typeof parent === "string" && parent.trim() && parent.trim() !== "0") return true;
+  const variant = text(row.variant) ?? text(record(row.variant)?.name) ?? text(row.variant_name);
+  if (variant && !/^(none|regular|base)$/i.test(variant)) return true;
+  return false;
+}
+
 /**
- * Prefer a finished issue list. A truncated list with a larger `issue_count`
- * falls back to that count, because variant rows inflate the count.
+ * Prefer a finished issue list of distinct base numbers. Variant rows do not
+ * inflate the length. A truncated list with a larger real `issue_count` still
+ * falls back to that count.
  */
 export function selectMetronSeriesRun(args: {
   numbers: string[];
@@ -472,7 +492,7 @@ export function selectMetronSeriesRun(args: {
   complete: boolean;
 }): { numbers: string[]; issueCount: number | null } | null {
   const numbers = distinctIssueLabels(args.numbers);
-  const issueCount = catalogIssueCount(args.issueCount);
+  const issueCount = catalogBaseCount(args.numbers, catalogIssueCount(args.issueCount));
   if (args.complete && numbers.length > 0) return { numbers, issueCount };
   if (!args.complete && issueCount != null && issueCount > numbers.length) return { numbers: [], issueCount };
   if (numbers.length > 0) return { numbers, issueCount };
@@ -494,7 +514,7 @@ export async function fetchMetronSeriesRun(
   for (let page = 0; page < SERIES_RUN_PAGES && next; page += 1) {
     const body = await getJson(transport, next);
     for (const row of body.results ?? []) {
-      const number = readMetronIssueNumber(row);
+      const number = metronSeriesRunLabel(row);
       if (number) numbers.push(number);
     }
     next = typeof body.next === "string" && body.next ? body.next : null;

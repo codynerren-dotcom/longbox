@@ -4,8 +4,8 @@ import { pauseLabel, planGcdAcquire, noteGcdRetry, type GcdRateMode } from "@/li
 import { formatResumeTime, retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
 import { writeLog } from "@/lib/log/write";
-import { GcdNameMiss, GCD_NAME_PAGE_CAP, gcdSeriesNameQueries, gcdSeriesNameSegment } from "@/lib/catalog/gcd-name";
-import { catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
+import { GcdNameMiss, GCD_NAME_PAGE_CAP, gcdSeriesNameKey, gcdSeriesNameQueries, gcdSeriesNameSegment } from "@/lib/catalog/gcd-name";
+import { catalogBaseCount, catalogIssueCount, distinctIssueLabels } from "@/lib/series-view";
 import { readCollectedIssues } from "@/lib/shelf-format";
 
 type UnknownRecord = Record<string, unknown>;
@@ -121,8 +121,26 @@ export type GcdIssueRow = {
   coverUrl?: string | null;
 };
 
+export type GcdNameSearch = {
+  /** Stop paging once a series with this normalized name is already in hand. */
+  matchName?: string | null;
+};
+
+/** Series and issue payloads are reused for a week. A hit does not spend a GCD request. */
+export const GCD_RESPONSE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type GcdCachedResponse = {
+  body: unknown;
+  fetchedAt: string;
+};
+
+export type GcdResponseCache = {
+  read(key: string): Promise<GcdCachedResponse | null>;
+  write(key: string, row: GcdCachedResponse): Promise<void>;
+};
+
 export type GcdCatalog = {
-  seriesByName: (name: string) => Promise<GcdSeriesRow[]>;
+  seriesByName: (name: string, options?: GcdNameSearch) => Promise<GcdSeriesRow[]>;
   /** Series detail. Optional so older test catalogs still typecheck. */
   seriesById?: (id: string) => Promise<GcdSeriesRow | null>;
   issue: (id: string) => Promise<GcdIssueRow | null>;
@@ -415,13 +433,13 @@ function publisherOf(value: unknown): { name: string | null; id: string | null }
   return { name: raw, id: null };
 }
 
-/** Issue descriptors when the series lists them, otherwise `issue_count` as `1..N`. */
+/** Issue descriptors when the series lists them, otherwise `issue_count` as `1..N`. Variant rows collapse to the base number. */
 export function parseGcdSeriesRun(value: unknown): { numbers: string[]; issueCount: number | null } | null {
   const row = seriesRecord(value);
   if (!row) return null;
   const descriptors = Array.isArray(row.issue_descriptors) ? row.issue_descriptors.map((item) => text(item)).filter((item): item is string => item != null) : [];
-  const issueCount = catalogIssueCount(row.issue_count);
   const numbers = distinctIssueLabels(descriptors);
+  const issueCount = catalogBaseCount(descriptors, catalogIssueCount(row.issue_count));
   if (numbers.length > 0) return { numbers, issueCount };
   if (issueCount != null) return { numbers: [], issueCount };
   return null;
@@ -573,8 +591,8 @@ export async function gcdByBarcode(_parsed: ParsedBarcode): Promise<CatalogMatch
 
 export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
   return {
-    async seriesByName(name) {
-      return readGcdNamePages(fetchImpl, name);
+    async seriesByName(name, options) {
+      return readGcdNamePages(fetchImpl, name, options?.matchName);
     },
     async seriesById(id) {
       if (!/^\d{1,12}$/.test(id) || id === "0") return null;
@@ -602,10 +620,12 @@ export function createGcdCatalog(fetchImpl: typeof fetch = fetch): GcdCatalog {
 
 /**
  * A slash in the name is not put in the path. The rarest long part is queried,
- * then the same title with the slash removed. Each of those follows `next` for a few pages.
- * Every page reserves one GCD request.
+ * then the same title with the slash removed. Paging stops once `matchName`
+ * is already in the results, and the later name queries are skipped.
+ * Every live page reserves one GCD request.
  */
-async function readGcdNamePages(fetchImpl: typeof fetch, name: string): Promise<GcdSeriesRow[]> {
+async function readGcdNamePages(fetchImpl: typeof fetch, name: string, matchName?: string | null): Promise<GcdSeriesRow[]> {
+  const target = gcdSeriesNameKey((matchName ?? "").trim() || name);
   const queries = gcdSeriesNameQueries(name);
   const rows: GcdSeriesRow[] = [];
   const seen = new Set<string>();
@@ -614,7 +634,7 @@ async function readGcdNamePages(fetchImpl: typeof fetch, name: string): Promise<
     const segment = gcdSeriesNameSegment(query);
     if (!segment) continue;
     try {
-      const pageRows = await readOneGcdName(fetchImpl, segment);
+      const pageRows = await readOneGcdName(fetchImpl, segment, target);
       for (const row of pageRows) {
         if (seen.has(row.id)) continue;
         seen.add(row.id);
@@ -627,12 +647,13 @@ async function readGcdNamePages(fetchImpl: typeof fetch, name: string): Promise<
       }
       throw error;
     }
+    if (target && rows.some((row) => gcdSeriesNameKey(row.name) === target)) break;
   }
   if (rows.length === 0 && missed > 0 && missed === queries.length) throw new GcdNameMiss(name.trim());
   return rows;
 }
 
-async function readOneGcdName(fetchImpl: typeof fetch, segment: string): Promise<GcdSeriesRow[]> {
+async function readOneGcdName(fetchImpl: typeof fetch, segment: string, target: string): Promise<GcdSeriesRow[]> {
   const rows: GcdSeriesRow[] = [];
   const seen = new Set<string>();
   const seenPaths = new Set<string>();
@@ -656,6 +677,7 @@ async function readOneGcdName(fetchImpl: typeof fetch, segment: string): Promise
       seen.add(row.id);
       rows.push(row);
     }
+    if (target && rows.some((row) => gcdSeriesNameKey(row.name) === target)) break;
     path = nextGcdNamePage(body);
   }
   return rows;
@@ -676,6 +698,11 @@ function nextGcdNamePage(body: unknown): string | null {
 }
 
 async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs = GCD_DEFAULT_TIMEOUT_MS): Promise<unknown> {
+  const cacheKey = gcdResponseCacheKey(pathAndQuery);
+  if (cacheKey) {
+    const cached = await readFreshGcdResponse(cacheKey);
+    if (cached.hit) return cached.body;
+  }
   await gcdPause();
   const url = `${gcdBase()}${pathAndQuery}`;
   const started = Date.now();
@@ -706,7 +733,86 @@ async function gcdFetch(fetchImpl: typeof fetch, pathAndQuery: string, timeoutMs
   if (!response.ok) throw new Error(`GCD returned ${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json") && !contentType.includes("javascript")) throw new Error("GCD response was not JSON");
-  return response.json();
+  const body: unknown = await response.json();
+  if (cacheKey) await writeGcdResponse(cacheKey, body);
+  return body;
+}
+
+/** `/api/series/` and `/api/issue/` payloads, including a name-search page. Publisher lookups stay live. */
+function gcdResponseCacheKey(pathAndQuery: string): string | null {
+  const path = pathAndQuery.split("?")[0] ?? "";
+  if (/^\/api\/issue\/\d+\/?$/.test(path)) return `gcd-cache:${pathAndQuery}`;
+  if (/^\/api\/series\/\d+\/?$/.test(path)) return `gcd-cache:${pathAndQuery}`;
+  if (path.startsWith("/api/series/name/")) return `gcd-cache:${pathAndQuery}`;
+  return null;
+}
+
+let injectedGcdResponseCache: GcdResponseCache | null | undefined;
+
+/** Tests inject a store. Production uses `AppSetting`. Vitest leaves the cache off unless injected. */
+export function setGcdResponseCacheForTests(cache: GcdResponseCache | null): void {
+  injectedGcdResponseCache = cache;
+}
+
+function activeGcdResponseCache(): GcdResponseCache | null {
+  if (injectedGcdResponseCache !== undefined) return injectedGcdResponseCache;
+  if (process.env.VITEST === "true") return null;
+  return prismaGcdResponseCache;
+}
+
+const prismaGcdResponseCache: GcdResponseCache = {
+  async read(key) {
+    const { prisma } = await import("@/lib/db");
+    const row = await prisma.appSetting.findUnique({ where: { key } });
+    return parseGcdCachedResponse(row?.plain ?? null);
+  },
+  async write(key, row) {
+    const { prisma } = await import("@/lib/db");
+    const plain = JSON.stringify(row);
+    await prisma.appSetting.upsert({
+      where: { key },
+      create: { key, secret: null, plain },
+      update: { secret: null, plain },
+    });
+  },
+};
+
+function parseGcdCachedResponse(plain: string | null): GcdCachedResponse | null {
+  if (!plain) return null;
+  try {
+    const value = JSON.parse(plain) as { body?: unknown; fetchedAt?: unknown };
+    if (!value || typeof value !== "object" || typeof value.fetchedAt !== "string") return null;
+    if (!("body" in value)) return null;
+    return { body: value.body, fetchedAt: value.fetchedAt };
+  } catch {
+    return null;
+  }
+}
+
+async function readFreshGcdResponse(key: string): Promise<{ hit: true; body: unknown } | { hit: false }> {
+  const cache = activeGcdResponseCache();
+  if (!cache) return { hit: false };
+  try {
+    const row = await cache.read(key);
+    if (!row) return { hit: false };
+    const then = Date.parse(row.fetchedAt);
+    if (Number.isNaN(then)) return { hit: false };
+    const age = Date.now() - then;
+    if (age < 0 || age >= GCD_RESPONSE_MAX_AGE_MS) return { hit: false };
+    return { hit: true, body: row.body };
+  } catch {
+    return { hit: false };
+  }
+}
+
+async function writeGcdResponse(key: string, body: unknown): Promise<void> {
+  const cache = activeGcdResponseCache();
+  if (!cache) return;
+  try {
+    await cache.write(key, { body, fetchedAt: new Date().toISOString() });
+  } catch {
+    return;
+  }
 }
 
 /** A 404 on `/api/series/name/` is an empty name search. Any other 404 is a missing record. */

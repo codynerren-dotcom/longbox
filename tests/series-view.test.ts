@@ -23,6 +23,17 @@ import {
   type SeriesCopy,
 } from "@/lib/series-view";
 
+function eightBillionGeniesDescriptors(): string[] {
+  const notes = ["Cover A - Ryan Browne", "Second Printing", "Bird City Comics Store Variant", "Facsimile"];
+  const labels: string[] = [];
+  for (let issue = 1; issue <= 8; issue += 1) {
+    labels.push(String(issue));
+    for (const note of notes) labels.push(`${issue} [${note}]`);
+  }
+  labels.push("1K", "2E", "3D");
+  return labels;
+}
+
 function copy(overrides: Partial<SeriesCopy> & Pick<SeriesCopy, "id">): SeriesCopy {
   return {
     series: "Saga",
@@ -194,6 +205,21 @@ describe("series rows", () => {
     expect(seriesHeaderSummary([copy({ id: "a", issueNo: "1" }), copy({ id: "b", issueNo: "2" })], { numbers: ["1", "2"], issueCount: 9 })).toBe(
       "2 comics · Have: 1-2",
     );
+    const genies = eightBillionGeniesDescriptors();
+    expect(distinctIssueLabels(genies)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8"]);
+    const ownedGenies = [
+      ...["1", "2", "3", "4", "5", "6", "7", "8"].map((issueNo, index) =>
+        copy({ id: `genies-${index}`, series: "Eight Billion Genies", issueNo }),
+      ),
+      copy({ id: "genies-k", series: "Eight Billion Genies", issueNo: "1K", variantDescription: "Facsimile" }),
+    ];
+    const geniesRun = { numbers: genies, issueCount: 40 };
+    expect(seriesMissing(ownedGenies, geniesRun)).toBeNull();
+    expect(haveRange(ownedGenies)).toBe("Have: 1-8");
+    expect(ownedIssueCount(ownedGenies)).toBe(8);
+    expect(seriesHeaderSummary(ownedGenies, geniesRun)).toBe("9 comics · Have: 1-8");
+    expect(seriesHeaderSummary(ownedGenies, geniesRun)).not.toContain("Missing");
+    expect(seriesMissing(ownedGenies.slice(0, 7), geniesRun)).toEqual({ kind: "missing", count: 1, parts: ["#8"] });
     const holes = ["1", "12", "14", "18", "19", "21"].map((issueNo, index) => copy({ id: `g${index}`, issueNo }));
     expect(seriesHeaderSummary(holes, null)).toBe("6 comics · Have: 1-21 · Gaps 15: #2-11, #13, #15-17, #20");
     const parts = Array.from({ length: 20 }, (_, index) => `#${index + 2}`);
