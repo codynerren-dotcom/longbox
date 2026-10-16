@@ -1,4 +1,5 @@
 import { CatalogIdLink } from "@/components/catalog-id-link";
+import { MetronCredit } from "@/components/metron-credit";
 import { issueCatalogLinks, seriesCatalogLinks, type CatalogTarget } from "@/lib/catalog-links";
 
 export function IssueCatalogLinks({
@@ -42,11 +43,14 @@ function CatalogLinks({ links }: { links: CatalogTarget }) {
 function SeriesLinks({ links }: { links: CatalogTarget }) {
   if (!links.metron && !links.comicVine && !links.gcd && !links.gcdCover) return null;
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      <SeriesChip label="Metron" view="View on Metron" href={links.metron} id={links.metronId} kind="metron-series" />
-      <SeriesChip label="Comic Vine" view="View on ComicVine" href={links.comicVine} id={links.comicVineId} kind="comicvine-series" />
-      <SeriesChip label="GCD" view="View on GCD" href={links.gcd} id={links.gcdId} kind="gcd-series" />
-      {links.gcdCover ? <Outbound href={links.gcdCover} label="GCD cover" /> : null}
+    <div className="mt-3">
+      <div className="flex flex-wrap gap-2">
+        <SeriesChip label="Metron" view="View on Metron" href={links.metron} id={links.metronId} kind="metron-series" />
+        <SeriesChip label="Comic Vine" view="View on ComicVine" href={links.comicVine} id={links.comicVineId} kind="comicvine-series" />
+        <SeriesChip label="GCD" view="View on GCD" href={links.gcd} id={links.gcdId} kind="gcd-series" />
+        {links.gcdCover ? <Outbound href={links.gcdCover} label="GCD cover" /> : null}
+      </div>
+      {links.metron ? <MetronCredit /> : null}
     </div>
   );
 }

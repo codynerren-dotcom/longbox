@@ -10,7 +10,7 @@ import {
   planComicVineAcquire,
   type ComicVineRateState,
 } from "@/lib/catalog/rate-limit";
-import { fetchMetronIssueBody, listMetronIssueRows, type MetronTransport } from "@/lib/covers/metron-client";
+import { fetchMetronIssueBody, legacyMetronNumber, listMetronIssueRows, metronIssueFollowUp, type MetronTransport } from "@/lib/covers/metron-client";
 import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
 import { catalogNameQueries, isbnDigits, isCollected, metronSeriesType, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
@@ -83,6 +83,11 @@ export async function searchMetronMatches(
       if (params.size > 0) rows = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
     }
     if (rows.length > 0) break;
+  }
+  if (rows.length === 0 && parsed.series) {
+    const year = legacyMetronNumber(parsed.issueNo ?? "") ? parsed.year : null;
+    const follow = metronIssueFollowUp(parsed.series, parsed.issueNo ?? "", year);
+    if (follow) rows = await listMetronIssueRows(transport, follow);
   }
   return orderMatchHits(
     rows.map(mapMetronMatchHit).filter((hit): hit is MatchHit => hit !== null),

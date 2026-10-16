@@ -37,11 +37,16 @@ export function formatChoiceLabel(format: string | null | undefined): string {
   return SHELF_FORMAT_OPTIONS.find((option) => option.value === parsed)?.label ?? "Single Issue";
 }
 
-/** Metron series type name for a collected edition. Singles stay untyped. */
+/**
+ * Metron series type name for a collected edition. Singles stay untyped.
+ * Graphic Novel is its own type. Compendium has no Metron type, so it stays a trade.
+ * https://metron-project.github.io/blog/june-2024-update
+ */
 export function metronSeriesType(format: ShelfFormat): string | null {
   if (format === "hc") return "Hardcover";
   if (format === "omnibus") return "Omnibus";
-  if (format === "tp" || format === "gn" || format === "compendium") return "Trade Paperback";
+  if (format === "gn") return "Graphic Novel";
+  if (format === "tp" || format === "compendium") return "Trade Paperback";
   return null;
 }
 

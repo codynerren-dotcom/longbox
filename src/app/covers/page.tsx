@@ -88,7 +88,7 @@ export default async function CoversPage() {
       <section className="rounded-2xl bg-panel p-5 ring-1 ring-white/5">
         <BackfillButton />
         {!configured ? (
-          <p className="mt-3 text-sm text-mist">Metron username and password are not set. Add them in Settings, then run the backfill.</p>
+          <p className="mt-3 text-sm text-mist">A Metron API token, or a username and password, is not set. Add the username and password in Settings, or set the token in the environment, then run the backfill.</p>
         ) : null}
         <div className="mt-3">
           <CoverLiveStatus />

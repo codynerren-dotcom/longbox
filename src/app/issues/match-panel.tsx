@@ -6,6 +6,7 @@ import { useState, useTransition } from "react";
 import { linkMatchAction, loadGcdMatchAction, loadMatchCoversAction, repullCoverAction, searchMatchesAction, unlinkMatchAction } from "@/app/issues/actions";
 import { queueSearchAction } from "@/app/logs/queue-actions";
 import { CatalogIdLink, LinkedMessage } from "@/components/catalog-id-link";
+import { MetronCredit } from "@/components/metron-credit";
 import { LimitToast } from "@/components/limit-toast";
 import { matchPanelNote } from "@/lib/catalog/limit-notice";
 import type { QueueHint, QueueRequest } from "@/lib/catalog/search-queue";
@@ -161,7 +162,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
   const [metronMissed, setMetronMissed] = useState(false);
   const [pending, start] = useTransition();
   const ready = source === "metron" ? props.metronReady : source === "comicvine" ? props.comicVineReady : true;
-  const hint = source === "metron" ? "Add a Metron username and password in Settings to search." : "Add a Comic Vine API key in Settings to search.";
+  const hint = source === "metron" ? "Add a Metron API token in the environment, or a username and password in Settings, to search." : "Add a Comic Vine API key in Settings to search.";
 
   const collected = isCollected(shelfFormatOf(props.shelfFormat));
   const followGcd = props.facsimile || collected;
@@ -351,6 +352,7 @@ function MatchSheet(props: Props & { onClose: () => void; onNotice: (message: st
           <Tab active={source === "comicvine"} onClick={() => selectSource("comicvine")}>Comic Vine</Tab>
           <Tab active={source === "gcd"} onClick={() => selectSource("gcd")}>GCD</Tab>
         </div>
+        {source === "metron" ? <MetronCredit /> : null}
         {source === "gcd" ? (
           <p className="mt-3 text-sm text-mist">GCD data is CC BY-SA. Each row is one issue, including variants.</p>
         ) : null}

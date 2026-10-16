@@ -177,11 +177,16 @@ describe("settings resolution", () => {
     expect((await service.get()).comicvine.apiKey).toBe("cv-live-key");
   });
 
-  it("prefers basic auth when username and password are set", () => {
+  it("sends a Bearer token when a token is saved, even if a username and password are also set", () => {
     const config = buildConfig(emptyStored(), env({ metronUsername: "cody", metronPassword: "secret", metronToken: "token-value" }));
+    expect(metronAuthorization(config)?.header).toBe("Bearer token-value");
+  });
+
+  it("sends basic auth when a username and password are the only Metron credentials", () => {
+    const config = buildConfig(emptyStored(), env({ metronUsername: "cody", metronPassword: "secret" }));
     const auth = metronAuthorization(config);
     expect(auth?.header.startsWith("Basic ")).toBe(true);
-    expect(auth?.header).not.toContain("token-value");
+    expect(auth?.header).toContain(Buffer.from("cody:secret").toString("base64"));
   });
 
   it("sends a Bearer token when that is the only Metron credential", () => {

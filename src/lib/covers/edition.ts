@@ -72,6 +72,8 @@ export type MatchCandidate = {
   storeDate?: string | null;
   /** True when the catalog series is a single issue. A Special or One-Shot can then score as the shelf name. */
   oneIssue?: boolean;
+  /** Legacy issue number from Metron `alt_number`. */
+  altIssueNo?: string | null;
 };
 
 export type MatchScore = {
@@ -273,10 +275,11 @@ export function scoreCandidate(copy: EditionCopy, candidate: MatchCandidate): Ma
       ? edition.issueNo || stripIssueVariant(copy.issueNo).number
       : leadingIssue(copy.issueNo ?? "");
   const foundIssue = leadingIssue(candidate.issueNo);
+  const foundAlt = leadingIssue(candidate.altIssueNo ?? "");
   let issuePoints = 0;
   let blocked: string | null = null;
-  if (wantedIssue && foundIssue) {
-    const numbered = sameIssueNumber(wantedIssue, foundIssue);
+  if (wantedIssue && (foundIssue || foundAlt)) {
+    const numbered = sameIssueNumber(wantedIssue, foundIssue) || sameIssueNumber(wantedIssue, foundAlt);
     const facsimileNamed =
       edition.kind === "facsimile" &&
       seriesMentionsIssue(candidate.seriesName, wantedIssue) &&

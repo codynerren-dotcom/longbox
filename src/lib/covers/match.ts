@@ -132,6 +132,7 @@ function candidateFrom(hit: MetronIssueHit): MatchCandidate {
   return {
     seriesName: hit.seriesName,
     issueNo: hit.number,
+    altIssueNo: hit.altNumber,
     variant: hit.variant ?? hit.label,
     coverYear: hit.coverYear,
     releaseYear: hit.releaseYear ?? null,
@@ -326,6 +327,11 @@ function hitIssueNumber(hit: MetronIssueHit): string {
   return labeled?.[1] ?? "";
 }
 
+function hitHasIssueNumber(hit: MetronIssueHit, issueNo: string): boolean {
+  if (sameIssueNumber(hitIssueNumber(hit), issueNo)) return true;
+  return Boolean(hit.altNumber && sameIssueNumber(hit.altNumber, issueNo));
+}
+
 export function chooseIssue(
   hits: MetronIssueHit[],
   comic: CoverQuery,
@@ -347,7 +353,7 @@ export function chooseIssue(
       }
     }
     if (issueNo && sharedSeries(hits)) {
-      const numbered = hits.filter((hit) => sameIssueNumber(hitIssueNumber(hit), issueNo));
+      const numbered = hits.filter((hit) => hitHasIssueNumber(hit, issueNo));
       if (numbered.length === 1 && numbered[0]) {
         const chosen = coverForFullBarcode(comic.barcode, numbered[0]);
         const scored = scoreCandidate({ ...comic, issueNo: chosen.number || issueNo }, candidateFrom(chosen));
@@ -357,7 +363,7 @@ export function chooseIssue(
       }
     }
     if (issueNo) {
-      const numbered = hits.filter((hit) => sameIssueNumber(hitIssueNumber(hit), issueNo));
+      const numbered = hits.filter((hit) => hitHasIssueNumber(hit, issueNo));
       if (numbered.length === 1 && numbered[0]?.imageUrl) {
         const scored = scoreCandidate({ ...comic, issueNo: numbered[0].number || issueNo }, candidateFrom(numbered[0]));
         if (!scored.blocked) {
@@ -373,7 +379,7 @@ export function chooseIssue(
 
   let rows = hits;
   if (issueNo) {
-    const numbered = rows.filter((hit) => sameIssueNumber(hitIssueNumber(hit), issueNo));
+    const numbered = rows.filter((hit) => hitHasIssueNumber(hit, issueNo));
     if (numbered.length > 0) rows = numbered;
     else if (via === "series") return { status: "unmatched", reason: `No Metron issue for ${name}.`, score: 0 };
   }
@@ -470,7 +476,7 @@ export function choosePrintingIssue(hits: MetronIssueHit[], comic: CoverQuery, v
   const number = edition.issueNo || stripIssueVariant(comic.issueNo).number;
   let rows = dedupeHits(hits);
   if (number) {
-    const numbered = rows.filter((hit) => sameIssueNumber(printingIssueNumber(hit.number), number));
+    const numbered = rows.filter((hit) => hitHasIssueNumber(hit, number) || sameIssueNumber(printingIssueNumber(hit.number), number));
     if (numbered.length === 0) return { status: "unmatched", reason: `No later printing for ${labeled}.`, score: 0 };
     rows = numbered;
   }

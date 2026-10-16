@@ -3,6 +3,8 @@ export type MetronIssueHit = {
   seriesId: string | null;
   seriesName: string;
   number: string;
+  /** Legacy numbering, such as Captain America #783 on relaunch #13. */
+  altNumber?: string | null;
   coverYear: number | null;
   imageUrl: string | null;
   label: string | null;
@@ -52,6 +54,7 @@ export type CoverLookup = {
   searchSeriesByType?: (name: string, seriesType: string) => Promise<MetronSeriesHit[]>;
   /**
    * One list request: `series_name`, `number`, and `series_year_began`.
+   * A miss on a legacy number retries `alt_number`. A miss with no year retries `series_q`.
    * Present on the live client. Test lookups that still search series by name omit it.
    */
   issuesByName?: (seriesName: string, number: string, seriesYearBegan: number | null) => Promise<MetronIssueHit[]>;

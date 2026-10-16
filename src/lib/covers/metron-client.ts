@@ -146,11 +146,13 @@ export function mapIssue(value: unknown): MetronIssueHit | null {
   const variant = text(row.variant) ?? text(record(row.variant)?.name);
   const covers = coversWithUpc(row);
   const upcs = listedUpcs(row);
+  const altNumber = text(row.alt_number);
   return {
     id: String(row.id),
     seriesId: series?.id != null ? String(series.id) : null,
     seriesName: seriesName ?? "",
     number: issueNumberText(row),
+    ...(altNumber ? { altNumber } : {}),
     coverYear: coverYearOf(text(row.cover_date)),
     imageUrl: httpsUrl(text(row.image)),
     label: text(row.issue) ?? variant,
@@ -272,7 +274,7 @@ async function takeJobSlot(now: number): Promise<void> {
   });
 }
 
-type CachedDetail = { modified: string; body: MetronPage };
+type CachedDetail = { modified: string | null; etag: string | null; body: MetronPage };
 
 const detailCache = new Map<string, CachedDetail>();
 
@@ -282,9 +284,11 @@ export function clearMetronDetailCache(): void {
 }
 
 /**
- * URLs that support `If-Modified-Since`: an issue detail, or a series `issue_list`.
+ * URLs that support conditional requests: an issue detail, or a series `issue_list`.
  * A filtered list such as `/issue/?upc=` does not.
+ * Send `If-Modified-Since` and, when the last response included one, `If-None-Match`.
  * https://github.com/Metron-Project/metron/blob/master/api/README.md#conditional-requests
+ * https://metron-project.github.io/blog/february-2026-update
  */
 export function metronConditionalKey(pathOrUrl: string): string | null {
   const path = pathOrUrl.split("?")[0] ?? pathOrUrl;
@@ -350,7 +354,8 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
       "User-Agent": METRON_USER_AGENT,
     };
     const cached = cacheKey ? detailCache.get(cacheKey) : undefined;
-    if (cached) headers["If-Modified-Since"] = cached.modified;
+    if (cached?.modified) headers["If-Modified-Since"] = cached.modified;
+    if (cached?.etag) headers["If-None-Match"] = cached.etag;
     const started = transport.now();
     let response: Response;
     try {
@@ -412,7 +417,8 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     const json = (await response.json()) as MetronPage;
     if (cacheKey) {
       const modified = response.headers.get("last-modified");
-      if (modified) detailCache.set(cacheKey, { modified, body: json });
+      const etag = response.headers.get("etag");
+      if (modified || etag) detailCache.set(cacheKey, { modified, etag, body: json });
       else detailCache.delete(cacheKey);
     }
     return json;
@@ -438,6 +444,46 @@ async function collect(transport: MetronTransport, path: string, map: (value: un
   return hits;
 }
 
+/** A relaunch's legacy number, such as Captain America #783. Short issue numbers stay on `number`. */
+export function legacyMetronNumber(number: string): boolean {
+  return /^\d{3,}$/.test(number.trim());
+}
+
+/**
+ * Issue list query. `primary` is series name plus number.
+ * `alt-number` is the legacy number. `alt-series` searches the name and its alternate names.
+ * https://metron-project.github.io/blog/july-2026-update
+ * https://metron-project.github.io/blog/metroninfo-v1-1
+ */
+export function metronIssueQuery(
+  seriesName: string,
+  number: string,
+  seriesYearBegan: number | null,
+  kind: "primary" | "alt-number" | "alt-series",
+): string | null {
+  const params = new URLSearchParams();
+  const name = seriesName.trim();
+  const issue = number.trim();
+  if (kind === "alt-series") {
+    if (name) params.set("series_q", name);
+  } else if (name) params.set("series_name", name);
+  if (kind === "alt-number") {
+    if (issue) params.set("alt_number", issue);
+  } else if (issue) params.set("number", issue);
+  if (seriesYearBegan != null) params.set("series_year_began", String(seriesYearBegan));
+  if ([...params.keys()].length === 0) return null;
+  return `/issue/?${params.toString()}`;
+}
+
+/** One follow-up after `series_name` plus `number` misses. */
+export function metronIssueFollowUp(seriesName: string, number: string, seriesYearBegan: number | null): string | null {
+  const kind = legacyMetronNumber(number) ? "alt-number" : "alt-series";
+  const follow = metronIssueQuery(seriesName, number, seriesYearBegan, kind);
+  const primary = metronIssueQuery(seriesName, number, seriesYearBegan, "primary");
+  if (!follow || follow === primary) return null;
+  return follow;
+}
+
 export function createMetronCoverLookup(transport: MetronTransport): CoverLookup {
   return {
     async issuesByUpc(upc) {
@@ -449,14 +495,15 @@ export function createMetronCoverLookup(transport: MetronTransport): CoverLookup
       return hits as MetronIssueHit[];
     },
     async issuesByName(seriesName, number, seriesYearBegan) {
-      const params = new URLSearchParams();
-      const name = seriesName.trim();
-      if (name) params.set("series_name", name);
-      if (number.trim()) params.set("number", number.trim());
-      if (seriesYearBegan != null) params.set("series_year_began", String(seriesYearBegan));
-      if (params.size === 0) return [];
-      const hits = await collect(transport, `/issue/?${params.toString()}`, mapIssue);
-      return hits as MetronIssueHit[];
+      const primary = metronIssueQuery(seriesName, number, seriesYearBegan, "primary");
+      if (!primary) return [];
+      let hits = (await collect(transport, primary, mapIssue)) as MetronIssueHit[];
+      if (hits.length > 0) return hits;
+      // A year is already retried by the caller. Spend the extra request on a legacy number, or on alternate names once the year is gone.
+      if (!legacyMetronNumber(number) && seriesYearBegan != null) return hits;
+      const follow = metronIssueFollowUp(seriesName, number, seriesYearBegan);
+      if (!follow) return hits;
+      return (await collect(transport, follow, mapIssue)) as MetronIssueHit[];
     },
     async searchSeries(name, query?: MetronSeriesQuery) {
       const params = new URLSearchParams({ name });

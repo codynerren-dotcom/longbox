@@ -14,7 +14,7 @@ export function SettingsForm({ view }: { view: SettingsView }) {
     <div className="space-y-4">
       <CredentialCard
         title="Metron"
-        detail="Username and password for catalog lookup and cover backfill. A saved value overrides the environment."
+        detail="An API token in the environment is sent as Bearer. Username and password are the fallback. A saved value overrides the environment password."
         service="metron"
         inputs={[
           { name: "metron.username", label: "Username", field: view.metron.username },

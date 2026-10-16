@@ -1,4 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MetronCredit } from "@/components/metron-credit";
+import { scoreCandidate } from "@/lib/covers/edition";
 import { searchMetronMatches } from "@/lib/catalog/match-search";
 import { emptyMetronBudget } from "@/lib/catalog/rate-limit";
 import { saveMetronWindow } from "@/lib/catalog/rate-store";
@@ -218,6 +222,26 @@ describe("Metron request practices", () => {
         lane: "interactive",
       }),
     ).toEqual({ action: "retry", waitMs: 45_000 });
+    expect(
+      metronStatusPlan({
+        status: 429,
+        headers: new Headers({ "x-ratelimit-burst-reset": String(reset) }),
+        body: "",
+        attempt: 1,
+        now,
+        lane: "interactive",
+      }),
+    ).toEqual({ action: "retry", waitMs: 45_000 });
+    expect(
+      metronStatusPlan({
+        status: 429,
+        headers: new Headers(),
+        body: "",
+        attempt: 1,
+        now,
+        lane: "interactive",
+      }),
+    ).toEqual({ action: "retry", waitMs: 60_000 });
     expect(
       metronStatusPlan({
         status: 404,
@@ -440,5 +464,123 @@ describe("Metron request practices", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("sends If-None-Match when the previous response included an ETag", async () => {
+    clearMetronDetailCache();
+    const etag = "\"abc123\"";
+    let calls = 0;
+    const client = transport({
+      fetch: async (_url, init) => {
+        calls += 1;
+        const headers = init?.headers as Record<string, string>;
+        if (calls === 1) {
+          expect(headers["If-None-Match"]).toBeUndefined();
+          return Response.json({ id: 9, number: "1" }, { headers: { ETag: etag } });
+        }
+        expect(headers["If-None-Match"]).toBe(etag);
+        return new Response(null, { status: 304 });
+      },
+    }).transport;
+    const first = await fetchMetronIssueBody(client, "9");
+    const second = await fetchMetronIssueBody(client, "9");
+    expect(second).toEqual(first);
+    expect(calls).toBe(2);
+  });
+
+  it("retries a legacy issue number with alt_number and an unknown series with series_q", async () => {
+    const legacy: string[] = [];
+    const legacyClient = transport({
+      fetch: async (url) => {
+        legacy.push(String(url));
+        if (legacy.length === 1) return Response.json({ results: [] });
+        return Response.json({
+          results: [{ id: 13, series: { id: 4, name: "Captain America", year_began: 2025 }, number: "13", alt_number: "783" }],
+        });
+      },
+    }).transport;
+    const legacyLookup = createMetronCoverLookup(legacyClient).issuesByName;
+    if (!legacyLookup) throw new Error("issuesByName missing");
+    const legacyHits = await legacyLookup("Captain America", "783", 2025);
+    expect(legacyHits.map((hit) => hit.altNumber)).toEqual(["783"]);
+    expect(legacy[0]).toContain("number=783");
+    expect(legacy[0]).not.toContain("alt_number=");
+    expect(legacy[1]).toContain("alt_number=783");
+    expect(legacy[1]).toContain("series_year_began=2025");
+
+    const alt: string[] = [];
+    const altClient = transport({
+      fetch: async (url) => {
+        alt.push(String(url));
+        if (alt.length === 1) return Response.json({ results: [] });
+        return Response.json({ results: [{ id: 8, series: { id: 2, name: "Thor", year_began: 2025 }, number: "1" }] });
+      },
+    }).transport;
+    const altLookup = createMetronCoverLookup(altClient).issuesByName;
+    if (!altLookup) throw new Error("issuesByName missing");
+    const altHits = await altLookup("The Mortal Thor", "1", null);
+    expect(altHits.map((hit) => hit.id)).toEqual(["8"]);
+    expect(alt[1]).toContain("series_q=The+Mortal+Thor");
+    expect(alt).toHaveLength(2);
+
+    const held: string[] = [];
+    const heldClient = transport({
+      fetch: async (url) => {
+        held.push(String(url));
+        return Response.json({ results: [] });
+      },
+    }).transport;
+    const heldLookup = createMetronCoverLookup(heldClient).issuesByName;
+    if (!heldLookup) throw new Error("issuesByName missing");
+    await heldLookup("Saga", "1", 2012);
+    expect(held).toHaveLength(1);
+
+    const searched: string[] = [];
+    await searchMetronMatches(
+      transport({
+        fetch: async (url) => {
+          searched.push(String(url));
+          return Response.json({ results: [] });
+        },
+      }).transport,
+      "Captain America 2025 #783",
+      "",
+      "query",
+    );
+    const follow = searched.at(-1) ?? "";
+    expect(follow).toContain("alt_number=783");
+    expect(follow).toContain("series_year_began=2025");
+  });
+
+  it("credits Metron and accepts a legacy issue number", () => {
+    const html = renderToStaticMarkup(createElement(MetronCredit));
+    expect(html).toContain('href="https://metron.cloud/"');
+    expect(html).toContain('href="https://creativecommons.org/licenses/by-sa/4.0/"');
+    expect(html).toContain("Cover images belong to their publishers.");
+
+    const scored = scoreCandidate(
+      {
+        series: "Captain America",
+        issueNo: "783",
+        coverYear: 2025,
+        barcode: null,
+        variant: null,
+        publisher: "Marvel",
+        seriesYear: 2025,
+      },
+      {
+        seriesName: "Captain America",
+        issueNo: "13",
+        altIssueNo: "783",
+        variant: null,
+        coverYear: 2025,
+        releaseYear: 2025,
+        seriesYear: 2025,
+        upc: null,
+        publisher: "Marvel",
+      },
+    );
+    expect(scored.blocked).toBeNull();
+    expect(scored.score).toBeGreaterThanOrEqual(75);
   });
 });

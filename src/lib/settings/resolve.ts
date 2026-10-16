@@ -259,10 +259,12 @@ export function applyCredentialOverrides(
 }
 
 export function metronAuthorization(config: IntegrationConfig): { header: string; baseUrl: string } | null {
+  // A token is the credential Metron asks third-party apps to use. Basic Auth remains for an account that has no token yet.
+  // https://metron-project.github.io/blog/token-authentication
+  if (config.metron.token) return { header: `Bearer ${config.metron.token}`, baseUrl: config.metron.baseUrl };
   if (config.metron.username && config.metron.password) {
     const token = Buffer.from(`${config.metron.username}:${config.metron.password}`).toString("base64");
     return { header: `Basic ${token}`, baseUrl: config.metron.baseUrl };
   }
-  if (config.metron.token) return { header: `Bearer ${config.metron.token}`, baseUrl: config.metron.baseUrl };
   return null;
 }
