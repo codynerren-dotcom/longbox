@@ -4,10 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { budgetPauseMessage } from "@/lib/covers/budget-pause";
 import { includeInRematch, rematchRunPlan } from "@/lib/covers/edition";
-import { addMiss, armEditionPause, comicAttemptSkipMessage, comicsAfterCursor, continuedRunId, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake, noteComicAttempt, resumeRematchIndex } from "@/lib/covers/edition-job";
+import { addMiss, armEditionPause, comicAttemptSkipMessage, comicsAfterCursor, continuedRunId, EDITION_PAUSE_GRACE_MS, EDITION_PAUSE_HANG_MESSAGE, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake, noteComicAttempt, resumeRematchIndex } from "@/lib/covers/edition-job";
 import { editionOutcome, runFacsimilePass } from "@/lib/covers/facsimile-once";
-import { acquireEditionRematchLock, armJobResume, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock } from "@/lib/covers/facsimile-rematch";
-import { editionJobText, writeEditionJob } from "@/lib/covers/job-state";
+import { acquireEditionRematchLock, armEditionResumeSweep, armJobResume, EDITION_RESUME_SWEEP_MS, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock, setEditionResumeStartForTests, stopEditionResumeSweep } from "@/lib/covers/facsimile-rematch";
+import { editionJobText, readEditionJob, writeEditionJob } from "@/lib/covers/job-state";
 import { budgetDay, nextBudgetDayStart } from "@/lib/covers/limiter";
 import { keptPrintingCover } from "@/lib/covers/printing-cover";
 
@@ -45,6 +45,7 @@ describe("edition re-match budget pause", () => {
     expect(source).toContain("armJobResume");
     expect(source).toContain("scheduleFacsimileRematch");
     expect(readFileSync("src/instrumentation.ts", "utf8")).toContain("scheduleFacsimileRematch");
+    expect(readFileSync("src/instrumentation.ts", "utf8")).toContain("armEditionResumeSweep");
   });
 
   it("resumes a budget pause on a fake timer and fails loudly when the timer cannot arm", () => {
@@ -201,7 +202,7 @@ describe("edition re-match budget pause", () => {
     const paused = editionJobText(
       writeEditionJob({ state: "paused", message: null, resumeAt, metronResumeAt: resumeAt, matched: 2, unmatched: 1 }, dir),
     );
-    expect(paused).toMatch(/^Edition re-match: paused until /);
+    expect(paused).toBe("Edition re-match: paused until 12:00 AM CT");
     expect(editionJobText(writeEditionJob({ state: "finished", message: null, resumeAt: null, metronResumeAt: null, matched: 3, unmatched: 1 }, dir))).toBe(
       "Edition re-match: finished",
     );
@@ -268,5 +269,81 @@ describe("edition re-match budget pause", () => {
       coverFile: null,
       coverNote: "Needs review. Already marked.",
     });
+  });
+});
+
+describe("edition resume sweep", () => {
+  const previousCovers = process.env.COVERS_DIR;
+
+  afterEach(() => {
+    stopEditionResumeSweep();
+    if (previousCovers === undefined) delete process.env.COVERS_DIR;
+    else process.env.COVERS_DIR = previousCovers;
+    vi.useRealTimers();
+  });
+
+  function pausedJob(dir: string, resumeAt: number) {
+    return writeEditionJob(
+      {
+        state: "paused",
+        message: "Edition re-match paused.",
+        resumeAt: new Date(resumeAt).toISOString(),
+        metronResumeAt: new Date(resumeAt).toISOString(),
+        matched: 0,
+        unmatched: 0,
+        attempted: 11,
+        proposed: 0,
+        noCandidate: 0,
+        mode: "propose",
+        scope: "full",
+        runId: "run-38",
+      },
+      dir,
+    );
+  }
+
+  it("resumes a paused run from the boot interval after resumeAt", () => {
+    vi.useFakeTimers();
+    const start = Date.parse("2026-10-17T17:07:47.000Z");
+    vi.setSystemTime(start);
+    const dir = mkdtempSync(path.join(tmpdir(), "longbox-resume-"));
+    process.env.COVERS_DIR = dir;
+    const resumeAt = start + 3 * 60 * 60 * 1000;
+    pausedJob(dir, resumeAt);
+    let started = 0;
+    setEditionResumeStartForTests(() => {
+      started += 1;
+      const job = readEditionJob(dir);
+      if (job) writeEditionJob({ ...job, state: "running", resumeAt: null, metronResumeAt: null, message: "Edition re-match: running" }, dir);
+      return true;
+    });
+    armEditionResumeSweep({ force: true });
+    vi.advanceTimersByTime(60_000);
+    expect(started).toBe(0);
+    expect(readEditionJob(dir)?.state).toBe("paused");
+    vi.setSystemTime(resumeAt);
+    vi.advanceTimersByTime(EDITION_RESUME_SWEEP_MS);
+    expect(started).toBe(1);
+    expect(readEditionJob(dir)?.state).toBe("running");
+    vi.advanceTimersByTime(EDITION_RESUME_SWEEP_MS * 3);
+    expect(started).toBe(1);
+    expect(readFileSync("src/instrumentation.ts", "utf8")).toContain("armEditionResumeSweep");
+    expect(readFileSync("src/app/api/covers/status/route.ts", "utf8")).toContain("sweepEditionResume");
+  });
+
+  it("marks a pause stale when it is still paused after resumeAt plus the grace period", () => {
+    vi.useFakeTimers();
+    const start = Date.parse("2026-10-17T17:08:54.000Z");
+    vi.setSystemTime(start);
+    const dir = mkdtempSync(path.join(tmpdir(), "longbox-resume-stale-"));
+    process.env.COVERS_DIR = dir;
+    pausedJob(dir, start);
+    setEditionResumeStartForTests(() => false);
+    armEditionResumeSweep({ force: true });
+    vi.advanceTimersByTime(EDITION_RESUME_SWEEP_MS);
+    expect(readEditionJob(dir)?.state).toBe("paused");
+    vi.advanceTimersByTime(EDITION_PAUSE_GRACE_MS);
+    expect(readEditionJob(dir)?.state).toBe("stale");
+    expect(readEditionJob(dir)?.message).toBe(EDITION_PAUSE_HANG_MESSAGE);
   });
 });

@@ -1,6 +1,7 @@
 # Allowlist. The app directory on the box also holds backups and env files.
 *
 
+!REVISION
 !package.json
 !package-lock.json
 !next.config.ts

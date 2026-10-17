@@ -306,13 +306,19 @@ export function planMetronAcquire(
     };
   }
   const sustainedRemaining = sustainedRemainingOf(state);
-  if (sustainedRemaining <= 0) {
+  const sustainedFloor = lane === "background" ? METRON_INTERACTIVE_RESERVE : 0;
+  if (sustainedRemaining <= sustainedFloor) {
     const resumeAt = state.sustainedResetAt != null && state.sustainedResetAt > now ? state.sustainedResetAt : 0;
-    if (resumeAt > 0) state.pausedUntil = resumeAt;
+    const holdingReserve = lane === "background" && sustainedRemaining > 0;
+    if (!holdingReserve && resumeAt > 0) state.pausedUntil = resumeAt;
     return {
       kind: "pause",
       state,
-      hold: { resumeAt, budget: "Metron daily", count: sustainedLimitOf(state) - sustainedRemaining },
+      hold: {
+        resumeAt,
+        budget: holdingReserve ? "Metron reserve" : "Metron daily",
+        count: sustainedLimitOf(state) - sustainedRemaining,
+      },
     };
   }
   const burstRemaining = burstRemainingOf(state);
@@ -376,8 +382,8 @@ export function applyMetronHeaders(budget: MetronBudget, headers: HeaderBag, now
 
 function earliestExhaustedReset(read: MetronHeaderWindows, now: number): number | null {
   let resume: number | null = null;
-  if (read.sustainedRemaining != null && read.sustainedRemaining <= 0) {
-    resume = read.sustainedResetAt != null && read.sustainedResetAt > now ? read.sustainedResetAt : now + 60_000;
+  if (read.sustainedRemaining != null && read.sustainedRemaining <= 0 && read.sustainedResetAt != null && read.sustainedResetAt > now) {
+    resume = read.sustainedResetAt;
   }
   if (read.burstRemaining != null && read.burstRemaining <= METRON_SAFETY_REMAINING) {
     const burstAt = read.burstResetAt != null && read.burstResetAt > now ? read.burstResetAt : now + METRON_BURST_WINDOW_MS;

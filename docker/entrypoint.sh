@@ -33,5 +33,12 @@ fi
 echo "Seeding the synthetic shelf when that setting is on and the database is empty..."
 npx tsx prisma/seed.ts
 
+if [ -z "${LONGBOX_COMMIT:-}" ] || [ "${LONGBOX_COMMIT}" = "dev" ]; then
+  if [ -s /app/REVISION ]; then
+    LONGBOX_COMMIT="$(tr -d '[:space:]' < /app/REVISION)"
+    export LONGBOX_COMMIT
+  fi
+fi
+
 echo "Starting Longbox on port ${PORT:-3210}"
 exec npx next start -p "${PORT:-3210}" -H 0.0.0.0

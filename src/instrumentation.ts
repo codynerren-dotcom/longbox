@@ -1,6 +1,6 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
-  const { scheduleFacsimileRematch } = await import("@/lib/covers/facsimile-rematch");
+  const { armEditionResumeSweep, scheduleFacsimileRematch } = await import("@/lib/covers/facsimile-rematch");
   if (process.env.NEXT_PHASE !== "phase-production-build") {
     const { ensureRateHydrated } = await import("@/lib/catalog/rate-store");
     const { resumePausedCatalogJobs } = await import("@/lib/covers/run");
@@ -10,6 +10,7 @@ export async function register(): Promise<void> {
     await resumePausedCatalogJobs();
   }
   scheduleFacsimileRematch();
+  armEditionResumeSweep();
 }
 
 type RequestError = Error & { digest?: string };

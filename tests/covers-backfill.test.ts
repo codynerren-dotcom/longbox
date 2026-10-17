@@ -797,11 +797,13 @@ describe("Metron rate limit", () => {
     guardFullRunCall(morning, 5000);
     recordFullRunCall(morning);
     expect(fullRunMetronUsed()).toEqual({ used: 3000, day: "2026-10-17" });
-    expect(() => guardFullRunCall(morning, 5000)).toThrow(MetronBudgetError);
+    const reset = morning + 3 * 60 * 60 * 1000;
+    expect(() => guardFullRunCall(morning, 5000, reset)).toThrow(MetronBudgetError);
     try {
-      guardFullRunCall(morning, 5000);
+      guardFullRunCall(morning, 5000, reset);
     } catch (error) {
-      expect(error).toMatchObject({ pause: { budget: "Metron full run", count: 3000 } });
+      expect(error).toMatchObject({ pause: { budget: "Metron full run", count: 3000, resumeAt: reset } });
+      expect(error instanceof MetronBudgetError ? error.pause.resumeAt - morning : 0).toBeGreaterThan(60_000);
       expect(error instanceof MetronBudgetError ? error.message : "").toBe(
         "Full re-match used 60% of today's Metron budget. Pausing so searches still have room.",
       );

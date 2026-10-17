@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { dockerignoreIncludes, forbiddenDockerContext, listDockerContext } from "@/lib/docker-context";
+import { appCommit } from "@/lib/version";
 
 const ignore = readFileSync(".dockerignore", "utf8");
 
@@ -21,6 +22,7 @@ describe("docker build context", () => {
       "prisma/migrations/20261017140000_comic_isbn/migration.sql",
       "next.config.ts",
       "tsconfig.json",
+      "REVISION",
     ];
     const dropped = [
       "backup-2026.sql",
@@ -53,5 +55,20 @@ describe("docker build context", () => {
     expect(sent.some((file) => file === "node_modules" || file.startsWith("node_modules/") || file.startsWith(".next/") || file.startsWith("data/") || file.startsWith("backups/"))).toBe(false);
     expect(sent).toContain("src/app/covers/page.tsx");
     expect(sent).toContain("prisma/migrations/20261017140000_comic_isbn/migration.sql");
+  });
+
+  it("reports the image revision when LONGBOX_COMMIT is still the default", () => {
+    const previous = process.env.LONGBOX_COMMIT;
+    process.env.LONGBOX_COMMIT = "dev";
+    writeFileSync("REVISION", "abc1234\n");
+    try {
+      expect(dockerignoreIncludes(ignore, "REVISION")).toBe(true);
+      expect(readFileSync("docker/entrypoint.sh", "utf8")).toContain("/app/REVISION");
+      expect(appCommit()).toBe("abc1234");
+    } finally {
+      unlinkSync("REVISION");
+      if (previous === undefined) delete process.env.LONGBOX_COMMIT;
+      else process.env.LONGBOX_COMMIT = previous;
+    }
   });
 });

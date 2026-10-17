@@ -232,6 +232,48 @@ describe("interactive reserve", () => {
     const stopped = planMetronAcquire(budget, now, "interactive", DAY);
     expect(stopped.kind).toBe("pause");
   });
+
+  it("holds a background job until the sustained reset when the manual reserve is all that remains", () => {
+    const reset = NOW + 3 * 60 * 60 * 1000;
+    const budget: MetronBudget = {
+      ...emptyMetronBudget(),
+      day: DAY,
+      count: 4997,
+      sustainedLimit: 5000,
+      sustainedRemaining: METRON_INTERACTIVE_RESERVE,
+      sustainedResetAt: reset,
+      burstLimit: 20,
+      burstRemaining: 20,
+      burstUsed: 0,
+    };
+    const held = planMetronAcquire(budget, NOW, "background", DAY);
+    expect(held.kind).toBe("pause");
+    if (held.kind === "pause") {
+      expect(held.hold.budget).toBe("Metron reserve");
+      expect(held.hold.resumeAt).toBe(reset);
+      expect(held.hold.resumeAt - NOW).toBeGreaterThan(60_000);
+    }
+    expect(planMetronAcquire(budget, NOW, "interactive", DAY).kind).toBe("send");
+
+    const spent = { ...budget, count: 5000, sustainedRemaining: 0 };
+    const daily = planMetronAcquire(spent, NOW, "background", DAY);
+    expect(daily.kind).toBe("pause");
+    if (daily.kind === "pause") {
+      expect(daily.hold.budget).toBe("Metron daily");
+      expect(daily.hold.resumeAt).toBe(reset);
+    }
+    const burst = planMetronAcquire(
+      { ...budget, sustainedRemaining: 51, count: 4949, burstRemaining: 2, burstResetAt: NOW + 60_000 },
+      NOW,
+      "background",
+      DAY,
+    );
+    expect(burst.kind).toBe("pause");
+    if (burst.kind === "pause") {
+      expect(burst.hold.budget).toBe("Metron reserve");
+      expect(burst.hold.resumeAt).toBe(NOW + 60_000);
+    }
+  });
 });
 
 describe("job cursor", () => {

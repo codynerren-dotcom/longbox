@@ -13,7 +13,9 @@ import {
   armEditionPause,
   comicAttemptSkipMessage,
   continuedRunId,
+  EDITION_PAUSE_HANG_MESSAGE,
   EDITION_STALE_MESSAGE,
+  editionPauseOverdue,
   editionRunBlocks,
   editionRunStale,
   nextResumeWake,
@@ -21,6 +23,7 @@ import {
   resumeRematchIndex,
   type EditionJobState,
 } from "@/lib/covers/edition-job";
+import { followPausedEditionJob, type ResumeSweepResult } from "@/lib/covers/edition-resume";
 import { METRON_FIELDS, readFieldSources } from "@/lib/covers/enrich";
 import { editionOutcome, runFacsimilePass, type RematchOutcome } from "@/lib/covers/facsimile-once";
 import { FACSIMILE_REMATCH_KEY, readCatalogYears, readPrintingCovers, writeCatalogYear, writePrintingCover } from "@/lib/covers/facsimile-years";
@@ -37,7 +40,18 @@ import { prisma } from "@/lib/db";
 import { writeLog } from "@/lib/log/write";
 import type { Prisma } from "@prisma/client";
 
-let inflight: Promise<void> | null = null;
+const processState = globalThis as typeof globalThis & {
+  longboxEditionInflight?: Promise<void> | null;
+};
+
+function editionInflight(): Promise<void> | null {
+  return processState.longboxEditionInflight ?? null;
+}
+
+function setEditionInflight(next: Promise<void> | null): void {
+  processState.longboxEditionInflight = next;
+}
+
 let finishedForProcess = false;
 let nextAttemptAt = 0;
 let metronClosedUntil = 0;
@@ -213,19 +227,88 @@ function failEditionJob(message: string): void {
   void writeLog({ level: "error", source: "covers/backfill", message });
 }
 
-function markEditionStale(): void {
+function markEditionStale(message = EDITION_STALE_MESSAGE): void {
   const job = readEditionJob();
   if (!job || job.state === "stale") return;
-  writeJob({ state: "stale", message: EDITION_STALE_MESSAGE, resumeAt: null, runId: null });
-  void writeLog({ level: "error", source: "covers/backfill", message: EDITION_STALE_MESSAGE });
+  writeJob({ state: "stale", message, resumeAt: null, runId: null });
+  void writeLog({ level: "error", source: "covers/backfill", message });
 }
 
-/** Persist a stale running job so the next page load shows it and a new run can start. */
+/** Persist a stale running job, or a pause that never resumed, so the next page load shows it. */
 export function noteStaleEditionJob(): EditionJobState | null {
   const job = readEditionJob();
-  if (!job || !editionRunStale(job)) return job;
-  markEditionStale();
-  return readEditionJob();
+  if (!job) return null;
+  if (editionRunStale(job)) {
+    markEditionStale();
+    return readEditionJob();
+  }
+  if (editionPauseOverdue(job) && !editionInflight()) {
+    markEditionStale(EDITION_PAUSE_HANG_MESSAGE);
+    return readEditionJob();
+  }
+  return job;
+}
+
+export const EDITION_RESUME_SWEEP_MS = 5_000;
+const globalResume = globalThis as typeof globalThis & { longboxEditionResumeSweep?: ReturnType<typeof setInterval> };
+let editionResumeStart: (() => boolean) | null = null;
+
+/** Tests replace the pass starter. Production starts the real re-match. */
+export function setEditionResumeStartForTests(start: (() => boolean) | null): void {
+  editionResumeStart = start;
+}
+
+export function stopEditionResumeSweep(): void {
+  if (globalResume.longboxEditionResumeSweep) clearInterval(globalResume.longboxEditionResumeSweep);
+  globalResume.longboxEditionResumeSweep = undefined;
+  editionResumeStart = null;
+  setEditionInflight(null);
+}
+
+function beginDueEditionResume(): boolean {
+  if (editionResumeStart) {
+    const started = editionResumeStart();
+    if (started && !editionInflight()) setEditionInflight(Promise.resolve());
+    return started;
+  }
+  const before = editionInflight();
+  scheduleFacsimileRematch();
+  const after = editionInflight();
+  return Boolean(after) && after !== before;
+}
+
+/**
+ * Read the persisted pause and start it once resumeAt has passed.
+ * The interval that calls this is armed at process boot, outside any request.
+ */
+export function sweepEditionResume(now = Date.now()): ResumeSweepResult {
+  return followPausedEditionJob({
+    job: readEditionJob(),
+    now,
+    inflight: Boolean(editionInflight()),
+    start: beginDueEditionResume,
+    markStale: () => {
+      const current = readEditionJob();
+      markEditionStale(current?.state === "paused" ? EDITION_PAUSE_HANG_MESSAGE : EDITION_STALE_MESSAGE);
+    },
+    fail: (message) => failEditionJob(message),
+    readJob: () => readEditionJob(),
+  });
+}
+
+/** One sweep for this process. A server action's setTimeout is not the resume clock. */
+export function armEditionResumeSweep(options?: { force?: boolean }): void {
+  if (!options?.force && (process.env.VITEST === "true" || process.env.NEXT_PHASE === "phase-production-build")) return;
+  if (globalResume.longboxEditionResumeSweep) return;
+  const timer = setInterval(() => {
+    try {
+      sweepEditionResume();
+    } catch (error) {
+      failEditionJob(error instanceof Error ? error.message : "Edition re-match resume sweep failed.");
+    }
+  }, EDITION_RESUME_SWEEP_MS);
+  timer.unref?.();
+  globalResume.longboxEditionResumeSweep = timer;
 }
 
 function wakeLater(resumeAt: number): void {
@@ -238,13 +321,13 @@ function wakeLater(resumeAt: number): void {
       const job = readEditionJob();
       if (!job) return;
       const wake = nextResumeWake({
-        inflight: Boolean(inflight),
+        inflight: Boolean(editionInflight()),
         resumeAt,
         now: Date.now(),
         postponedFrom: resumePostponedFrom,
       });
       if (wake.kind === "again") {
-        if (inflight && resumePostponedFrom == null) resumePostponedFrom = resumeAt;
+        if (editionInflight() && resumePostponedFrom == null) resumePostponedFrom = resumeAt;
         wakeLater(wake.at);
         return;
       }
@@ -270,7 +353,12 @@ function wakeLater(resumeAt: number): void {
 
 function beginScheduledPass(run: () => Promise<boolean>): void {
   nextAttemptAt = Date.now() + 60_000;
-  inflight = run()
+  let settle: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  setEditionInflight(gate);
+  void run()
     .then((finished) => {
       if (finished) finishedForProcess = true;
     })
@@ -279,13 +367,14 @@ function beginScheduledPass(run: () => Promise<boolean>): void {
       failEditionJob(message);
     })
     .finally(() => {
-      inflight = null;
+      if (editionInflight() === gate) setEditionInflight(null);
+      settle();
     });
 }
 
 export function scheduleFacsimileRematch(): void {
   if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
-  if (finishedForProcess || inflight) return;
+  if (finishedForProcess || editionInflight()) return;
   const persisted = noteStaleEditionJob();
   if (persisted?.state === "error" || persisted?.state === "stale" || persisted?.state === "finished") return;
   if (persisted?.metronResumeAt) {
@@ -301,6 +390,17 @@ export function scheduleFacsimileRematch(): void {
   if (editionRematchLockHeld() && editionRunBlocks(persisted)) return;
   const metronHeld = nextMetronQueueAt(Date.now());
   if (metronHeld != null && metronHeld > Date.now()) {
+    const waitingJob = readEditionJob();
+    const written = waitingJob?.resumeAt ? Date.parse(waitingJob.resumeAt) : 0;
+    if (waitingJob && (waitingJob.state === "paused" || waitingJob.state === "running") && metronHeld > written) {
+      const resumeAt = new Date(metronHeld).toISOString();
+      writeJob({
+        state: "paused",
+        resumeAt,
+        metronResumeAt: resumeAt,
+        message: waitingJob.message,
+      });
+    }
     wakeLater(metronHeld);
     return;
   }
@@ -404,7 +504,7 @@ async function clearAutomaticLink(comicId: string, reason: string, options?: { k
 async function closeMetron(error: MetronBudgetError): Promise<void> {
   pauseRequested = true;
   if (metronClosedUntil > Date.now()) {
-    if (!resumeTimer && !inflight) wakeLater(metronClosedUntil);
+    if (!resumeTimer && !editionInflight()) wakeLater(metronClosedUntil);
     return;
   }
   const pause = await recordBudgetPause("Edition re-match", error);
@@ -686,35 +786,37 @@ const linkedSelect = {
 } as const;
 
 export async function rematchAllSuspectCopies(options?: { mode?: RematchMode; resume?: boolean; scope?: RematchScope }): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
-  const existing = noteStaleEditionJob();
-  if (!options?.resume && (inflight || (existing && editionRunBlocks(existing) && editionRematchLockHeld()))) {
-    return { ok: false, message: "A re-match is already running.", notice: null, queueItems: [] };
-  }
-  const plan = rematchRunPlan({
-    requested: options?.scope,
-    resume: options?.resume,
-    existing: existing ? { state: existing.state, scope: existing.scope } : null,
-  });
-  const owned = !inflight;
-  const run = (async () => {
-    armMetronJobBudget();
-    try {
-      return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT, plan.resume, plan.scope);
-    } finally {
-      clearMetronJobBudget();
+  return runInLane("background", async () => {
+    const existing = noteStaleEditionJob();
+    if (!options?.resume && (editionInflight() || (existing && editionRunBlocks(existing) && editionRematchLockHeld()))) {
+      return { ok: false, message: "A re-match is already running.", notice: null, queueItems: [] };
     }
-  })();
-  if (owned) inflight = run.then(() => undefined, () => undefined);
-  try {
-    return await run;
-  } finally {
-    if (owned) inflight = null;
-  }
+    const plan = rematchRunPlan({
+      requested: options?.scope,
+      resume: options?.resume,
+      existing: existing ? { state: existing.state, scope: existing.scope } : null,
+    });
+    const owned = !editionInflight();
+    const run = (async () => {
+      armMetronJobBudget();
+      try {
+        return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT, plan.resume, plan.scope);
+      } finally {
+        clearMetronJobBudget();
+      }
+    })();
+    if (owned) setEditionInflight(run.then(() => undefined, () => undefined));
+    try {
+      return await run;
+    } finally {
+      if (owned) setEditionInflight(null);
+    }
+  });
 }
 
 export async function resumeEditionRematch(): Promise<{ ok: boolean; message: string }> {
   const job = noteStaleEditionJob();
-  if (job && editionRunBlocks(job) && (inflight || editionRematchLockHeld())) {
+  if (job && editionRunBlocks(job) && (editionInflight() || editionRematchLockHeld())) {
     return { ok: false, message: "A re-match is already running." };
   }
   const result = await rematchAllSuspectCopies({ mode: job?.mode === "apply" ? "apply" : "propose", resume: true });

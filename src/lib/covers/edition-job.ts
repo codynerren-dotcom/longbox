@@ -1,9 +1,14 @@
-import { formatResumeTime } from "@/lib/covers/limiter";
+import { formatPauseClock } from "@/lib/catalog/rate-limit";
 
 /** A running re-match whose cursor has not moved for longer than this is stale. */
 export const EDITION_STALE_MS = 10 * 60 * 1000;
 
+/** A paused run that is still paused this long after resumeAt is a silent hang. */
+export const EDITION_PAUSE_GRACE_MS = 2 * 60 * 1000;
+
 export const EDITION_STALE_MESSAGE = "Edition re-match had no progress for 10 minutes.";
+
+export const EDITION_PAUSE_HANG_MESSAGE = "Edition re-match did not resume after its pause.";
 
 /** One try, then one retry. The next wake skips the comic instead of calling out again. */
 export const COMIC_ATTEMPT_LIMIT = 2;
@@ -48,7 +53,7 @@ export function editionJobText(job: EditionJobState | null): string | null {
   if (job.state === "stale") return "Edition re-match: stale";
   if (job.resumeAt) {
     const at = Date.parse(job.resumeAt);
-    const when = Number.isFinite(at) ? formatResumeTime(at) : job.resumeAt;
+    const when = Number.isFinite(at) ? `${formatPauseClock(at, "America/Chicago")} CT` : job.resumeAt;
     return `Edition re-match: paused until ${when}`;
   }
   return "Edition re-match: paused";
@@ -79,6 +84,13 @@ export function editionProgressAt(job: EditionJobState): number {
 export function editionRunStale(job: EditionJobState | null, now = Date.now()): boolean {
   if (!job || job.state !== "running") return false;
   return now - editionProgressAt(job) > EDITION_STALE_MS;
+}
+
+/** True when a pause is still paused after resumeAt plus the grace period. */
+export function editionPauseOverdue(job: EditionJobState | null, now = Date.now()): boolean {
+  if (!job || job.state !== "paused" || !job.resumeAt) return false;
+  const at = Date.parse(job.resumeAt);
+  return Number.isFinite(at) && now >= at + EDITION_PAUSE_GRACE_MS;
 }
 
 /** A fresh running pass blocks another start. A stale running pass does not. */

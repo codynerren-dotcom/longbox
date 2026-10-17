@@ -90,8 +90,8 @@ export function fullRunMetronUsed(): { used: number; day: string } {
   return { used: fullRunUsed, day: fullRunDay };
 }
 
-/** Refuse before the request when this full run has used its share of the day. */
-export function guardFullRunCall(now: number, sustainedLimit: number | null): void {
+/** Refuse before the request when this full run has used its share of the day. The pause lasts until the sustained reset. */
+export function guardFullRunCall(now: number, sustainedLimit: number | null, sustainedResetAt: number | null = null): void {
   if (!fullRunActive) return;
   const day = budgetDay(new Date(now));
   if (fullRunDay !== day) {
@@ -103,9 +103,10 @@ export function guardFullRunCall(now: number, sustainedLimit: number | null): vo
   const cap = fullRunMetronCap(limit, share);
   if (fullRunUsed >= cap) {
     const percent = Math.round(share * 100);
+    const resumeAt = sustainedResetAt != null && sustainedResetAt > now ? sustainedResetAt : nextBudgetDayStart(now);
     throw new MetronBudgetError(
       `Full re-match used ${percent}% of today's Metron budget. Pausing so searches still have room.`,
-      { budget: "Metron full run", count: fullRunUsed, resumeAt: nextBudgetDayStart(now) },
+      { budget: "Metron full run", count: fullRunUsed, resumeAt },
     );
   }
 }
@@ -401,7 +402,8 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     attempt += 1;
     assertMetronCircuit(transport.now());
     await takeJobSlot(transport.now());
-    guardFullRunCall(transport.now(), transport.limiter.snapshot().sustainedLimit);
+    const budgetSnap = transport.limiter.snapshot();
+    guardFullRunCall(transport.now(), budgetSnap.sustainedLimit, budgetSnap.sustainedResetAt);
     await transport.limiter.acquire(lane);
     recordFullRunCall(transport.now());
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
