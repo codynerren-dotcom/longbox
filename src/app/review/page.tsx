@@ -1,9 +1,12 @@
 import Link from "next/link";
+import { EditionJobControls } from "@/app/logs/edition-controls";
 import { ReviewList, type ReviewCard } from "@/app/review/review-list";
 import { PageHeader } from "@/components/page-header";
 import { catalogIssueHref, catalogViewLabel, isGcdScanHost } from "@/lib/catalog/match-row";
 import { coverPublicPath } from "@/lib/covers/backfill";
-import { visibleProposals } from "@/lib/covers/propose-match";
+import { noteStaleEditionJob } from "@/lib/covers/facsimile-rematch";
+import { editionJobText, editionSummaryText } from "@/lib/covers/job-state";
+import { proposalBlocked, visibleProposals } from "@/lib/covers/propose-match";
 import { prisma } from "@/lib/db";
 import { formatIssue } from "@/lib/format";
 
@@ -21,18 +24,21 @@ export default async function ReviewPage({ searchParams }: { searchParams: Promi
   let error: string | null = null;
   let pending = 0;
   let cards: ReviewCard[] = [];
+  const rematch = noteStaleEditionJob();
   try {
-    pending = await prisma.matchProposal.count({ where: { status: "pending" } });
     const rows = await prisma.matchProposal.findMany({
       where: { status: "pending" },
       orderBy: [{ title: "asc" }, { issueNo: "asc" }],
       include: {
-        comic: { select: { series: true, issueNo: true, issue: true, variant: true, coverFile: true } },
+        comic: { select: { series: true, issueNo: true, issue: true, variant: true, coverFile: true, manualLink: true } },
       },
     });
+    const open = rows.filter((row) => !proposalBlocked(row.comic.manualLink));
+    pending = open.length;
     const visible = visibleProposals(
-      rows.map((row) => ({
+      open.map((row) => ({
         ...row,
+        manualLink: row.comic.manualLink,
         shelf: `${row.comic.series} ${row.comic.issueNo ?? ""} ${row.comic.variant ?? ""}`,
       })),
       { provider, q },
@@ -68,6 +74,9 @@ export default async function ReviewPage({ searchParams }: { searchParams: Promi
         <p className="max-w-sm text-sm text-mist">A proposal is a suggestion. Accept links it. Reject keeps that suggestion from coming back. The copy stays as it is until you accept.</p>
       </PageHeader>
       {error ? <p className="mb-4 text-sm text-red-300">{error}</p> : null}
+      {editionJobText(rematch) ? <p className="mb-2 text-sm text-paper">{editionJobText(rematch)}</p> : null}
+      {editionSummaryText(rematch) ? <p className="mb-4 text-sm text-mist">{editionSummaryText(rematch)}</p> : null}
+      <EditionJobControls state={rematch?.state ?? null} />
       <form method="get" className="mb-4 flex flex-wrap items-center gap-2">
         <label className="sr-only" htmlFor="review-provider">
           Catalog

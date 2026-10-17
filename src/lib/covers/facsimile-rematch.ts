@@ -1,23 +1,32 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createGcdCatalog, GcdBudgetError } from "@/lib/catalog/gcd";
 import { limitBlockFromError, limitNotices, type LimitBlock } from "@/lib/catalog/limit-notice";
 import { hintFromBlocks, type QueueSeed } from "@/lib/catalog/search-queue";
 import { runInLane } from "@/lib/catalog/rate-lane";
-import { readManualLink } from "@/lib/catalog/manual-link";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
 import { calendarDay, detectEdition, suspectMatchReason } from "@/lib/covers/edition";
+import {
+  addMiss,
+  armEditionPause,
+  EDITION_STALE_MESSAGE,
+  editionRunBlocks,
+  editionRunStale,
+  nextResumeWake,
+  type EditionJobState,
+} from "@/lib/covers/edition-job";
 import { METRON_FIELDS, readFieldSources } from "@/lib/covers/enrich";
 import { editionOutcome, runFacsimilePass, type RematchOutcome } from "@/lib/covers/facsimile-once";
 import { FACSIMILE_REMATCH_KEY, readCatalogYears, readPrintingCovers, writeCatalogYear, writePrintingCover } from "@/lib/covers/facsimile-years";
 import { coversDir, downloadCover } from "@/lib/covers/files";
 import { resolveGcdCover } from "@/lib/covers/gcd-match";
-import { readEditionJob, writeEditionJob } from "@/lib/covers/job-state";
+import { deleteEditionJob, readEditionJob, writeEditionJob, type EditionJobWrite } from "@/lib/covers/job-state";
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
 import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
-import { priorLinkOf, proposalReason, REMATCH_MODE_DEFAULT, saveProposal, unmatchedPlan, type ProposalInput, type RematchMode } from "@/lib/covers/propose-match";
+import { priorLinkOf, priorProposalBlocked, proposalBlocked, proposalReason, REMATCH_MODE_DEFAULT, saveProposal, unmatchedPlan, type ProposalInput, type RematchMode } from "@/lib/covers/propose-match";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
@@ -30,6 +39,8 @@ let nextAttemptAt = 0;
 let metronClosedUntil = 0;
 let gcdClosedUntil = 0;
 let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+let resumePostponedFrom: number | null = null;
+let pauseRequested = false;
 
 const EDITION_REMATCH_LOCK = "edition-rematch.lock";
 const EDITION_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
@@ -50,6 +61,8 @@ function pidAlive(pid: number): boolean {
 
 function editionLockStale(file: string): boolean {
   try {
+    const job = readEditionJob(path.dirname(file));
+    if (job && (editionRunStale(job) || job.state === "stale" || job.state === "error")) return true;
     const stat = statSync(file);
     const pid = Number(readFileSync(file, "utf8").split("\n")[0]);
     if (!pidAlive(pid)) return true;
@@ -151,56 +164,152 @@ export function armJobResume(waitMs: number, fire: () => void, schedule?: (ms: n
   start(waitMs, fire);
 }
 
-function wakeLater(resumeAt: number): void {
-  nextAttemptAt = Math.max(nextAttemptAt, resumeAt);
-  armJobResume(Math.max(0, resumeAt - Date.now()), () => {
-    if (inflight) {
-      wakeLater(Date.now() + 1_000);
-      return;
-    }
-    nextAttemptAt = 0;
-    const job = readEditionJob();
-    if (job?.state === "paused" && job.resumeAt && Date.parse(job.resumeAt) <= Date.now() + 1_000) {
-      writeEditionJob({ ...job, state: "running", resumeAt: null, message: "Edition re-match: running" });
-    }
-    scheduleFacsimileRematch();
-  });
+function cancelResumeTimer(): void {
+  if (resumeTimer) clearTimeout(resumeTimer);
+  resumeTimer = null;
+  resumePostponedFrom = null;
+  nextAttemptAt = 0;
 }
 
-export function scheduleFacsimileRematch(): void {
-  if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
-  if (finishedForProcess || inflight || editionRematchLockHeld()) return;
-  const metronHeld = nextMetronQueueAt(Date.now());
-  if (metronHeld != null && metronHeld > Date.now()) {
-    wakeLater(metronHeld);
-    return;
-  }
-  const persisted = readEditionJob();
-  if (persisted?.metronResumeAt) {
-    const at = Date.parse(persisted.metronResumeAt);
-    if (Number.isFinite(at) && at > metronClosedUntil) metronClosedUntil = at;
-  }
-  let wait = Math.max(0, nextAttemptAt - Date.now());
-  if (persisted?.state === "paused" && persisted.resumeAt) {
-    const at = Date.parse(persisted.resumeAt);
-    if (Number.isFinite(at)) wait = Math.max(wait, at - Date.now());
-  }
-  if (wait > 0) {
-    wakeLater(Date.now() + wait);
-    return;
-  }
+function writeJob(patch: Partial<EditionJobState> & { state: EditionJobState["state"] }, dir = coversDir()): EditionJobState {
+  const job = readEditionJob(dir);
+  const next: EditionJobWrite = {
+    state: patch.state,
+    message: patch.message === undefined ? (job?.message ?? null) : patch.message,
+    resumeAt: patch.resumeAt === undefined ? (job?.resumeAt ?? null) : patch.resumeAt,
+    metronResumeAt: patch.metronResumeAt === undefined ? (job?.metronResumeAt ?? null) : patch.metronResumeAt,
+    matched: patch.matched ?? job?.matched ?? 0,
+    unmatched: patch.unmatched ?? job?.unmatched ?? 0,
+    attempted: patch.attempted ?? job?.attempted ?? 0,
+    proposed: patch.proposed ?? job?.proposed ?? 0,
+    noCandidate: patch.noCandidate ?? job?.noCandidate ?? 0,
+    skipped: patch.skipped ?? job?.skipped ?? 0,
+    cursorId: patch.cursorId === undefined ? (job?.cursorId ?? null) : patch.cursorId,
+    heartbeatAt: patch.heartbeatAt === undefined ? (job?.heartbeatAt ?? null) : patch.heartbeatAt,
+    runId: patch.runId === undefined ? (job?.runId ?? null) : patch.runId,
+    mode: patch.mode === undefined ? (job?.mode ?? null) : patch.mode,
+    misses: patch.misses ?? job?.misses ?? {},
+    updatedAt: patch.updatedAt,
+  };
+  return writeEditionJob(next, dir);
+}
+
+function failEditionJob(message: string): void {
+  writeJob({ state: "error", message, resumeAt: null, runId: null });
+  void writeLog({ level: "error", source: "covers/backfill", message });
+}
+
+function markEditionStale(): void {
+  const job = readEditionJob();
+  if (!job || job.state === "stale") return;
+  writeJob({ state: "stale", message: EDITION_STALE_MESSAGE, resumeAt: null, runId: null });
+  void writeLog({ level: "error", source: "covers/backfill", message: EDITION_STALE_MESSAGE });
+}
+
+/** Persist a stale running job so the next page load shows it and a new run can start. */
+export function noteStaleEditionJob(): EditionJobState | null {
+  const job = readEditionJob();
+  if (!job || !editionRunStale(job)) return job;
+  markEditionStale();
+  return readEditionJob();
+}
+
+function wakeLater(resumeAt: number): void {
+  nextAttemptAt = Math.max(nextAttemptAt, resumeAt);
+  const armed = armEditionPause({
+    now: Date.now(),
+    resumeAt,
+    schedule: (ms, fire) => armJobResume(ms, fire),
+    onResume: () => {
+      const job = readEditionJob();
+      if (!job) return;
+      const wake = nextResumeWake({
+        inflight: Boolean(inflight),
+        resumeAt,
+        now: Date.now(),
+        postponedFrom: resumePostponedFrom,
+      });
+      if (wake.kind === "again") {
+        if (inflight && resumePostponedFrom == null) resumePostponedFrom = resumeAt;
+        wakeLater(wake.at);
+        return;
+      }
+      resumePostponedFrom = null;
+      nextAttemptAt = 0;
+      if (wake.kind === "stale") {
+        markEditionStale();
+        return;
+      }
+      if (wake.kind === "error") {
+        failEditionJob(wake.message);
+        return;
+      }
+      try {
+        if (job.state === "paused" || (job.state === "running" && job.resumeAt)) {
+          writeJob({ state: "running", resumeAt: null, message: "Edition re-match: running", heartbeatAt: new Date().toISOString() });
+        }
+        scheduleFacsimileRematch();
+      } catch (error) {
+        failEditionJob(error instanceof Error ? error.message : "Edition re-match resume failed.");
+      }
+    },
+  });
+  if (!armed.ok) failEditionJob(armed.message);
+}
+
+function beginScheduledPass(run: () => Promise<boolean>): void {
   nextAttemptAt = Date.now() + 60_000;
-  inflight = runStoredFacsimileRematch()
+  inflight = run()
     .then((finished) => {
       if (finished) finishedForProcess = true;
     })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : "Edition re-match failed.";
-      return writeLog({ level: "error", source: "covers/backfill", message });
+      failEditionJob(message);
     })
     .finally(() => {
       inflight = null;
     });
+}
+
+export function scheduleFacsimileRematch(): void {
+  if (process.env.VITEST || process.env.NEXT_PHASE === "phase-production-build") return;
+  if (finishedForProcess || inflight) return;
+  const persisted = noteStaleEditionJob();
+  if (persisted?.state === "error" || persisted?.state === "stale" || persisted?.state === "finished") return;
+  if (persisted?.metronResumeAt) {
+    const at = Date.parse(persisted.metronResumeAt);
+    if (Number.isFinite(at) && at > metronClosedUntil) metronClosedUntil = at;
+  }
+  const resumeAt = persisted?.resumeAt ? Date.parse(persisted.resumeAt) : Number.NaN;
+  const waiting = persisted?.state === "paused" || (persisted?.state === "running" && Number.isFinite(resumeAt));
+  if (waiting && Number.isFinite(resumeAt) && resumeAt > Date.now()) {
+    wakeLater(resumeAt);
+    return;
+  }
+  if (editionRematchLockHeld() && editionRunBlocks(persisted)) return;
+  const metronHeld = nextMetronQueueAt(Date.now());
+  if (metronHeld != null && metronHeld > Date.now()) {
+    wakeLater(metronHeld);
+    return;
+  }
+  const wait = Math.max(0, nextAttemptAt - Date.now());
+  if (wait > 0 && !waiting) {
+    wakeLater(Date.now() + wait);
+    return;
+  }
+  if (persisted?.mode === "apply") {
+    beginScheduledPass(runStoredFacsimileRematch);
+    return;
+  }
+  if (persisted?.mode === "propose" || waiting) {
+    beginScheduledPass(async () => {
+      await rematchAllSuspectCopies({ mode: "propose", resume: true });
+      return false;
+    });
+    return;
+  }
+  beginScheduledPass(runStoredFacsimileRematch);
 }
 
 function catalogYear(issue: MetronIssueHit): number | null {
@@ -282,17 +391,20 @@ async function clearAutomaticLink(comicId: string, reason: string, options?: { k
 }
 
 async function closeMetron(error: MetronBudgetError): Promise<void> {
-  if (metronClosedUntil > Date.now()) return;
+  pauseRequested = true;
+  if (metronClosedUntil > Date.now()) {
+    if (!resumeTimer && !inflight) wakeLater(metronClosedUntil);
+    return;
+  }
   const pause = await recordBudgetPause("Edition re-match", error);
   metronClosedUntil = pause.resumeAt;
-  const job = readEditionJob();
-  writeEditionJob({
-    state: "running",
+  const resumeAt = new Date(pause.resumeAt).toISOString();
+  writeJob({
+    state: "paused",
     message: budgetPauseMessage("Edition re-match", pause),
-    resumeAt: new Date(pause.resumeAt).toISOString(),
-    metronResumeAt: new Date(pause.resumeAt).toISOString(),
-    matched: job?.matched ?? 0,
-    unmatched: job?.unmatched ?? 0,
+    resumeAt,
+    metronResumeAt: resumeAt,
+    heartbeatAt: new Date().toISOString(),
   });
   wakeLater(pause.resumeAt);
 }
@@ -316,12 +428,9 @@ export async function rematchShelfCopy(
   const comic = await prisma.comic.findUnique({ where: { id: comicId } });
   const mode = options?.mode ?? REMATCH_MODE_DEFAULT;
   if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
-  const link = readManualLink(comic.manualLink);
-  if (link.metronIssueId || link.gcdIssueId || link.comicvineIssueId) {
-    return { ok: false, message: "This link was chosen by hand. Unlink it first.", outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
-  }
-  if (link.userCover) {
-    return { ok: false, message: "This cover was uploaded. Unlink the catalog id if you want, and the photo stays.", outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
+  const blocked = proposalBlocked(comic.manualLink);
+  if (blocked) {
+    return { ok: false, message: blocked, outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
   }
 
   const query = coverQuery(comic);
@@ -352,7 +461,10 @@ export async function rematchShelfCopy(
   };
 
   const holdProposal = async (draft: Omit<ProposalInput, "comicId" | "priorLink">) => {
-    const saved = await saveProposal({ ...draft, comicId, priorLink: priorLinkOf(comic) });
+    const priorLink = priorLinkOf(comic);
+    const heldBack = priorProposalBlocked(priorLink);
+    if (heldBack) return { message: heldBack, proposed: false };
+    const saved = await saveProposal({ ...draft, comicId, priorLink });
     if (saved === "saved") return { message: draft.reason, proposed: true };
     if (saved === "unchanged") return { message: `${comic.series} #${comic.issueNo || "?"} is already linked to ${draft.provider} ${draft.issueId}.`, proposed: false };
     return { message: `${comic.series} #${comic.issueNo || "?"}: that ${draft.provider} issue was already reviewed.`, proposed: false };
@@ -559,13 +671,49 @@ const linkedSelect = {
   manualLink: true,
 } as const;
 
-export async function rematchAllSuspectCopies(options?: { mode?: RematchMode }): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
-  armMetronJobBudget();
-  try {
-    return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT);
-  } finally {
-    clearMetronJobBudget();
+export async function rematchAllSuspectCopies(options?: { mode?: RematchMode; resume?: boolean }): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+  const existing = noteStaleEditionJob();
+  if (!options?.resume && (inflight || (existing && editionRunBlocks(existing) && editionRematchLockHeld()))) {
+    return { ok: false, message: "A re-match is already running.", notice: null, queueItems: [] };
   }
+  const resume = options?.resume ?? Boolean(existing && existing.state !== "finished");
+  const owned = !inflight;
+  const run = (async () => {
+    armMetronJobBudget();
+    try {
+      return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT, resume);
+    } finally {
+      clearMetronJobBudget();
+    }
+  })();
+  if (owned) inflight = run.then(() => undefined, () => undefined);
+  try {
+    return await run;
+  } finally {
+    if (owned) inflight = null;
+  }
+}
+
+export async function resumeEditionRematch(): Promise<{ ok: boolean; message: string }> {
+  const job = noteStaleEditionJob();
+  if (job && editionRunBlocks(job) && (inflight || editionRematchLockHeld())) {
+    return { ok: false, message: "A re-match is already running." };
+  }
+  const result = await rematchAllSuspectCopies({ mode: job?.mode === "apply" ? "apply" : "propose", resume: true });
+  return { ok: result.ok, message: result.message };
+}
+
+export async function clearEditionRematch(): Promise<{ ok: boolean; message: string }> {
+  cancelResumeTimer();
+  pauseRequested = false;
+  deleteEditionJob();
+  try {
+    unlinkSync(editionLockFile(coversDir()));
+  } catch {
+    // The lock is already gone.
+  }
+  await writeLog({ level: "info", source: "covers/backfill", message: "Edition re-match cleared." });
+  return { ok: true, message: "Re-match cleared. The next run starts from the beginning." };
 }
 
 function queueSeed(comicId: string, blocks: LimitBlock[]): QueueSeed | null {
@@ -574,78 +722,183 @@ function queueSeed(comicId: string, blocks: LimitBlock[]): QueueSeed | null {
   return { comicId, source: hint.source, resumeAt: hint.resumeAt, kind: hint.kind };
 }
 
-async function rematchAllSuspectCopiesBody(mode: RematchMode): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
-  const [comics, years, printings] = await Promise.all([
-    prisma.comic.findMany({
-      where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
-      select: linkedSelect,
-    }),
-    readCatalogYears(),
-    readPrintingCovers(),
-  ]);
-  let matched = 0;
-  let unmatched = 0;
-  let skipped = 0;
-  let metron = metronClosedUntil <= Date.now();
-  const limitBlocks: LimitBlock[] = [];
-  const searchedSources: string[] = [];
-  const queueItems: QueueSeed[] = [];
-  for (const comic of comics) {
-    const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
-    if (!reason) continue;
-    const link = readManualLink(comic.manualLink);
-    if (link.metronIssueId || link.gcdIssueId || link.comicvineIssueId || link.userCover) {
-      skipped += 1;
-      continue;
-    }
-    try {
-      const result = await rematchShelfCopy(comic.id, { metron, mode });
-      limitBlocks.push(...result.limitBlocks);
-      searchedSources.push(...result.searchedSources);
-      if (result.outcome !== "matched" && result.outcome !== "skipped") {
-        const seed = queueSeed(comic.id, result.limitBlocks);
-        if (seed) queueItems.push(seed);
-      }
-      if (result.outcome === "deferred" || result.outcome === "metron-budget") {
-        metron = false;
-        unmatched += 1;
-        continue;
-      }
-      if (result.outcome === "matched") matched += 1;
-      else if (result.outcome === "skipped") skipped += 1;
-      else unmatched += 1;
-    } catch (error) {
-      if (error instanceof MetronBudgetError) {
-        const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
-        if (block) {
-          limitBlocks.push(block);
-          const seed = queueSeed(comic.id, [block]);
-          if (seed) queueItems.push(seed);
-        }
-        metron = false;
-        continue;
-      }
-      if (error instanceof GcdBudgetError) {
-        const block = limitBlockFromError(error);
-        if (block) {
-          limitBlocks.push(block);
-          const seed = queueSeed(comic.id, [block]);
-          if (seed) queueItems.push(seed);
-        }
-        await noteGcdPause(error);
-        unmatched += 1;
-        continue;
-      }
-      unmatched += 1;
-    }
+function summaryLine(input: { attempted: number; proposed: number; noCandidate: number; misses: EditionJobState["misses"] }, finished: boolean): string {
+  const misses = Object.entries(input.misses)
+    .filter((entry) => entry[1] > 0)
+    .map(([name, count]) => `${name} ${count}`)
+    .join(", ");
+  const head = finished ? "Edition re-match finished." : "Edition re-match paused.";
+  const base = `${head} Attempted ${input.attempted}. Proposed ${input.proposed}. No candidate ${input.noCandidate}.`;
+  return misses ? `${base} Misses: ${misses}.` : base;
+}
+
+async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+  const previous = resume ? readEditionJob() : null;
+  const runId = randomBytes(8).toString("hex");
+  let attempted = previous?.attempted ?? 0;
+  let proposed = previous?.proposed ?? 0;
+  let noCandidate = previous?.noCandidate ?? 0;
+  let skipped = previous?.skipped ?? 0;
+  let misses = { ...(previous?.misses ?? {}) };
+  let cursorId = previous?.cursorId ?? null;
+  pauseRequested = false;
+  if (!acquireEditionRematchLock()) {
+    return { ok: false, message: "A re-match is already running.", notice: null, queueItems: [] };
   }
-  const message =
-    mode === "propose"
-      ? `Proposed ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`
-      : `Re-matched ${matched}. Left ${unmatched} unmatched. Skipped ${skipped} hand-picked links.`;
-  const notice = limitNotices(limitBlocks, searchedSources) || null;
-  await writeLog({ level: "info", source: "covers/backfill", message: notice ? `${message} ${notice}` : message, details: { matched, unmatched, skipped } });
-  return { ok: true, message, notice, queueItems };
+  const counts = () => ({ attempted, proposed, noCandidate, skipped, misses, matched: proposed, unmatched: noCandidate, cursorId, runId, mode });
+  let started = false;
+  const beat = (state: EditionJobState["state"], message: string | null, resumeAt: string | null) => {
+    const current = readEditionJob();
+    if (started && current?.runId !== runId) return false;
+    writeJob({ state, message, resumeAt, heartbeatAt: new Date().toISOString(), ...counts() });
+    started = true;
+    refreshEditionRematchLock();
+    return readEditionJob()?.runId === runId;
+  };
+  try {
+    if (!beat("running", "Edition re-match: running", null)) {
+      return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems: [] };
+    }
+    const [comics, years, printings] = await Promise.all([
+      prisma.comic.findMany({
+        where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
+        select: linkedSelect,
+        orderBy: { id: "asc" },
+      }),
+      readCatalogYears(),
+      readPrintingCovers(),
+    ]);
+    const suspects = comics.flatMap((comic) => {
+      const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
+      return reason ? [comic] : [];
+    });
+    const cursorIndex = previous?.cursorId ? suspects.findIndex((comic) => comic.id === previous.cursorId) : -1;
+    if (previous?.cursorId && cursorIndex < 0) {
+      attempted = 0;
+      proposed = 0;
+      noCandidate = 0;
+      skipped = 0;
+      misses = {};
+      cursorId = null;
+    }
+    const rows = cursorIndex >= 0 ? suspects.slice(cursorIndex + 1) : suspects;
+    let metron = metronClosedUntil <= Date.now();
+    const limitBlocks: LimitBlock[] = [];
+    const searchedSources: string[] = [];
+    const queueItems: QueueSeed[] = [];
+    for (const comic of rows) {
+      if (pauseRequested) break;
+      if (readEditionJob()?.runId !== runId) {
+        return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+      }
+      attempted += 1;
+      if (proposalBlocked(comic.manualLink)) {
+        skipped += 1;
+        cursorId = comic.id;
+        if (!beat("running", "Edition re-match: running", null)) {
+          return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+        }
+        continue;
+      }
+      try {
+        const result = await rematchShelfCopy(comic.id, { metron, mode });
+        limitBlocks.push(...result.limitBlocks);
+        searchedSources.push(...result.searchedSources);
+        if (pauseRequested || result.outcome === "deferred" || result.outcome === "metron-budget") {
+          attempted -= 1;
+          metron = false;
+          const job = readEditionJob();
+          if (job?.state === "error") {
+            return { ok: false, message: job.message ?? "Edition re-match resume failed.", notice: null, queueItems };
+          }
+          const resumeAt = job?.resumeAt ?? new Date(Date.now() + 1_000).toISOString();
+          const message = job?.state === "paused" && job.message ? job.message : "Edition re-match paused. It will resume.";
+          if (!beat("paused", message, resumeAt)) {
+            return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+          }
+          const at = Date.parse(resumeAt);
+          if (!resumeTimer) wakeLater(Number.isFinite(at) ? at : Date.now() + 1_000);
+          return { ok: true, message, notice: limitNotices(limitBlocks, searchedSources) || null, queueItems };
+        }
+        if (result.outcome !== "matched" && result.outcome !== "skipped") {
+          const seed = queueSeed(comic.id, result.limitBlocks);
+          if (seed) queueItems.push(seed);
+        }
+        if (result.outcome === "matched") proposed += 1;
+        else if (result.outcome === "skipped") skipped += 1;
+        else {
+          noCandidate += 1;
+          misses = addMiss(misses, result.message);
+        }
+        cursorId = comic.id;
+        if (!beat("running", "Edition re-match: running", null)) {
+          return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+        }
+      } catch (error) {
+        if (error instanceof MetronBudgetError) {
+          const block = limitBlockFromError(error, sharedMetronLimiter().snapshot());
+          if (block) {
+            limitBlocks.push(block);
+            const seed = queueSeed(comic.id, [block]);
+            if (seed) queueItems.push(seed);
+          }
+          await closeMetron(error);
+          attempted -= 1;
+          const job = readEditionJob();
+          if (job?.state === "error") {
+            return { ok: false, message: job.message ?? "Edition re-match resume failed.", notice: null, queueItems };
+          }
+          const message = job?.message ?? "Edition re-match paused. It will resume.";
+          return { ok: true, message, notice: limitNotices(limitBlocks, searchedSources) || null, queueItems };
+        }
+        if (error instanceof GcdBudgetError) {
+          const block = limitBlockFromError(error);
+          if (block) {
+            limitBlocks.push(block);
+            const seed = queueSeed(comic.id, [block]);
+            if (seed) queueItems.push(seed);
+          }
+          await noteGcdPause(error);
+          noCandidate += 1;
+          misses = addMiss(misses, "GCD is paused.");
+          cursorId = comic.id;
+          if (!beat("running", "Edition re-match: running", null)) {
+            return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+          }
+          continue;
+        }
+        noCandidate += 1;
+        misses = addMiss(misses, error instanceof Error ? error.message : "Re-match failed.");
+        cursorId = comic.id;
+        if (!beat("running", "Edition re-match: running", null)) {
+          return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+        }
+      }
+    }
+    if (pauseRequested) {
+      const job = readEditionJob();
+      const message = job?.message ?? summaryLine(counts(), false);
+      return { ok: true, message, notice: limitNotices(limitBlocks, searchedSources) || null, queueItems };
+    }
+    const message = summaryLine(counts(), true);
+    if (!beat("finished", "Edition re-match: finished", null)) {
+      return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
+    }
+    const notice = limitNotices(limitBlocks, searchedSources) || null;
+    await writeLog({
+      level: "info",
+      source: "covers/backfill",
+      message: notice ? `${message} ${notice}` : message,
+      details: { attempted, proposed, noCandidate, skipped, misses },
+    });
+    return { ok: true, message, notice, queueItems };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Edition re-match failed.";
+    failEditionJob(message);
+    return { ok: false, message, notice: null, queueItems: [] };
+  } finally {
+    releaseEditionRematchLock();
+  }
 }
 
 async function rematchAlreadyDone(): Promise<boolean> {
@@ -670,16 +923,30 @@ async function runStoredFacsimileRematch(): Promise<boolean> {
 
 async function runStoredFacsimileRematchBody(): Promise<boolean> {
   const existing = readEditionJob();
-  writeEditionJob({
+  if (existing?.mode === "propose") return false;
+  const resuming = existing?.state === "paused" || existing?.state === "stale" || existing?.state === "error";
+  const runId = randomBytes(8).toString("hex");
+  pauseRequested = false;
+  writeJob({
     state: "running",
     message: "Edition re-match: running",
     resumeAt: null,
     metronResumeAt: existing?.metronResumeAt && Date.parse(existing.metronResumeAt) > Date.now() ? existing.metronResumeAt : null,
-    matched: 0,
-    unmatched: 0,
+    matched: resuming ? (existing?.matched ?? 0) : 0,
+    unmatched: resuming ? (existing?.unmatched ?? 0) : 0,
+    attempted: resuming ? (existing?.attempted ?? 0) : 0,
+    proposed: resuming ? (existing?.proposed ?? 0) : 0,
+    noCandidate: resuming ? (existing?.noCandidate ?? 0) : 0,
+    skipped: resuming ? (existing?.skipped ?? 0) : 0,
+    cursorId: resuming ? (existing?.cursorId ?? null) : null,
+    misses: resuming ? (existing?.misses ?? {}) : {},
+    heartbeatAt: new Date().toISOString(),
+    runId,
+    mode: "apply",
   });
   const summary = await runFacsimilePass({
     already: rematchAlreadyDone,
+    cursorId: resuming ? (existing?.cursorId ?? null) : null,
     markDone: async () => {
       if (!editionRematchLockOwned()) return;
       await prisma.appSetting.upsert({
@@ -688,11 +955,17 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
         update: { plain: "done", secret: null },
       });
     },
+    onProgress: () => {
+      if (pauseRequested || readEditionJob()?.runId !== runId) return false;
+      writeJob({ state: "running", heartbeatAt: new Date().toISOString(), runId, mode: "apply" });
+      return true;
+    },
     ids: async () => {
       const [comics, years, printings] = await Promise.all([
         prisma.comic.findMany({
           where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
           select: linkedSelect,
+          orderBy: { id: "asc" },
         }),
         readCatalogYears(),
         readPrintingCovers(),
@@ -700,15 +973,18 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
       return comics.flatMap((comic) => {
         const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
         if (!reason) return [];
-        const link = readManualLink(comic.manualLink);
-        const manual = Boolean(link.metronIssueId || link.gcdIssueId || link.comicvineIssueId || link.userCover);
+        const manual = Boolean(proposalBlocked(comic.manualLink));
         return [{ id: comic.id, manual }];
       });
     },
     rematch: async (id, ctx) => {
       if (!refreshEditionRematchLock()) return "stopped";
+      if (readEditionJob()?.runId !== runId) return "stopped";
       try {
         const result = await rematchShelfCopy(id, { metron: ctx?.metron !== false });
+        if (!pauseRequested && readEditionJob()?.runId === runId) {
+          writeJob({ state: "running", cursorId: id, heartbeatAt: new Date().toISOString(), runId, mode: "apply" });
+        }
         return result.outcome;
       } catch (error) {
         if (error instanceof MetronBudgetError) {
@@ -719,45 +995,59 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
           await noteGcdPause(error);
           return "unmatched";
         }
-        await writeLog({
-          level: "warn",
-          source: "covers/backfill",
-          message: error instanceof Error ? error.message : "Facsimile re-match failed.",
-          details: { comicId: id },
-        });
+        const message = error instanceof Error ? error.message : "Facsimile re-match failed.";
+        await writeLog({ level: "warn", source: "covers/backfill", message, details: { comicId: id } });
         return "unmatched";
       }
     },
   });
   if (!editionRematchLockOwned()) return false;
+  if (readEditionJob()?.runId !== runId) return false;
+  const attempted = (resuming ? (existing?.attempted ?? 0) : 0) + summary.matched + summary.unmatched + summary.skipped;
+  const proposed = (resuming ? (existing?.proposed ?? 0) : 0) + summary.matched;
+  const noCandidate = (resuming ? (existing?.noCandidate ?? 0) : 0) + summary.unmatched;
   if (summary.done) {
-    writeEditionJob({
+    const message = summaryLine({ attempted, proposed, noCandidate, misses: existing?.misses ?? {} }, true);
+    writeJob({
       state: "finished",
       message: "Edition re-match: finished",
       resumeAt: null,
       metronResumeAt: null,
-      matched: summary.matched,
-      unmatched: summary.unmatched,
+      matched: proposed,
+      unmatched: noCandidate,
+      attempted,
+      proposed,
+      noCandidate,
+      skipped: (resuming ? (existing?.skipped ?? 0) : 0) + summary.skipped,
+      runId,
+      mode: "apply",
     });
-    if (summary.matched > 0 || summary.unmatched > 0 || summary.skipped > 0) {
-      await writeLog({
-        level: "info",
-        source: "covers/backfill",
-        message: `Edition re-match finished. Proposed ${summary.matched}. Unmatched ${summary.unmatched}. Skipped ${summary.skipped} hand-picked links.`,
-        details: summary,
-      });
+    if (attempted > 0) {
+      await writeLog({ level: "info", source: "covers/backfill", message, details: { attempted, proposed, noCandidate, skipped: summary.skipped } });
     }
   } else {
     const job = readEditionJob();
     const resumeAt = job?.resumeAt ?? (metronClosedUntil > Date.now() ? new Date(metronClosedUntil).toISOString() : null);
-    writeEditionJob({
+    writeJob({
       state: "paused",
       message: job?.message ?? "Edition re-match: paused",
       resumeAt,
       metronResumeAt: job?.metronResumeAt ?? (metronClosedUntil > Date.now() ? new Date(metronClosedUntil).toISOString() : null),
-      matched: summary.matched,
-      unmatched: summary.unmatched,
+      matched: proposed,
+      unmatched: noCandidate,
+      attempted,
+      proposed,
+      noCandidate,
+      skipped: (resuming ? (existing?.skipped ?? 0) : 0) + summary.skipped,
+      runId,
+      mode: "apply",
     });
+    if (resumeAt) {
+      const at = Date.parse(resumeAt);
+      if (!resumeTimer) wakeLater(Number.isFinite(at) ? at : Date.now() + 1_000);
+    } else {
+      failEditionJob("Edition re-match paused without a resume time.");
+    }
   }
   return summary.done;
 }

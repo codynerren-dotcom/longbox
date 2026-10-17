@@ -6,6 +6,7 @@ import {
   acceptBlocked,
   acceptRequest,
   priorLinkOf,
+  priorProposalBlocked,
   proposalAction,
   proposalBlocked,
   proposalHit,
@@ -58,6 +59,8 @@ describe("propose-mode re-match", () => {
     expect(proposalBlocked({ metronIssueId: "10", userCover: false })).toMatch(/chosen by hand/);
     expect(proposalBlocked({ userCover: true })).toMatch(/uploaded/);
     expect(proposalBlocked(null)).toBeNull();
+    expect(priorProposalBlocked({ ...prior, manualMetronIssueId: "10" })).toMatch(/chosen by hand/);
+    expect(priorProposalBlocked({ ...prior, userCover: true })).toMatch(/uploaded/);
   });
 
   it("remembers a rejection and an acceptance, and refreshes a pending row", async () => {
@@ -90,6 +93,9 @@ describe("propose-mode re-match", () => {
     status.set("c1:metron:50", "accepted");
     expect(await saveProposal(draft())).toBe("skipped");
     expect(await saveProposal(draft({ issueId: "10" }))).toBe("unchanged");
+
+    expect(await saveProposal(draft({ priorLink: { ...prior, manualGcdIssueId: "77" } }))).toBe("skipped");
+    expect(saved).toHaveLength(2);
   });
 
   it("accepts through the manual link flags and leaves a photo or a GCD scan", () => {
@@ -121,6 +127,8 @@ describe("propose-mode re-match", () => {
     expect(visibleProposals(rows, { provider: "gcd" }).map((row) => row.id)).toEqual(["g"]);
     expect(visibleProposals(rows, { q: "score 80" }).map((row) => row.id)).toEqual(["m"]);
     expect(visibleProposals(rows, { provider: "all", q: "" })).toHaveLength(2);
+    const linked = { ...rows[0], id: "hand", manualLink: { metronIssueId: "10", userCover: false } };
+    expect(visibleProposals([...rows, linked], { provider: "all" }).map((row) => row.id)).toEqual(["m", "g"]);
   });
 
   it("names the proposal and stores the prior link", () => {
@@ -151,5 +159,11 @@ describe("propose-mode re-match", () => {
     expect(shell).toContain("Review matches");
     expect(shell).toContain("proposalCount");
     expect(logs).toContain('href="/review"');
+    expect(logs).toContain("EditionJobControls");
+    expect(logs).toContain("editionSummaryText");
+    expect(page).toContain("manualLink");
+    const controls = readFileSync(new URL("../src/app/logs/edition-controls.tsx", import.meta.url), "utf8");
+    expect(controls).toContain("Resume re-match");
+    expect(controls).toContain("Clear re-match");
   });
 });

@@ -1,3 +1,5 @@
+import { comicsAfterCursor } from "@/lib/covers/edition-job";
+
 export type RematchOutcome = "matched" | "unmatched" | "skipped" | "stopped" | "deferred" | "metron-budget";
 
 /**
@@ -11,15 +13,19 @@ export async function runFacsimilePass(deps: {
   markDone: () => Promise<void>;
   ids: () => Promise<Array<{ id: string; manual: boolean }>>;
   rematch: (id: string, ctx?: { metron: boolean }) => Promise<RematchOutcome>;
+  cursorId?: string | null;
+  /** Return false to stop the pass without marking it done. */
+  onProgress?: (id: string) => boolean | void;
 }): Promise<{ matched: number; unmatched: number; skipped: number; deferred: number; done: boolean }> {
   if (await deps.already()) return { matched: 0, unmatched: 0, skipped: 0, deferred: 0, done: true };
-  const rows = await deps.ids();
+  const rows = comicsAfterCursor(await deps.ids(), deps.cursorId);
   let matched = 0;
   let unmatched = 0;
   let skipped = 0;
   let deferred = 0;
   let metron = true;
   for (const row of rows) {
+    if (deps.onProgress?.(row.id) === false) return { matched, unmatched, skipped, deferred, done: false };
     if (row.manual) {
       skipped += 1;
       continue;

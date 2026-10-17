@@ -143,13 +143,20 @@ export function acceptRequest(input: Pick<ProposalInput, "comicId" | "provider" 
   };
 }
 
-export function visibleProposals<T extends { id: string; provider: string; title: string; issueNo: string; variant: string | null; reason: string; shelf?: string | null }>(
+export function priorProposalBlocked(prior: PriorLinkState): string | null {
+  if (prior.manualMetronIssueId || prior.manualComicvineIssueId || prior.manualGcdIssueId) return "This link was chosen by hand.";
+  if (prior.userCover) return "This cover was uploaded.";
+  return null;
+}
+
+export function visibleProposals<T extends { id: string; provider: string; title: string; issueNo: string; variant: string | null; reason: string; shelf?: string | null; manualLink?: unknown }>(
   rows: T[],
   filter: { provider?: string | null; q?: string | null },
 ): T[] {
   const provider = filter.provider?.trim() || "";
   const q = filter.q?.trim().toLowerCase() || "";
   return rows.filter((row) => {
+    if (proposalBlocked(row.manualLink)) return false;
     if (provider && provider !== "all" && row.provider !== provider) return false;
     if (!q) return true;
     const hay = `${row.title} ${row.issueNo} ${row.variant ?? ""} ${row.reason} ${row.shelf ?? ""}`.toLowerCase();
@@ -207,6 +214,7 @@ const prismaStore: ProposalStore = {
 };
 
 export async function saveProposal(input: ProposalInput): Promise<ProposalSave> {
+  if (priorProposalBlocked(input.priorLink)) return "skipped";
   if (sameAsCurrent(input.priorLink, input.provider, input.issueId)) return "unchanged";
   const existing = await activeStore().find(input.comicId, input.provider, input.issueId);
   if (proposalAction(existing?.status ?? null) === "skip") return "skipped";
@@ -218,7 +226,11 @@ export async function countPendingProposals(): Promise<number> {
   if (injected) return 0;
   try {
     const { prisma } = await import("@/lib/db");
-    return await prisma.matchProposal.count({ where: { status: "pending" } });
+    const rows = await prisma.matchProposal.findMany({
+      where: { status: "pending" },
+      select: { comic: { select: { manualLink: true } } },
+    });
+    return rows.filter((row) => !proposalBlocked(row.comic.manualLink)).length;
   } catch {
     return 0;
   }

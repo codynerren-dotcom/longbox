@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { budgetPauseMessage } from "@/lib/covers/budget-pause";
+import { addMiss, armEditionPause, comicsAfterCursor, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake } from "@/lib/covers/edition-job";
 import { editionOutcome, runFacsimilePass } from "@/lib/covers/facsimile-once";
 import { acquireEditionRematchLock, armJobResume, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock } from "@/lib/covers/facsimile-rematch";
 import { editionJobText, writeEditionJob } from "@/lib/covers/job-state";
@@ -10,6 +11,10 @@ import { budgetDay, nextBudgetDayStart } from "@/lib/covers/limiter";
 import { keptPrintingCover } from "@/lib/covers/printing-cover";
 
 describe("edition re-match budget pause", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("names the budget, the request count, and the resume time", () => {
     const now = Date.parse("2026-10-16T02:46:00.000Z");
     const resumeAt = nextBudgetDayStart(now, "America/Chicago");
@@ -39,6 +44,79 @@ describe("edition re-match budget pause", () => {
     expect(source).toContain("armJobResume");
     expect(source).toContain("scheduleFacsimileRematch");
     expect(readFileSync("src/instrumentation.ts", "utf8")).toContain("scheduleFacsimileRematch");
+  });
+
+  it("resumes a budget pause on a fake timer and fails loudly when the timer cannot arm", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T04:47:28.000Z"));
+    let resumed = 0;
+    const armed = armEditionPause({
+      now: Date.now(),
+      resumeAt: Date.now() + 5_000,
+      schedule: (ms, fire) => {
+        setTimeout(fire, ms);
+      },
+      onResume: () => {
+        resumed += 1;
+      },
+    });
+    expect(armed).toEqual({ ok: true });
+    vi.advanceTimersByTime(4_999);
+    expect(resumed).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(resumed).toBe(1);
+
+    const failed = armEditionPause({
+      now: Date.now(),
+      resumeAt: Date.now() + 5_000,
+      schedule: () => {
+        throw new Error("timer unavailable");
+      },
+      onResume: () => {
+        resumed += 1;
+      },
+    });
+    expect(failed).toEqual({ ok: false, message: "timer unavailable" });
+    expect(armEditionPause({ now: Date.now(), resumeAt: Number.NaN, schedule: () => undefined, onResume: () => undefined })).toEqual({
+      ok: false,
+      message: "Edition re-match pause had no resume time.",
+    });
+  });
+
+  it("marks a run with no progress for 10 minutes stale, and a stale run does not block", () => {
+    vi.useFakeTimers();
+    const start = Date.parse("2026-10-17T04:47:28.000Z");
+    vi.setSystemTime(start);
+    const running = {
+      state: "running" as const,
+      message: "Edition re-match paused for the Metron job budget.",
+      resumeAt: new Date(start + 5_000).toISOString(),
+      metronResumeAt: new Date(start + 5_000).toISOString(),
+      matched: 2,
+      unmatched: 1,
+      updatedAt: new Date(start).toISOString(),
+      attempted: 4,
+      proposed: 2,
+      noCandidate: 1,
+      skipped: 1,
+      cursorId: "comic-4",
+      heartbeatAt: new Date(start).toISOString(),
+      runId: "run",
+      mode: "propose" as const,
+      misses: { "no-issue": 1 },
+    };
+    expect(editionRunStale(running, start + EDITION_STALE_MS)).toBe(false);
+    expect(editionRunBlocks(running, start + EDITION_STALE_MS)).toBe(true);
+    vi.advanceTimersByTime(EDITION_STALE_MS + 1);
+    expect(editionRunStale(running, Date.now())).toBe(true);
+    expect(editionRunBlocks(running, Date.now())).toBe(false);
+    expect(nextResumeWake({ inflight: true, resumeAt: start + 5_000, now: Date.now(), postponedFrom: start }).kind).toBe("stale");
+    expect(nextResumeWake({ inflight: false, resumeAt: start + 5_000, now: Date.now(), postponedFrom: null })).toEqual({ kind: "resume" });
+    expect(nextResumeWake({ inflight: false, resumeAt: Number.NaN, now: Date.now(), postponedFrom: null })).toMatchObject({ kind: "error" });
+    expect(comicsAfterCursor([{ id: "a" }, { id: "comic-4" }, { id: "b" }], "comic-4").map((row) => row.id)).toEqual(["b"]);
+    expect(editionSummaryText(running)).toBe("Attempted 4. Proposed 2. No candidate 1. Misses: no-issue 1.");
+    expect(missCategory("not on Metron (no collected-edition series)")).toBe("not-on-metron");
+    expect(addMiss({}, "No Metron issue for Saga.")).toEqual({ "no-issue": 1 });
   });
 
   it("keeps later copies on GCD after the Metron budget is exhausted", async () => {

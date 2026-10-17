@@ -2,10 +2,9 @@ import type { Metadata, Viewport } from "next";
 import { Bebas_Neue, Inter } from "next/font/google";
 import { AppShell } from "@/components/shell";
 import { PwaRegister } from "@/components/pwa-register";
-import { scheduleFacsimileRematch } from "@/lib/covers/facsimile-rematch";
+import { noteStaleEditionJob, scheduleFacsimileRematch } from "@/lib/covers/facsimile-rematch";
 import { scheduleShelfFormatBackfill } from "@/lib/shelf-format-backfill";
 import { readBackfillStatus } from "@/lib/covers/files";
-import { readEditionJob } from "@/lib/covers/job-state";
 import { countPendingProposals } from "@/lib/covers/propose-match";
 import { getViewer } from "@/lib/auth";
 import { ACCENT_RGB, defaultPreferences } from "@/lib/settings/preferences";
@@ -59,7 +58,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en" className={`${display.variable} ${body.variable}`} style={{ "--accent-rgb": ACCENT_RGB[prefs.display.accent] } as React.CSSProperties}>
       <body className="font-sans antialiased">
         <link rel="manifest" href="/manifest.webmanifest" crossOrigin="use-credentials" />
-        <AppShell viewer={viewer} backfill={readBackfillStatus()} rematch={readEditionJob()} proposalCount={proposalCount}>
+        <AppShell viewer={viewer} backfill={readBackfillStatus()} rematch={noteStaleEditionJob()} proposalCount={proposalCount}>
           {children}
         </AppShell>
         <PwaRegister />

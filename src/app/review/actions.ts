@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { linkIssueToCatalog } from "@/lib/catalog/link-issue";
 import { readManualLink, type CatalogSource } from "@/lib/catalog/manual-link";
-import { acceptBlocked, acceptRequest } from "@/lib/covers/propose-match";
+import { acceptBlocked, acceptRequest, proposalBlocked } from "@/lib/covers/propose-match";
 import { prisma } from "@/lib/db";
 
 function catalog(value: string): CatalogSource | null {
@@ -19,6 +19,8 @@ export async function acceptProposalAction(id: string): Promise<{ ok: boolean; m
   if (!row || row.status !== "pending") return { ok: false, message: "That proposal is no longer waiting." };
   const provider = catalog(row.provider);
   if (!provider) return { ok: false, message: "That proposal has no catalog." };
+  const manual = proposalBlocked(row.comic.manualLink);
+  if (manual) return { ok: false, message: manual };
   const blocked = acceptBlocked(row.comic.manualLink, provider, row.issueId);
   if (blocked) return { ok: false, message: blocked };
   const link = readManualLink(row.comic.manualLink);
