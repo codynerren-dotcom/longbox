@@ -9,7 +9,10 @@
  * sustained limit, so those defaults apply only before the first response.
  * After that, read X-RateLimit-Burst-Limit/Remaining/Reset and
  * X-RateLimit-Sustained-Limit/Remaining/Reset. Reset is a unix timestamp in
- * seconds. Stop while Remaining is still 1 so a blocked home IP is not hammered.
+ * seconds. The burst window stops while one request is still left. The sustained
+ * window stops at 0 and stays stopped until Reset. A stored reset in unix seconds
+ * is converted to milliseconds before it is compared, so a future reset cannot
+ * zero the daily counter on every call.
  * Space sends across the burst minute (20 per minute is about one every 3 seconds).
  * A 429 waits out Retry-After.
  *
@@ -54,14 +57,26 @@ export function normalizeMetronBudget(value: unknown): MetronBudget {
     lastRequestAt: typeof row.lastRequestAt === "number" ? row.lastRequestAt : null,
     burstLimit: positive(row.burstLimit),
     burstRemaining: nonNegative(row.burstRemaining),
-    burstResetAt: positive(row.burstResetAt),
+    burstResetAt: absoluteReset(row.burstResetAt),
     burstUsed: typeof row.burstUsed === "number" && row.burstUsed > 0 ? Math.round(row.burstUsed) : 0,
     burstWindowStart: positive(row.burstWindowStart),
     sustainedLimit: positive(row.sustainedLimit),
     sustainedRemaining: nonNegative(row.sustainedRemaining),
-    sustainedResetAt: positive(row.sustainedResetAt),
-    pausedUntil: positive(row.pausedUntil),
+    sustainedResetAt: absoluteReset(row.sustainedResetAt),
+    pausedUntil: absoluteReset(row.pausedUntil),
   };
+}
+
+/**
+ * A reset persisted as unix seconds (about 1e9) is milliseconds after this.
+ * Values already in milliseconds (about 1e12) stay put. A small number is left
+ * alone so a short test timestamp is not treated as a delay.
+ */
+export function absoluteReset(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value > 1e12) return value;
+  if (value > 1e9) return value * 1000;
+  return value;
 }
 
 function positive(value: unknown): number | null {
@@ -102,6 +117,21 @@ export const METRON_SAFETY_REMAINING = 1;
 /** Background jobs leave this many burst slots so Match can still search. */
 export const METRON_INTERACTIVE_RESERVE = 3;
 export const METRON_BURST_WINDOW_MS = 60_000;
+/** Share of the sustained day one full re-match may use. The rest stays available for searches. */
+export const METRON_FULL_RUN_SHARE = 0.6;
+
+export function metronFullRunShare(raw: string | undefined = process.env.METRON_FULL_RUN_SHARE): number {
+  if (raw == null || raw.trim() === "") return METRON_FULL_RUN_SHARE;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0 || value > 1) return METRON_FULL_RUN_SHARE;
+  return value;
+}
+
+export function fullRunMetronCap(limit: number, share = metronFullRunShare()): number {
+  const base = limit > 0 ? limit : METRON_FALLBACK_DAILY;
+  const portion = share > 0 && share <= 1 ? share : METRON_FULL_RUN_SHARE;
+  return Math.max(1, Math.floor(base * portion));
+}
 
 export const GCD_ANON_PER_HOUR = 30;
 export const GCD_AUTH_PER_DAY = 2000;
@@ -173,15 +203,61 @@ function cloneBudget(budget: MetronBudget): MetronBudget {
   return { ...budget };
 }
 
+function laterStamp(left: number | null, right: number | null): number | null {
+  if (left == null) return right;
+  if (right == null) return left;
+  return Math.max(left, right);
+}
+
+function lowerCount(left: number | null, right: number | null): number | null {
+  if (left == null) return right;
+  if (right == null) return left;
+  return Math.min(left, right);
+}
+
+/** Same day keeps the higher usage. A later calendar day replaces the window. An empty day does not. */
+export function mergeMetronBudget(local: MetronBudget, disk: MetronBudget): MetronBudget {
+  if (!disk.day) return local;
+  if (!local.day || disk.day > local.day) return { ...disk };
+  if (local.day > disk.day) return local;
+  return {
+    day: local.day,
+    count: Math.max(local.count, disk.count),
+    lastRequestAt: laterStamp(local.lastRequestAt, disk.lastRequestAt),
+    burstLimit: local.burstLimit ?? disk.burstLimit,
+    burstRemaining: lowerCount(local.burstRemaining, disk.burstRemaining),
+    burstResetAt: laterStamp(local.burstResetAt, disk.burstResetAt),
+    burstUsed: Math.max(local.burstUsed, disk.burstUsed),
+    burstWindowStart: laterStamp(local.burstWindowStart, disk.burstWindowStart),
+    sustainedLimit: local.sustainedLimit ?? disk.sustainedLimit,
+    sustainedRemaining: lowerCount(local.sustainedRemaining, disk.sustainedRemaining),
+    sustainedResetAt: laterStamp(local.sustainedResetAt, disk.sustainedResetAt),
+    pausedUntil: laterStamp(local.pausedUntil, disk.pausedUntil),
+  };
+}
+
+function alignSustained(next: MetronBudget): void {
+  const limit = next.sustainedLimit != null && next.sustainedLimit > 0 ? next.sustainedLimit : METRON_FALLBACK_DAILY;
+  const fromRemaining = next.sustainedRemaining == null ? next.count : Math.max(0, limit - next.sustainedRemaining);
+  const used = Math.max(next.count, fromRemaining);
+  next.count = used;
+  next.sustainedRemaining = Math.max(0, limit - used);
+}
+
 function rollMetron(budget: MetronBudget, now: number, day: string): MetronBudget {
   const next = cloneBudget(budget);
+  next.burstResetAt = absoluteReset(next.burstResetAt);
+  next.sustainedResetAt = absoluteReset(next.sustainedResetAt);
+  next.pausedUntil = absoluteReset(next.pausedUntil);
   if (next.day !== day) {
     next.day = day;
     next.count = 0;
+    next.sustainedRemaining = null;
   }
   if (next.burstWindowStart == null || now - next.burstWindowStart >= METRON_BURST_WINDOW_MS) {
     next.burstWindowStart = now;
     next.burstUsed = 0;
+    if (next.burstResetAt == null) next.burstRemaining = null;
   }
   if (next.burstResetAt != null && now >= next.burstResetAt) {
     next.burstRemaining = next.burstLimit;
@@ -190,11 +266,12 @@ function rollMetron(budget: MetronBudget, now: number, day: string): MetronBudge
     next.burstWindowStart = now;
   }
   if (next.sustainedResetAt != null && now >= next.sustainedResetAt) {
-    next.sustainedRemaining = next.sustainedLimit;
+    next.sustainedRemaining = null;
     next.sustainedResetAt = null;
     next.count = 0;
   }
   if (next.pausedUntil != null && next.pausedUntil <= now) next.pausedUntil = null;
+  alignSustained(next);
   return next;
 }
 
@@ -229,7 +306,7 @@ export function planMetronAcquire(
     };
   }
   const sustainedRemaining = sustainedRemainingOf(state);
-  if (sustainedRemaining <= METRON_SAFETY_REMAINING) {
+  if (sustainedRemaining <= 0) {
     const resumeAt = state.sustainedResetAt != null && state.sustainedResetAt > now ? state.sustainedResetAt : 0;
     if (resumeAt > 0) state.pausedUntil = resumeAt;
     return {
@@ -267,7 +344,9 @@ export function commitMetronSend(budget: MetronBudget, now: number, day: string)
   next.burstUsed += 1;
   next.lastRequestAt = now;
   if (next.burstRemaining != null) next.burstRemaining = Math.max(0, next.burstRemaining - 1);
+  else next.burstRemaining = Math.max(0, (next.burstLimit != null && next.burstLimit > 0 ? next.burstLimit : METRON_FALLBACK_BURST) - next.burstUsed);
   if (next.sustainedRemaining != null) next.sustainedRemaining = Math.max(0, next.sustainedRemaining - 1);
+  else next.sustainedRemaining = Math.max(0, sustainedLimitOf(next) - next.count);
   next.pausedUntil = null;
   return next;
 }
@@ -277,14 +356,19 @@ export function applyMetronHeaders(budget: MetronBudget, headers: HeaderBag, now
   const next = cloneBudget(budget);
   const read = readMetronRateHeaders(headers, now);
   if (read.burstLimit != null) next.burstLimit = read.burstLimit;
-  if (read.burstRemaining != null) next.burstRemaining = read.burstRemaining;
+  if (read.burstRemaining != null) {
+    next.burstRemaining = read.burstRemaining;
+    const burstLimit = read.burstLimit ?? next.burstLimit ?? METRON_FALLBACK_BURST;
+    next.burstUsed = Math.max(0, burstLimit - read.burstRemaining);
+  }
   if (read.burstResetAt != null) next.burstResetAt = read.burstResetAt;
   if (read.sustainedLimit != null) next.sustainedLimit = read.sustainedLimit;
-  if (read.sustainedRemaining != null) next.sustainedRemaining = read.sustainedRemaining;
-  if (read.sustainedResetAt != null) next.sustainedResetAt = read.sustainedResetAt;
-  if (read.sustainedRemaining === 0) {
-    next.count = next.sustainedLimit ?? METRON_FALLBACK_DAILY;
+  if (read.sustainedRemaining != null) {
+    next.sustainedRemaining = read.sustainedRemaining;
+    const sustainedLimit = read.sustainedLimit ?? next.sustainedLimit ?? METRON_FALLBACK_DAILY;
+    next.count = Math.max(0, sustainedLimit - read.sustainedRemaining);
   }
+  if (read.sustainedResetAt != null) next.sustainedResetAt = read.sustainedResetAt;
   const resume = earliestExhaustedReset(read, now);
   if (resume != null) next.pausedUntil = resume;
   return next;
@@ -292,7 +376,7 @@ export function applyMetronHeaders(budget: MetronBudget, headers: HeaderBag, now
 
 function earliestExhaustedReset(read: MetronHeaderWindows, now: number): number | null {
   let resume: number | null = null;
-  if (read.sustainedRemaining != null && read.sustainedRemaining <= METRON_SAFETY_REMAINING) {
+  if (read.sustainedRemaining != null && read.sustainedRemaining <= 0) {
     resume = read.sustainedResetAt != null && read.sustainedResetAt > now ? read.sustainedResetAt : now + 60_000;
   }
   if (read.burstRemaining != null && read.burstRemaining <= METRON_SAFETY_REMAINING) {

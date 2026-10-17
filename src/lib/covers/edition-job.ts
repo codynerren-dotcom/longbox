@@ -1,9 +1,12 @@
 import { formatResumeTime } from "@/lib/covers/limiter";
 
-/** A running re-match with no heartbeat newer than this is stale. */
+/** A running re-match whose cursor has not moved for longer than this is stale. */
 export const EDITION_STALE_MS = 10 * 60 * 1000;
 
 export const EDITION_STALE_MESSAGE = "Edition re-match had no progress for 10 minutes.";
+
+/** One try, then one retry. The next wake skips the comic instead of calling out again. */
+export const COMIC_ATTEMPT_LIMIT = 2;
 
 export type EditionJobPhase = "running" | "paused" | "finished" | "error" | "stale";
 
@@ -22,11 +25,19 @@ export type EditionJobState = {
   noCandidate: number;
   skipped: number;
   cursorId: string | null;
+  /** When the cursor id last changed. A fresh heartbeat does not move this. */
+  cursorAt: string | null;
+  /** False while the comic at the cursor has not finished. A pause retries it once. */
+  cursorSettled: boolean;
+  attempts: Record<string, number>;
   heartbeatAt: string | null;
   runId: string | null;
   mode: "propose" | "apply" | null;
   scope: "suspect" | "full";
   misses: EditionMisses;
+  /** Metron calls this full run has used on `metronDay`. A job pause does not reset it. */
+  metronCalls: number;
+  metronDay: string | null;
 };
 
 export function editionJobText(job: EditionJobState | null): string | null {
@@ -56,13 +67,15 @@ export function editionSummaryText(job: EditionJobState | null): string | null {
 }
 
 export function editionProgressAt(job: EditionJobState): number {
+  const cursor = job.cursorAt ? Date.parse(job.cursorAt) : Number.NaN;
+  if (Number.isFinite(cursor)) return cursor;
   const heartbeat = job.heartbeatAt ? Date.parse(job.heartbeatAt) : Number.NaN;
   if (Number.isFinite(heartbeat)) return heartbeat;
   const updated = Date.parse(job.updatedAt);
   return Number.isFinite(updated) ? updated : 0;
 }
 
-/** True when a running job has had no progress for more than 10 minutes. */
+/** True when a running job's cursor has not moved for more than 10 minutes. */
 export function editionRunStale(job: EditionJobState | null, now = Date.now()): boolean {
   if (!job || job.state !== "running") return false;
   return now - editionProgressAt(job) > EDITION_STALE_MS;
@@ -96,6 +109,38 @@ export function comicsAfterCursor<T extends { id: string }>(rows: T[], cursorId:
   const index = rows.findIndex((row) => row.id === cursorId);
   if (index < 0) return rows;
   return rows.slice(index + 1);
+}
+
+/** Record one attempt before any catalog call. Past the limit, the comic is skipped. */
+export function noteComicAttempt(
+  attempts: Record<string, number>,
+  id: string,
+): { attempts: Record<string, number>; count: number; skip: boolean } {
+  const count = (attempts[id] ?? 0) + 1;
+  return { attempts: { ...attempts, [id]: count }, count, skip: count > COMIC_ATTEMPT_LIMIT };
+}
+
+export function comicAttemptSkipMessage(series: string, issueNo: string | null | undefined): string {
+  const issue = issueNo && issueNo.trim() ? issueNo.trim() : "?";
+  return `Skipped ${series} #${issue} after ${COMIC_ATTEMPT_LIMIT} attempts in this run.`;
+}
+
+/**
+ * Resume at an unfinished cursor so it can be retried once.
+ * A settled cursor, or one that already used its attempts, continues after it.
+ * An unknown cursor returns -1 so the caller can reset the run.
+ */
+export function resumeRematchIndex(
+  ids: string[],
+  cursorId: string | null,
+  attempts: Record<string, number>,
+  settled: boolean,
+): number {
+  if (!cursorId) return 0;
+  const index = ids.indexOf(cursorId);
+  if (index < 0) return -1;
+  if (settled || (attempts[cursorId] ?? 0) > COMIC_ATTEMPT_LIMIT) return index + 1;
+  return index;
 }
 
 /** A pause continues the same run. A new pass, or a resume with no stored id, gets a fresh one. */
@@ -175,10 +220,25 @@ export function editionJobFromUnknown(value: unknown): EditionJobState | null {
     noCandidate: typeof parsed.noCandidate === "number" ? whole(parsed.noCandidate) : unmatched,
     skipped: whole(parsed.skipped),
     cursorId: typeof parsed.cursorId === "string" && parsed.cursorId ? parsed.cursorId : null,
+    cursorAt: typeof parsed.cursorAt === "string" ? parsed.cursorAt : null,
+    cursorSettled: parsed.cursorSettled === true,
+    attempts: attemptsOf(parsed.attempts),
     heartbeatAt: typeof parsed.heartbeatAt === "string" ? parsed.heartbeatAt : null,
     runId: typeof parsed.runId === "string" && parsed.runId ? parsed.runId : null,
     mode: parsed.mode === "propose" || parsed.mode === "apply" ? parsed.mode : null,
     scope: parsed.scope === "full" ? "full" : "suspect",
     misses: missesOf(parsed.misses),
+    metronCalls: whole(parsed.metronCalls),
+    metronDay: typeof parsed.metronDay === "string" && parsed.metronDay ? parsed.metronDay : null,
   };
+}
+
+function attemptsOf(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const attempts: Record<string, number> = {};
+  for (const [key, count] of Object.entries(value)) {
+    if (!key || typeof count !== "number" || !Number.isFinite(count) || count <= 0) continue;
+    attempts[key] = Math.round(count);
+  }
+  return attempts;
 }

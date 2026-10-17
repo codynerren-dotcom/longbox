@@ -8,6 +8,7 @@ import {
   emptyMetronBudget,
   emptyPace,
   gcdUsage,
+  mergeMetronBudget,
   metronUsage,
   normalizeMetronBudget,
   normalizePace,
@@ -39,10 +40,15 @@ const memory: MemoryShape = {
 };
 
 let hydrated = process.env.VITEST === "true";
+let hydrating: Promise<void> | null = null;
 let writing: Promise<void> = Promise.resolve();
+let metronEpoch = 0;
 
 function remember(key: string, payload: unknown): void {
-  if (key === "metron") memory.metron = normalizeMetronBudget(payload);
+  if (key === "metron") {
+    metronEpoch += 1;
+    memory.metron = normalizeMetronBudget(payload);
+  }
   else if (key === "gcd") memory.gcd = normalizeGcd(payload);
   else if (key === "comicvine") memory.comicvine = normalizeComicVine(payload);
   else if (key === "metron-circuit") {
@@ -59,14 +65,29 @@ function remember(key: string, payload: unknown): void {
 
 export async function ensureRateHydrated(): Promise<void> {
   if (hydrated) return;
-  hydrated = true;
-  try {
-    const { prisma } = await import("@/lib/db");
-    const rows = await prisma.apiWindow.findMany();
-    for (const row of rows) remember(row.key, row.payload);
-  } catch {
-    // The table is created by the migration. Until then the process keeps the window in memory.
+  if (!hydrating) {
+    const epoch = metronEpoch;
+    hydrating = (async () => {
+      try {
+        const { prisma } = await import("@/lib/db");
+        const rows = await prisma.apiWindow.findMany();
+        for (const row of rows) {
+          if (row.key === "metron") {
+            if (metronEpoch !== epoch) continue;
+            memory.metron = mergeMetronBudget(memory.metron, normalizeMetronBudget(row.payload));
+            continue;
+          }
+          remember(row.key, row.payload);
+        }
+      } catch {
+        // The table is created by the migration. Until then the process keeps the window in memory.
+      } finally {
+        hydrated = true;
+        hydrating = null;
+      }
+    })();
   }
+  await hydrating;
 }
 
 async function writeWindow(key: string, payload: unknown): Promise<void> {

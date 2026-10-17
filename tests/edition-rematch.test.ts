@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { budgetPauseMessage } from "@/lib/covers/budget-pause";
 import { includeInRematch, rematchRunPlan } from "@/lib/covers/edition";
-import { addMiss, armEditionPause, comicsAfterCursor, continuedRunId, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake } from "@/lib/covers/edition-job";
+import { addMiss, armEditionPause, comicAttemptSkipMessage, comicsAfterCursor, continuedRunId, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake, noteComicAttempt, resumeRematchIndex } from "@/lib/covers/edition-job";
 import { editionOutcome, runFacsimilePass } from "@/lib/covers/facsimile-once";
 import { acquireEditionRematchLock, armJobResume, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock } from "@/lib/covers/facsimile-rematch";
 import { editionJobText, writeEditionJob } from "@/lib/covers/job-state";
@@ -101,11 +101,16 @@ describe("edition re-match budget pause", () => {
       noCandidate: 1,
       skipped: 1,
       cursorId: "comic-4",
+      cursorAt: null,
+      cursorSettled: false,
+      attempts: {},
       heartbeatAt: new Date(start).toISOString(),
       runId: "run",
       mode: "propose" as const,
       scope: "suspect" as const,
       misses: { "no-issue": 1 },
+      metronCalls: 0,
+      metronDay: null,
     };
     expect(editionRunStale(running, start + EDITION_STALE_MS)).toBe(false);
     expect(editionRunBlocks(running, start + EDITION_STALE_MS)).toBe(true);
@@ -136,6 +141,23 @@ describe("edition re-match budget pause", () => {
     expect(continuedRunId(true, "c1cee22e8e430033", () => "90020db825afc4d7")).toBe("c1cee22e8e430033");
     expect(continuedRunId(false, "c1cee22e8e430033", () => "90020db825afc4d7")).toBe("90020db825afc4d7");
     expect(continuedRunId(true, null, () => "90020db825afc4d7")).toBe("90020db825afc4d7");
+    const stuck = { ...running, heartbeatAt: new Date(Date.now()).toISOString(), cursorAt: new Date(start).toISOString() };
+    expect(editionRunStale(stuck, Date.now())).toBe(true);
+    expect(editionRunStale({ ...stuck, state: "paused" }, Date.now())).toBe(false);
+    const ids = ["a", "cmv791mhr00p9nnec8a4zl1gj", "c"];
+    expect(resumeRematchIndex(ids, null, {}, false)).toBe(0);
+    expect(resumeRematchIndex(ids, "cmv791mhr00p9nnec8a4zl1gj", { cmv791mhr00p9nnec8a4zl1gj: 1 }, false)).toBe(1);
+    expect(resumeRematchIndex(ids, "cmv791mhr00p9nnec8a4zl1gj", { cmv791mhr00p9nnec8a4zl1gj: 1 }, true)).toBe(2);
+    const once = noteComicAttempt({}, "cmv791mhr00p9nnec8a4zl1gj");
+    const twice = noteComicAttempt(once.attempts, "cmv791mhr00p9nnec8a4zl1gj");
+    const third = noteComicAttempt(twice.attempts, "cmv791mhr00p9nnec8a4zl1gj");
+    expect(once).toMatchObject({ count: 1, skip: false });
+    expect(twice).toMatchObject({ count: 2, skip: false });
+    expect(third).toMatchObject({ count: 3, skip: true });
+    expect(resumeRematchIndex(ids, "cmv791mhr00p9nnec8a4zl1gj", third.attempts, false)).toBe(2);
+    expect(comicAttemptSkipMessage("True Believers: King in Black - Iron Man / Doctor Doom", "1")).toBe(
+      "Skipped True Believers: King in Black - Iron Man / Doctor Doom #1 after 2 attempts in this run.",
+    );
     expect(missCategory("not on Metron (no collected-edition series)")).toBe("not-on-metron");
     expect(addMiss({}, "No Metron issue for Saga.")).toEqual({ "no-issue": 1 });
   });
