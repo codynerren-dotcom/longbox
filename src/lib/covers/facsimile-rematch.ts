@@ -430,7 +430,10 @@ export async function rematchShelfCopy(
   if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
   const blocked = proposalBlocked(comic.manualLink);
   if (blocked) {
-    return { ok: false, message: blocked, outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
+    const message = blocked.includes("uploaded")
+      ? "This cover was uploaded. Unlink the catalog id if you want, and the photo stays."
+      : "This link was chosen by hand. Unlink it first.";
+    return { ok: false, message, outcome: "skipped", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
   }
 
   const query = coverQuery(comic);
