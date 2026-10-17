@@ -4,11 +4,12 @@ import { assertDatabaseUrl, DATABASE_URL_MISSING } from "@/lib/db-url";
 
 describe("database URL", () => {
   it("fails fast when DATABASE_URL is missing and stays quiet for tests and the production build", () => {
-    expect(() => assertDatabaseUrl({} as NodeJS.ProcessEnv)).toThrow(DATABASE_URL_MISSING);
-    expect(() => assertDatabaseUrl({ DATABASE_URL: "   " } as NodeJS.ProcessEnv)).toThrow(DATABASE_URL_MISSING);
-    expect(() => assertDatabaseUrl({ VITEST: "true" } as NodeJS.ProcessEnv)).not.toThrow();
-    expect(() => assertDatabaseUrl({ NEXT_PHASE: "phase-production-build" } as NodeJS.ProcessEnv)).not.toThrow();
-    expect(() => assertDatabaseUrl({ DATABASE_URL: "postgres://user:CHANGE_ME@db:5432/longbox" } as NodeJS.ProcessEnv)).not.toThrow();
+    const env = (values: Record<string, string>): NodeJS.ProcessEnv => ({ NODE_ENV: "test", ...values });
+    expect(() => assertDatabaseUrl(env({}))).toThrow(DATABASE_URL_MISSING);
+    expect(() => assertDatabaseUrl(env({ DATABASE_URL: "   " }))).toThrow(DATABASE_URL_MISSING);
+    expect(() => assertDatabaseUrl(env({ VITEST: "true" }))).not.toThrow();
+    expect(() => assertDatabaseUrl(env({ NEXT_PHASE: "phase-production-build" }))).not.toThrow();
+    expect(() => assertDatabaseUrl(env({ DATABASE_URL: "postgres://user:CHANGE_ME@db:5432/longbox" }))).not.toThrow();
   });
 
   it("keeps placeholders out of the image, compose, and the example", () => {
