@@ -11,6 +11,7 @@ import { calendarDay, detectEdition, includeInRematch, rematchRunPlan, suspectMa
 import {
   addMiss,
   armEditionPause,
+  continuedRunId,
   EDITION_STALE_MESSAGE,
   editionRunBlocks,
   editionRunStale,
@@ -743,7 +744,7 @@ function summaryLine(input: { attempted: number; proposed: number; noCandidate: 
 
 async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean, scope: RematchScope): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   const previous = resume ? readEditionJob() : null;
-  const runId = randomBytes(8).toString("hex");
+  const runId = continuedRunId(resume, previous?.runId, () => randomBytes(8).toString("hex"));
   let attempted = previous?.attempted ?? 0;
   let proposed = previous?.proposed ?? 0;
   let noCandidate = previous?.noCandidate ?? 0;
@@ -936,7 +937,7 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
   const existing = readEditionJob();
   if (existing?.mode === "propose") return false;
   const resuming = existing?.state === "paused" || existing?.state === "stale" || existing?.state === "error";
-  const runId = randomBytes(8).toString("hex");
+  const runId = continuedRunId(resuming, existing?.runId, () => randomBytes(8).toString("hex"));
   pauseRequested = false;
   writeJob({
     state: "running",

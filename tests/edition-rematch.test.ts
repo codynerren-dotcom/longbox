@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { budgetPauseMessage } from "@/lib/covers/budget-pause";
 import { includeInRematch, rematchRunPlan } from "@/lib/covers/edition";
-import { addMiss, armEditionPause, comicsAfterCursor, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake } from "@/lib/covers/edition-job";
+import { addMiss, armEditionPause, comicsAfterCursor, continuedRunId, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake } from "@/lib/covers/edition-job";
 import { editionOutcome, runFacsimilePass } from "@/lib/covers/facsimile-once";
 import { acquireEditionRematchLock, armJobResume, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock } from "@/lib/covers/facsimile-rematch";
 import { editionJobText, writeEditionJob } from "@/lib/covers/job-state";
@@ -133,6 +133,9 @@ describe("edition re-match budget pause", () => {
     expect(rematchRunPlan({ requested: "full", existing: { state: "paused", scope: "full" } })).toEqual({ resume: true, scope: "full" });
     expect(rematchRunPlan({ requested: "suspect", existing: null })).toEqual({ resume: false, scope: "suspect" });
     expect(rematchRunPlan({ resume: true, existing: null })).toEqual({ resume: false, scope: "suspect" });
+    expect(continuedRunId(true, "c1cee22e8e430033", () => "90020db825afc4d7")).toBe("c1cee22e8e430033");
+    expect(continuedRunId(false, "c1cee22e8e430033", () => "90020db825afc4d7")).toBe("90020db825afc4d7");
+    expect(continuedRunId(true, null, () => "90020db825afc4d7")).toBe("90020db825afc4d7");
     expect(missCategory("not on Metron (no collected-edition series)")).toBe("not-on-metron");
     expect(addMiss({}, "No Metron issue for Saga.")).toEqual({ "no-issue": 1 });
   });

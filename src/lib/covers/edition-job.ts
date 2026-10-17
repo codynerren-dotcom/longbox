@@ -98,6 +98,12 @@ export function comicsAfterCursor<T extends { id: string }>(rows: T[], cursorId:
   return rows.slice(index + 1);
 }
 
+/** A pause continues the same run. A new pass, or a resume with no stored id, gets a fresh one. */
+export function continuedRunId(resume: boolean, previous: string | null | undefined, next: () => string): string {
+  if (resume && previous) return previous;
+  return next();
+}
+
 export type ResumeWake = { kind: "resume" } | { kind: "again"; at: number } | { kind: "stale" } | { kind: "error"; message: string };
 
 /**
