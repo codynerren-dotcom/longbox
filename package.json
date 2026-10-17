@@ -13,6 +13,7 @@
     "validate": "npm run lint && npm run typecheck && npm run test && npm run build",
     "import:clz": "tsx scripts/import-clz.ts",
     "covers:backfill": "tsx scripts/covers-backfill.ts",
+    "covers:propose": "tsx scripts/covers-propose.ts",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "fixture": "node fixtures/generate-csv.mjs",

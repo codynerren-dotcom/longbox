@@ -1,4 +1,4 @@
-import { parseShelfSeries } from "@/lib/shelf-format";
+import { collectedIssueToken, parseShelfSeries } from "@/lib/shelf-format";
 
 export type CatalogSource = "metron" | "comicvine" | "gcd";
 
@@ -137,8 +137,11 @@ export function withoutLinkedId(current: unknown, source: CatalogSource): Manual
 export function matchQuery(comic: { series: string; issueNo: string | null | undefined; year: number | null | undefined }): string {
   const series = parseShelfSeries(comic.series).name || comic.series.trim();
   const parts = [series];
+  const token = collectedIssueToken(comic.issueNo);
   const issue = comic.issueNo?.trim().replace(/^#/, "");
-  if (issue) parts.push(`#${issue}`);
+  if (token) parts.push(`Vol. ${token.number}`);
+  else if (issue && /^vol(?:ume)?\.?\s*\d+$/i.test(issue)) parts.push(`Vol. ${issue.replace(/\D/g, "")}`);
+  else if (issue) parts.push(`#${issue}`);
   if (comic.year != null && Number.isInteger(comic.year)) parts.push(String(comic.year));
   return parts.filter(Boolean).join(" ");
 }
@@ -158,6 +161,13 @@ export function parseMatchQuery(query: string): { series: string; issueNo: strin
   if (found) {
     issueNo = found;
     text = text.replace(hashed?.[0] ?? bare?.[0] ?? found, " ").replace(/\s+/g, " ").trim();
+  }
+  if (!issueNo) {
+    const token = text.match(/(?:^|\s)#?\s*((?:tpb?|hc|omnibus|gn|compendium)(?:\s*[- ]\s*(?:[a-z]|\d+))?)\s*$/i);
+    if (token?.[1] && collectedIssueToken(token[1])) {
+      issueNo = token[1];
+      text = text.slice(0, token.index).replace(/\s+/g, " ").trim();
+    }
   }
   return { series: text, issueNo, year };
 }

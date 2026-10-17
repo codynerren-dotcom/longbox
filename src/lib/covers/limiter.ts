@@ -2,6 +2,7 @@ import {
   applyMetronHeaders,
   commitMetronSend,
   emptyMetronBudget,
+  mergeMetronBudget,
   METRON_FALLBACK_BURST,
   METRON_FALLBACK_DAILY,
   metronSpacingMs,
@@ -178,18 +179,9 @@ export class MetronLimiter {
     this.store.write(this.budget);
   }
 
-  /** Pick up waits and counts written by another limiter that shares this store. */
+  /** Pick up the higher usage written by another limiter that shares this store. */
   private syncFromStore(): void {
-    const disk = this.store.read();
-    if (!disk.day) return;
-    if (disk.day !== this.budget.day) {
-      if (disk.day > this.budget.day) this.budget = { ...disk };
-      return;
-    }
-    if (disk.count > this.budget.count) this.budget.count = disk.count;
-    if (disk.lastRequestAt != null && (this.budget.lastRequestAt == null || disk.lastRequestAt > this.budget.lastRequestAt)) {
-      this.budget.lastRequestAt = disk.lastRequestAt;
-    }
+    this.budget = mergeMetronBudget(this.budget, this.store.read());
   }
 
   defer(ms: number): void {

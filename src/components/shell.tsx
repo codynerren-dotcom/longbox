@@ -18,6 +18,7 @@ const desktopNav = [
   { href: "/wishlist", label: "Wishlist" },
   { href: "/settings", label: "Settings" },
   { href: "/logs", label: "Logs" },
+  { href: "/review", label: "Review matches" },
 ];
 
 function isActive(pathname: string, href: string) {
@@ -29,11 +30,13 @@ export function AppShell({
   viewer,
   backfill,
   rematch = null,
+  proposalCount = 0,
   children,
 }: {
   viewer: Viewer;
   backfill: BackfillStatus | null;
   rematch?: EditionJobState | null;
+  proposalCount?: number;
   children: ReactNode;
 }) {
   const pathname = usePathname();
@@ -61,11 +64,14 @@ export function AppShell({
               <Link
                 key={item.href}
                 href={item.href}
-                className={`rounded-xl px-3 py-2 text-sm font-medium ${
+                className={`flex items-center rounded-xl px-3 py-2 text-sm font-medium ${
                   active ? "bg-comic text-ink" : "text-paper/85 hover:bg-panel2"
                 }`}
               >
                 {item.label}
+                {item.href === "/review" && proposalCount > 0 ? (
+                  <span className={`ml-2 rounded-full px-1.5 text-[11px] ${active ? "bg-ink text-comic" : "bg-comic text-ink"}`}>{proposalCount}</span>
+                ) : null}
               </Link>
             );
           })}

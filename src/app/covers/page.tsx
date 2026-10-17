@@ -2,7 +2,7 @@ import Link from "next/link";
 import { AttachForm } from "@/app/covers/attach-form";
 import { retryCoverAction } from "@/app/covers/actions";
 import { BackfillButton } from "@/app/covers/backfill-button";
-import { RematchAllSuspects, SuspectActions } from "@/app/covers/suspect-actions";
+import { RematchAllSuspects, RematchFullCollection, SuspectActions } from "@/app/covers/suspect-actions";
 import { CoverLiveStatus } from "@/components/backfill-status";
 import { CatalogIdLink } from "@/components/catalog-id-link";
 import { PageHeader } from "@/components/page-header";
@@ -102,7 +102,18 @@ export default async function CoversPage() {
         <p className="mt-2 text-sm text-mist">
           A facsimile link is listed when the linked issue&apos;s store year is not within a year of the copy&apos;s release date. A later printing stays listed until its printing cover is confirmed. Re-match keeps that issue link and leaves the cover for review when the printing cover is missing. Other links are listed when the copy is another edition, or when its release year and cover year are more than two years apart.
         </p>
-        {suspects.length > 0 ? <RematchAllSuspects /> : null}
+        <RematchFullCollection />
+        <p className="mt-2 text-sm text-mist">
+          Propose re-matches walks linked copies that look like the wrong edition. Full re-match (propose) walks every copy that was not linked by hand. Both stay inside the Metron limiter and the cover cache. A resumed run continues that same set. With no cursor, it starts at the beginning of that set.
+        </p>
+        {suspects.length > 0 ? (
+          <>
+            <RematchAllSuspects />
+            <p className="mt-2 text-sm text-mist">
+              Propose mode saves a suggestion and leaves the copy alone. Accept it on <Link href="/review" className="text-comic">Review matches</Link>.
+            </p>
+          </>
+        ) : null}
         {suspects.length === 0 ? (
           <p className="mt-2 text-sm text-mist">No suspect links.</p>
         ) : (

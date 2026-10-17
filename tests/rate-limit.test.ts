@@ -6,10 +6,14 @@ import {
   emptyComicVineRate,
   emptyGcdRate,
   emptyMetronBudget,
+  fullRunMetronCap,
+  mergeMetronBudget,
   METRON_FALLBACK_BURST,
   METRON_FALLBACK_DAILY,
   METRON_INTERACTIVE_RESERVE,
   METRON_SAFETY_REMAINING,
+  metronFullRunShare,
+  metronUsage,
   normalizeMetronBudget,
   pauseLabel,
   planComicVineAcquire,
@@ -106,7 +110,8 @@ describe("rate windows survive a restart", () => {
     if (plan.kind === "pause") {
       expect(plan.hold.resumeAt).toBe(Math.floor(burstReset / 1000) * 1000);
       expect(plan.state.sustainedLimit).toBe(8000);
-      expect(plan.state.count).toBe(12);
+      expect(plan.state.count).toBe(4000);
+      expect(plan.state.sustainedRemaining).toBe(4000);
     }
   });
 
@@ -134,6 +139,62 @@ describe("rate windows survive a restart", () => {
     if (paced.kind === "send") expect(paced.waitMs).toBe(900);
     expect(comicVineResource("/issue/4000-1/")).toBe("issues");
     expect(comicVineResource("/volumes/")).toBe("volumes");
+  });
+});
+
+describe("sustained window", () => {
+  it("does not zero the daily count when a reset was stored as unix seconds", () => {
+    const seconds = Math.floor((NOW + 86_400_000) / 1000);
+    const restored = normalizeMetronBudget({
+      day: DAY,
+      count: 100,
+      sustainedLimit: 5000,
+      sustainedRemaining: 4900,
+      sustainedResetAt: seconds,
+    });
+    expect(restored.sustainedResetAt).toBe(seconds * 1000);
+    const plan = planMetronAcquire(restored, NOW, "interactive", DAY);
+    expect(plan.kind).toBe("send");
+    if (plan.kind !== "send") return;
+    const sent = commitMetronSend(plan.state, NOW, DAY);
+    expect(sent.count).toBe(101);
+    expect(sent.sustainedRemaining).toBe(4899);
+  });
+
+  it("lets the sustained remaining header replace the local count", () => {
+    const applied = applyMetronHeaders(
+      { ...emptyMetronBudget(), day: DAY, count: 12, sustainedRemaining: 4988 },
+      headers({
+        "x-ratelimit-sustained-limit": "5000",
+        "x-ratelimit-sustained-remaining": "4800",
+        "x-ratelimit-sustained-reset": String(Math.floor((NOW + 86_400_000) / 1000)),
+      }),
+      NOW,
+    );
+    expect(applied.count).toBe(200);
+    expect(applied.sustainedRemaining).toBe(4800);
+    const sustained = metronUsage(applied, NOW).find((row) => row.label === "Sustained");
+    expect(sustained).toMatchObject({ used: 200, limit: 5000 });
+  });
+
+  it("keeps the higher saved count when a stale window is merged", () => {
+    const local = { ...emptyMetronBudget(), day: DAY, count: 40, sustainedRemaining: 4960, sustainedLimit: 5000 };
+    const stale = { ...emptyMetronBudget(), day: DAY, count: 1, sustainedRemaining: 4999, sustainedLimit: 5000 };
+    const merged = mergeMetronBudget(local, stale);
+    expect(merged.count).toBe(40);
+    expect(merged.sustainedRemaining).toBe(4960);
+    const shown = metronUsage(merged, NOW).find((row) => row.label === "Sustained");
+    expect(shown).toMatchObject({ used: 40, limit: 5000 });
+  });
+
+  it("caps a full run at 60 percent unless the share is configured", () => {
+    expect(metronFullRunShare(undefined)).toBe(0.6);
+    expect(metronFullRunShare("")).toBe(0.6);
+    expect(metronFullRunShare("nope")).toBe(0.6);
+    expect(metronFullRunShare("0")).toBe(0.6);
+    expect(fullRunMetronCap(5000, 0.6)).toBe(3000);
+    expect(fullRunMetronCap(8000, 0.6)).toBe(4800);
+    expect(fullRunMetronCap(5000, metronFullRunShare("0.5"))).toBe(2500);
   });
 });
 
@@ -170,6 +231,48 @@ describe("interactive reserve", () => {
     expect(interactiveSends).toBe(METRON_INTERACTIVE_RESERVE);
     const stopped = planMetronAcquire(budget, now, "interactive", DAY);
     expect(stopped.kind).toBe("pause");
+  });
+
+  it("holds a background job until the sustained reset when the manual reserve is all that remains", () => {
+    const reset = NOW + 3 * 60 * 60 * 1000;
+    const budget: MetronBudget = {
+      ...emptyMetronBudget(),
+      day: DAY,
+      count: 4997,
+      sustainedLimit: 5000,
+      sustainedRemaining: METRON_INTERACTIVE_RESERVE,
+      sustainedResetAt: reset,
+      burstLimit: 20,
+      burstRemaining: 20,
+      burstUsed: 0,
+    };
+    const held = planMetronAcquire(budget, NOW, "background", DAY);
+    expect(held.kind).toBe("pause");
+    if (held.kind === "pause") {
+      expect(held.hold.budget).toBe("Metron reserve");
+      expect(held.hold.resumeAt).toBe(reset);
+      expect(held.hold.resumeAt - NOW).toBeGreaterThan(60_000);
+    }
+    expect(planMetronAcquire(budget, NOW, "interactive", DAY).kind).toBe("send");
+
+    const spent = { ...budget, count: 5000, sustainedRemaining: 0 };
+    const daily = planMetronAcquire(spent, NOW, "background", DAY);
+    expect(daily.kind).toBe("pause");
+    if (daily.kind === "pause") {
+      expect(daily.hold.budget).toBe("Metron daily");
+      expect(daily.hold.resumeAt).toBe(reset);
+    }
+    const burst = planMetronAcquire(
+      { ...budget, sustainedRemaining: 51, count: 4949, burstRemaining: 2, burstResetAt: NOW + 60_000 },
+      NOW,
+      "background",
+      DAY,
+    );
+    expect(burst.kind).toBe("pause");
+    if (burst.kind === "pause") {
+      expect(burst.hold.budget).toBe("Metron reserve");
+      expect(burst.hold.resumeAt).toBe(NOW + 60_000);
+    }
   });
 });
 

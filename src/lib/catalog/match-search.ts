@@ -10,10 +10,11 @@ import {
   planComicVineAcquire,
   type ComicVineRateState,
 } from "@/lib/catalog/rate-limit";
+import { readCollectedMiss, writeCollectedMiss } from "@/lib/covers/collected-miss";
 import { fetchMetronIssueBody, legacyMetronNumber, listMetronIssueRows, metronIssueFollowUp, type MetronTransport } from "@/lib/covers/metron-client";
 import { retryAfterFromMessage, retryAfterMs } from "@/lib/covers/limiter";
 import { recordFetch } from "@/lib/log/api";
-import { catalogNameQueries, catalogSeriesQuery, isbnDigits, isCollected, metronSeriesType, rankSeriesHits, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle, tradeSearchSeries, volumeNumber } from "@/lib/shelf-format";
+import { canonicalIsbn, catalogNameQueries, catalogSeriesQuery, collectedSearchTarget, isbnDigits, isCollected, rankSeriesHits, resolveShelfFormat, seriesNamesMatch, seriesSoloTitle } from "@/lib/shelf-format";
 
 const CV_BASE = "https://comicvine.gamespot.com/api";
 
@@ -25,7 +26,12 @@ export async function searchMetronMatches(
   shelfFormat?: string | null,
   shelfSeries?: string | null,
 ): Promise<MatchHit[]> {
+  const collected = collectedSearchTarget({ query, shelfFormat, shelfSeries });
   const format = resolveShelfFormat({ shelfFormat });
+  if (collected || isCollected(format)) {
+    if (!collected) return [];
+    return searchCollectedMetron(transport, collected, parseMatchQuery(query).year);
+  }
   if (mode === "barcode") {
     const code = barcode.trim();
     if (!code) return [];
@@ -40,37 +46,6 @@ export async function searchMetronMatches(
   }
   const parsed = parseMatchQuery(query);
   if (!parsed.series && !parsed.issueNo) return [];
-  const typeName = isCollected(format) ? metronSeriesType(format) : null;
-  if (typeName) {
-    const seriesName = catalogSeriesQuery(tradeSearchSeries(parsed.series) || parsed.series, shelfSeries).name || parsed.series;
-    const number = volumeNumber(parsed.issueNo);
-    if (!seriesName) return [];
-    const hits: MatchHit[] = [];
-    for (const name of catalogNameQueries(seriesName, { broad: true })) {
-      const seriesRows = await listMetronIssueRows(
-        transport,
-        `/series/?${new URLSearchParams({ name, series_type: typeName }).toString()}`,
-      );
-      for (const row of seriesRows) {
-        const count = catalogIssueCount((row as { issue_count?: unknown }).issue_count);
-        const title = rowName(row);
-        if (!seriesNamesMatch(seriesName, title) && !(count === 1 && seriesSoloTitle(seriesName, title))) continue;
-        const seriesId = idOf(row);
-        if (!seriesId) continue;
-        const params = new URLSearchParams({ series_id: seriesId });
-        if (number) params.set("number", number);
-        if (parsed.year != null) params.set("cover_year", String(parsed.year));
-        const issues = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
-        for (const issue of issues) {
-          const hit = mapMetronMatchHit(issue);
-          if (hit && !hits.some((item) => item.id === hit.id)) hits.push(hit);
-        }
-        if (hits.length >= 12) return orderMatchHits(hits.slice(0, 12), parsed.year);
-      }
-      if (hits.length > 0) break;
-    }
-    return orderMatchHits(hits.slice(0, 12), parsed.year);
-  }
   const series = catalogSeriesQuery(parsed.series, shelfSeries);
   const names = dedupeNames(series.name ? [series.name, ...catalogNameQueries(series.name)] : []);
   let rows: unknown[] = [];
@@ -94,6 +69,65 @@ export async function searchMetronMatches(
     rankSeriesHits(hits, { volume: series.volume, yearBegan: series.yearBegan, shelfYear: series.yearBegan == null && series.volume == null ? parsed.year : null }),
     parsed.year,
   );
+}
+
+/**
+ * Collected editions ask Metron for the series name and series type only.
+ * A miss is remembered for a week. Issue numbers are read from that series, never from a floppy.
+ */
+async function searchCollectedMetron(
+  transport: MetronTransport,
+  target: { series: string; number: string; typeName: string },
+  year: number | null,
+): Promise<MatchHit[]> {
+  if (await readCollectedMiss(target.series, target.typeName)) return [];
+  const hits: MatchHit[] = [];
+  let sawSeries = false;
+  for (const name of catalogNameQueries(target.series, { broad: true })) {
+    const seriesRows = await listMetronIssueRows(
+      transport,
+      `/series/?${new URLSearchParams({ name, series_type: target.typeName }).toString()}`,
+    );
+    for (const row of seriesRows) {
+      const listedType = typeLabel((row as { series_type?: unknown }).series_type);
+      if (listedType && listedType.toLowerCase() !== target.typeName.toLowerCase()) continue;
+      const count = catalogIssueCount((row as { issue_count?: unknown }).issue_count);
+      const title = rowName(row);
+      if (!seriesNamesMatch(target.series, title) && !(count === 1 && seriesSoloTitle(target.series, title))) continue;
+      const seriesId = idOf(row);
+      if (!seriesId) continue;
+      sawSeries = true;
+      const params = new URLSearchParams({ series_id: seriesId, number: target.number });
+      const issues = await listMetronIssueRows(transport, `/issue/?${params.toString()}`);
+      for (const issue of issues) {
+        if (!collectedIssueFits(issue, target.typeName, target.series)) continue;
+        const hit = mapMetronMatchHit(issue);
+        if (hit && !hits.some((item) => item.id === hit.id)) hits.push(hit);
+      }
+      if (hits.length >= 12) return orderMatchHits(hits.slice(0, 12), year);
+    }
+    if (hits.length > 0) break;
+  }
+  if (!sawSeries) await writeCollectedMiss(target.series, target.typeName);
+  return orderMatchHits(hits.slice(0, 12), year);
+}
+
+function collectedIssueFits(row: unknown, typeName: string, seriesName: string): boolean {
+  if (!row || typeof row !== "object") return false;
+  const series = (row as { series?: unknown }).series;
+  const record = series && typeof series === "object" ? (series as { name?: unknown; series_type?: unknown }) : null;
+  const name = typeof record?.name === "string" ? record.name : typeof series === "string" ? series : "";
+  if (name && !seriesNamesMatch(seriesName, name)) return false;
+  const type = typeLabel(record?.series_type);
+  if (type && type.toLowerCase() !== typeName.toLowerCase()) return false;
+  return true;
+}
+
+function typeLabel(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!value || typeof value !== "object") return null;
+  const name = (value as { name?: unknown }).name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
 /** Volume when the title has one. Otherwise the series start year, then the shelf year. One of those, on the same request. */
@@ -217,8 +251,11 @@ export async function searchComicVineMatches(args: {
   mode: "query" | "barcode";
   fetchImpl?: typeof fetch;
   shelfSeries?: string | null;
+  shelfFormat?: string | null;
 }): Promise<MatchHit[]> {
   const fetchImpl = args.fetchImpl ?? fetch;
+  const collected = collectedSearchTarget({ query: args.query, shelfFormat: args.shelfFormat, shelfSeries: args.shelfSeries });
+  if (collected) return searchCollectedComicVine({ ...args, fetchImpl, target: collected });
   if (args.mode === "barcode") {
     const code = args.barcode.trim();
     if (!code) return [];
@@ -283,6 +320,73 @@ export async function searchComicVineMatches(args: {
     }
   }
   return orderMatchHits(hits.slice(0, 12), parsed.year);
+}
+
+/** ISBN first. The fallback is the series name plus the volume, not a floppy issue. */
+async function searchCollectedComicVine(args: {
+  apiKey: string;
+  query: string;
+  barcode: string;
+  fetchImpl: typeof fetch;
+  target: { series: string; number: string };
+}): Promise<MatchHit[]> {
+  const isbn = canonicalIsbn(args.barcode) ?? canonicalIsbn(args.query);
+  if (isbn) {
+    const results = asRows(
+      await comicVineGet(args.fetchImpl, args.apiKey, "/search/", {
+        resources: "issue",
+        query: isbn,
+        limit: "12",
+        field_list: "id,name,issue_number,cover_date,image,volume",
+      }),
+    );
+    const hits = results.map((row) => mapComicVineMatchHit(row)).filter((hit): hit is MatchHit => hit !== null);
+    if (hits.length > 0) return hits.slice(0, 12);
+  }
+  const label = `${args.target.series} Vol. ${args.target.number}`;
+  const volumes = asRows(
+    await comicVineGet(args.fetchImpl, args.apiKey, "/search/", {
+      resources: "volume",
+      query: label,
+      limit: "5",
+      field_list: "id,name,start_year,publisher",
+    }),
+  );
+  const hits: MatchHit[] = [];
+  for (const volume of volumes) {
+    const row = volume && typeof volume === "object" ? (volume as Record<string, unknown>) : null;
+    const volumeId = row && (typeof row.id === "number" || typeof row.id === "string") ? String(row.id) : "";
+    if (!/^\d+$/.test(volumeId)) continue;
+    const title = rowName(row);
+    if (title && !seriesNamesMatch(args.target.series, title) && !seriesNamesMatch(label, title)) continue;
+    const publisher = publisherOf(row?.publisher);
+    const issues = asRows(
+      await comicVineGet(args.fetchImpl, args.apiKey, "/issues/", {
+        filter: `volume:${volumeId},issue_number:${args.target.number}`,
+        limit: "8",
+        field_list: "id,name,issue_number,cover_date,image,volume",
+      }),
+    );
+    for (const issue of issues) {
+      const hit = mapComicVineMatchHit(issue, publisher);
+      if (hit && hit.issueNo === args.target.number && !hits.some((item) => item.id === hit.id)) hits.push(hit);
+    }
+    if (hits.length >= 12) break;
+  }
+  if (hits.length > 0) return hits.slice(0, 12);
+  const loose = asRows(
+    await comicVineGet(args.fetchImpl, args.apiKey, "/search/", {
+      resources: "issue",
+      query: label,
+      limit: "12",
+      field_list: "id,name,issue_number,cover_date,image,volume",
+    }),
+  );
+  return loose
+    .map((row) => mapComicVineMatchHit(row))
+    .filter((hit): hit is MatchHit => hit !== null)
+    .filter((hit) => !hit.issueNo || hit.issueNo === args.target.number)
+    .slice(0, 12);
 }
 
 function volumeStartYear(value: unknown): number | null {

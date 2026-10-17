@@ -4,16 +4,28 @@ import type { CatalogMatch } from "@/lib/catalog/types";
 import { gcdByBarcode, gcdSearch } from "@/lib/catalog/gcd";
 import { metronByBarcode, metronConfigured, metronSearch } from "@/lib/catalog/metron";
 import { prisma } from "@/lib/db";
+import { canonicalIsbn } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 export async function findByBarcode(parsed: ParsedBarcode): Promise<Comic | null> {
   const keys = barcodeLookupKeys(parsed);
-  const exact = await prisma.comic.findFirst({ where: { barcode: { in: keys } } });
+  const isbn = canonicalIsbn(parsed.combined);
+  const exact = await prisma.comic.findFirst({
+    where: isbn ? { OR: [{ barcode: { in: keys } }, { isbn }] } : { barcode: { in: keys } },
+  });
   if (exact) return exact;
   if (parsed.upc && parsed.upc.length >= 12) {
-    return prisma.comic.findFirst({ where: { barcode: { startsWith: parsed.upc } } });
+    return prisma.comic.findFirst({
+      where: { OR: [{ barcode: { startsWith: parsed.upc } }, ...(isbn ? [{ isbn }] : [])] },
+    });
   }
   return null;
+}
+
+export async function findByIsbn(raw: string): Promise<Comic | null> {
+  const isbn = canonicalIsbn(raw);
+  if (!isbn) return null;
+  return prisma.comic.findFirst({ where: { OR: [{ isbn }, { barcode: isbn }] } });
 }
 
 export function comicToMatch(comic: Comic): CatalogMatch {
@@ -57,7 +69,16 @@ export async function lookupBarcode(raw: string): Promise<{
   const warnings: string[] = [];
   const metron = await metronConfigured();
   if (!parsed) {
-    return { parsed: null, owned: null, matches: [], warnings: ["That barcode is not a UPC-A or UPC-A plus add-on."], metron };
+    const owned = await findByIsbn(raw);
+    if (owned) return { parsed: null, owned, matches: [comicToMatch(owned)], warnings, metron };
+    const isbn = canonicalIsbn(raw);
+    return {
+      parsed: null,
+      owned: null,
+      matches: [],
+      warnings: [isbn ? "No copy with that ISBN is on the shelf." : "That barcode is not a UPC-A, UPC-A plus add-on, or ISBN."],
+      metron,
+    };
   }
 
   const owned = await findByBarcode(parsed);
@@ -108,6 +129,8 @@ export async function searchCatalog(query: string, issueNo?: string): Promise<{
             { title: { contains: q, mode: "insensitive" } },
             { fullTitle: { contains: q, mode: "insensitive" } },
             { barcode: { contains: q } },
+            { isbn: { contains: q } },
+            ...(canonicalIsbn(q) ? [{ isbn: canonicalIsbn(q) }] : []),
           ],
         },
         issueNo?.trim() ? { issueNo: issueNo.trim() } : {},

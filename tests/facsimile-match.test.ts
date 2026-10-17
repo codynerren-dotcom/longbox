@@ -241,7 +241,7 @@ describe("suspect matches", () => {
     expect(rematch).toContain("This link was chosen by hand. Unlink it first.");
     expect(rematch).toContain('if (sources[field] !== "metron" && sources[field] !== "gcd") continue;');
     expect(actions).toContain("rematchAllSuspectsAction");
-    expect(suspects).toContain("Re-match all suspect");
+    expect(suspects).toContain("Propose re-matches");
   });
 });
 

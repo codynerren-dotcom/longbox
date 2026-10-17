@@ -12,6 +12,7 @@ const links = [
   { href: "/covers", label: "Cover backfill", detail: "Download Metron covers and review misses" },
   { href: "/settings", label: "Settings", detail: "Import, covers, pricing, display, and credentials" },
   { href: "/logs", label: "Logs", detail: "Imports, API calls, scans, and errors" },
+  { href: "/review", label: "Review matches", detail: "Proposed links waiting for a yes" },
   { href: "/scan", label: "Scan / Add", detail: "Barcode or manual search" },
 ];
 

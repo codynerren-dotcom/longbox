@@ -2,7 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { editionJobText, type EditionJobState } from "@/lib/covers/edition-job";
+import { editionJobFromUnknown, editionJobText, type EditionJobState } from "@/lib/covers/edition-job";
 import type { BackfillStatus } from "@/lib/covers/files";
 import { BACKFILL_POLL_MS, backfillPollPlan, backfillProgressLabel, normalizeBackfillStatus } from "@/lib/covers/poll";
 
@@ -20,19 +20,7 @@ export function useBackfillStatus(): BackfillContextValue {
 
 export function readRematchStatus(value: unknown): EditionJobState | null {
   if (!value || typeof value !== "object") return null;
-  const row = (value as { rematch?: unknown }).rematch;
-  if (!row || typeof row !== "object") return null;
-  const job = row as Partial<EditionJobState>;
-  if (job.state !== "running" && job.state !== "paused" && job.state !== "finished") return null;
-  return {
-    state: job.state,
-    message: typeof job.message === "string" ? job.message : null,
-    resumeAt: typeof job.resumeAt === "string" ? job.resumeAt : null,
-    metronResumeAt: typeof job.metronResumeAt === "string" ? job.metronResumeAt : null,
-    matched: typeof job.matched === "number" ? job.matched : 0,
-    unmatched: typeof job.unmatched === "number" ? job.unmatched : 0,
-    updatedAt: typeof job.updatedAt === "string" ? job.updatedAt : "",
-  };
+  return editionJobFromUnknown((value as { rematch?: unknown }).rematch);
 }
 
 export function BackfillStatusProvider({

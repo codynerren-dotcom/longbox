@@ -1,6 +1,6 @@
 import { CLZ_HEADERS, type ClzHeader } from "@/lib/clz/headers";
 import { parseCsv } from "@/lib/clz/csv";
-import { detectShelfFormat, volumeNumber, type ShelfFormat } from "@/lib/shelf-format";
+import { canonicalIsbn, detectShelfFormat, volumeNumber, type ShelfFormat } from "@/lib/shelf-format";
 
 export class ClzParseError extends Error {
   constructor(message: string) {
@@ -43,6 +43,7 @@ export type NormalizedComic = {
   addedDate: Date | null;
   coverDate: string | null;
   barcode: string | null;
+  isbn: string | null;
   storyArc: string | null;
   grade: string | null;
   rawOrSlabbed: string | null;
@@ -321,6 +322,7 @@ export function normalizeClzRecord(record: Record<string, string>): NormalizedCo
     addedDate: parseClzDate(cell(record, "Added Date")),
     coverDate: blankToNull(cell(record, "Cover Date")),
     barcode,
+    isbn: canonicalIsbn(barcode),
     storyArc: blankToNull(cell(record, "Story Arc")),
     grade: normalizeNumericText(cell(record, "Grade")),
     rawOrSlabbed: parseRawOrSlabbed(cell(record, "Raw / Slabbed")),

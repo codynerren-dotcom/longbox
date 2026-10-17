@@ -26,6 +26,7 @@ export async function GET(request: Request) {
           keyLevel: result.owned.keyLevel,
           rawOrSlabbed: result.owned.rawOrSlabbed,
           barcode: result.owned.barcode,
+          isbn: result.owned.isbn,
           coverUrl: result.owned.coverUrl,
           storageBox: result.owned.storageBox,
           variant: result.owned.variant,

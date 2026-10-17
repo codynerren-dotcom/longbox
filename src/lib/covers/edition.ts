@@ -382,6 +382,36 @@ export function suspectMatchReason(copy: EditionCopy & { metronIssueId?: string 
   return parts.join(" ");
 }
 
+export type RematchScope = "suspect" | "full";
+
+/**
+ * Suspect re-match walks linked copies that look like the wrong edition.
+ * A full re-match walks every copy that was not linked by hand.
+ * A missing cursor starts at the beginning of that set. It does not expand a suspect run to the whole shelf.
+ */
+export function includeInRematch(input: { scope: RematchScope; manual: boolean; suspect: boolean }): boolean {
+  if (input.manual) return false;
+  if (input.scope === "full") return true;
+  return input.suspect;
+}
+
+/**
+ * Resume keeps the stored set. A different set starts at the beginning.
+ * A finished job does not keep its cursor.
+ */
+export function rematchRunPlan(input: {
+  requested?: RematchScope;
+  resume?: boolean;
+  existing: { state: string; scope?: RematchScope | null } | null;
+}): { resume: boolean; scope: RematchScope } {
+  const active: RematchScope = input.existing?.scope === "full" ? "full" : "suspect";
+  const open = Boolean(input.existing && input.existing.state !== "finished");
+  if (input.resume === true) return { resume: open, scope: open ? active : (input.requested ?? active) };
+  if (input.requested && input.requested !== active && open) return { resume: false, scope: input.requested };
+  if (open && input.resume !== false) return { resume: true, scope: active };
+  return { resume: false, scope: input.requested ?? "suspect" };
+}
+
 function searchNames(kind: EditionKind, series: string, base: string): string[] {
   const names: string[] = [];
   const add = (value: string) => {

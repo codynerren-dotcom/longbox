@@ -7,7 +7,7 @@ import { groupSeries, orderSeriesCards, seriesCardCountLabel, seriesOrderHints }
 import { prisma } from "@/lib/db";
 import { one } from "@/lib/format";
 import { copyCountLabel } from "@/lib/series-view";
-import { isShelfFormat, volumeLabel } from "@/lib/shelf-format";
+import { canonicalIsbn, isShelfFormat, volumeLabel } from "@/lib/shelf-format";
 import { collectionGridClass } from "@/lib/settings/preferences";
 import { getPreferences } from "@/lib/settings/service";
 
@@ -38,6 +38,8 @@ export default async function CollectionPage({
         { publisher: { contains: q, mode: "insensitive" } },
         { title: { contains: q, mode: "insensitive" } },
         { barcode: { contains: q } },
+        { isbn: { contains: q } },
+        ...(canonicalIsbn(q) ? [{ isbn: canonicalIsbn(q) }] : []),
         { issueNo: { contains: q } },
         { storageBox: { contains: q, mode: "insensitive" } },
       ],

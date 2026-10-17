@@ -28,12 +28,12 @@ npm run dev
 
 ## Environment
 
-See `.env.example`. Nothing secret is committed.
+See `.env.example`. The example uses placeholders (`postgres://user:CHANGE_ME@db:5432/longbox`). There is no default database password. Longbox exits at startup when `DATABASE_URL` is missing.
 
 | Variable | Purpose |
 | --- | --- |
 | `APP_PORT` | Host port. Default `3210`. |
-| `DATABASE_URL` | Postgres connection string. |
+| `DATABASE_URL` | Postgres connection string. Required. The example file uses a placeholder, not a real password. |
 | `TZ` | `America/Chicago` in Compose. |
 | `LONGBOX_USER_EMAIL` | Identity when Cloudflare Access is not in front. |
 | `SEED_ON_EMPTY` | Import the synthetic shelf when `comics` is empty. A saved Settings toggle overrides this. |

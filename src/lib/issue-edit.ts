@@ -1,6 +1,6 @@
 import { issueNumberValue, parseClzDate, parseClzPrice } from "@/lib/clz/parse";
 import { readFieldSources, type FieldSources } from "@/lib/covers/enrich";
-import { isShelfFormat, volumeNumber } from "@/lib/shelf-format";
+import { canonicalIsbn, isShelfFormat, volumeNumber } from "@/lib/shelf-format";
 import {
   ISSUE_FIELDS,
   KEY_LEVELS,
@@ -77,6 +77,14 @@ export function planIssueEdit(
     sources[field.key] = "user";
     changed.push(field.label);
   }
+  if ("barcode" in data && (row.isbn == null || row.isbn === "") && !("isbn" in data)) {
+    const next = canonicalIsbn(typeof data.barcode === "string" ? data.barcode : null);
+    if (next) {
+      data.isbn = next;
+      sources.isbn = "user";
+      changed.push("ISBN");
+    }
+  }
   if (changed.length === 0) return { ok: true, data: {}, sources, changed };
   if ("series" in data && typeof data.series === "string") data.seriesSort = data.series.toLowerCase();
   if ("issueNo" in data || "issue" in data) {
@@ -122,6 +130,7 @@ function readField(key: IssueFieldKey, text: string, lists: IssueChoiceLists, er
   const field = fieldByKey(key);
   const label = field?.label ?? key;
   const trimmed = text.trim();
+  if (key === "isbn") return trimmed ? canonicalIsbn(trimmed) ?? trimmed.slice(0, field?.max ?? 17) : null;
   if (field?.kind === "bool") return trimmed === "true";
   if (field?.kind === "quantity") return readQuantity(key, trimmed, label, errors);
   if (field?.kind === "shelfFormat") {

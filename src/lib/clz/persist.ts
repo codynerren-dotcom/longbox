@@ -25,6 +25,7 @@ function data(comic: NormalizedComic): Prisma.ComicUpdateInput {
     addedDate: comic.addedDate,
     coverDate: comic.coverDate,
     barcode: comic.barcode,
+    isbn: comic.isbn,
     storyArc: comic.storyArc,
     grade: comic.grade,
     rawOrSlabbed: comic.rawOrSlabbed,

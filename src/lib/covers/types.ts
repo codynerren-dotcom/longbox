@@ -38,6 +38,8 @@ export type MetronSeriesHit = {
   publisher: string | null;
   /** Present when the series payload includes `issue_count`. */
   issueCount?: number | null;
+  /** Metron series type, such as Trade Paperback or Limited Series. */
+  seriesType?: string | null;
 };
 
 export type MetronSeriesQuery = {
@@ -68,6 +70,8 @@ export type CoverQuery = {
   issue: string | null;
   coverYear: number | null;
   barcode: string | null;
+  /** ISBN-13 when the copy has one separate from the UPC. */
+  isbn?: string | null;
   variant: string | null;
   publisher: string | null;
   title?: string | null;

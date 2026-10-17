@@ -11,8 +11,8 @@ RUN npm ci
 
 COPY . .
 
-ENV DATABASE_URL=postgresql://longbox:longbox@db:5432/longbox?schema=public
-RUN npx prisma generate && npm run build
+# Placeholder for `prisma generate` in this step only. It is not stored as an image ENV.
+RUN DATABASE_URL=postgres://user:CHANGE_ME@db:5432/longbox sh -c 'npx prisma generate && npm run build'
 
 ARG LONGBOX_COMMIT=dev
 ENV LONGBOX_COMMIT=$LONGBOX_COMMIT

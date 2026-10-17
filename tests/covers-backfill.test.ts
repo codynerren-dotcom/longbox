@@ -15,13 +15,18 @@ import {
   resetMetronCircuit,
 } from "@/lib/covers/metron-circuit";
 import {
+  armFullRunCap,
   armMetronJobBudget,
   basicAuthHeader,
+  clearFullRunCap,
   clearMetronJobBudget,
   createMetronCoverLookup,
+  fullRunMetronUsed,
+  guardFullRunCall,
   mapIssue,
   mapSeries,
   METRON_JOB_LIMIT,
+  recordFullRunCall,
   type MetronTransport,
 } from "@/lib/covers/metron-client";
 import { MetronBudgetError, type CoverLookup, type CoverQuery, type CoverRecord, type MetronIssueHit, type MetronSeriesHit } from "@/lib/covers/types";
@@ -716,6 +721,7 @@ describe("cover backfill", () => {
 describe("Metron rate limit", () => {
   afterEach(() => {
     clearMetronJobBudget();
+    clearFullRunCap();
     resetMetronCircuit();
     vi.restoreAllMocks();
   });
@@ -740,6 +746,76 @@ describe("Metron rate limit", () => {
 
     budget.count = METRON_DAILY_LIMIT;
     await expect(limiter.acquire()).rejects.toBeInstanceOf(MetronBudgetError);
+  });
+
+  it("blocks call 5001 after 5000 sends across restarts and pauses", async () => {
+    let now = Date.parse("2026-10-17T15:00:00Z");
+    let disk: MetronBudget = emptyBudget();
+    const store: BudgetStore = {
+      read: () => ({ ...disk }),
+      write: (next) => {
+        disk = { ...next };
+      },
+    };
+    const sleep = async (ms: number) => {
+      now += ms;
+    };
+    const day = () => "2026-10-17";
+    let limiter = new MetronLimiter(store, () => now, sleep, day);
+    const send = async () => {
+      for (let spins = 0; spins < 20; spins += 1) {
+        try {
+          await limiter.acquire("interactive");
+          return;
+        } catch (error) {
+          if (!(error instanceof MetronBudgetError)) throw error;
+          now = Math.max(now + 1, error.pause.resumeAt);
+        }
+      }
+      throw new Error("Metron acquire did not resume");
+    };
+    for (let sent = 0; sent < 5000; sent += 1) {
+      await send();
+      if (sent === 100 || sent === 2500) limiter = new MetronLimiter(store, () => now, sleep, day);
+      if (sent === 200) {
+        limiter.notePause(now + 60_000);
+        now += 60_000;
+        limiter = new MetronLimiter(store, () => now, sleep, day);
+      }
+    }
+    expect(disk.count).toBe(5000);
+    expect(disk.sustainedRemaining).toBe(0);
+    await expect(limiter.acquire("interactive")).rejects.toMatchObject({ pause: { budget: "Metron daily" } });
+    expect(disk.count).toBe(5000);
+  });
+
+  it("stops a full run at 60 percent and keeps that count across a pause", () => {
+    const morning = Date.parse("2026-10-17T15:00:00Z");
+    armFullRunCap({ used: 0, day: "2026-10-17" });
+    guardFullRunCall(morning, 5000);
+    for (let sent = 0; sent < 2999; sent += 1) recordFullRunCall(morning);
+    guardFullRunCall(morning, 5000);
+    recordFullRunCall(morning);
+    expect(fullRunMetronUsed()).toEqual({ used: 3000, day: "2026-10-17" });
+    const reset = morning + 3 * 60 * 60 * 1000;
+    expect(() => guardFullRunCall(morning, 5000, reset)).toThrow(MetronBudgetError);
+    try {
+      guardFullRunCall(morning, 5000, reset);
+    } catch (error) {
+      expect(error).toMatchObject({ pause: { budget: "Metron full run", count: 3000, resumeAt: reset } });
+      expect(error instanceof MetronBudgetError ? error.pause.resumeAt - morning : 0).toBeGreaterThan(60_000);
+      expect(error instanceof MetronBudgetError ? error.message : "").toBe(
+        "Full re-match used 60% of today's Metron budget. Pausing so searches still have room.",
+      );
+    }
+    const saved = fullRunMetronUsed();
+    clearFullRunCap();
+    expect(fullRunMetronUsed()).toEqual({ used: 0, day: "" });
+    armFullRunCap(saved);
+    expect(() => guardFullRunCall(morning, 5000)).toThrow(MetronBudgetError);
+    guardFullRunCall(Date.parse("2026-10-18T15:00:00Z"), 8000);
+    expect(fullRunMetronUsed().used).toBe(0);
+    expect(fullRunMetronUsed().day).toBe("2026-10-18");
   });
 
   it("leaves the interactive reserve usable after a background job stops", async () => {

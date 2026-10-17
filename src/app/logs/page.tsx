@@ -4,7 +4,10 @@ import { PageHeader } from "@/components/page-header";
 import { formatPauseClock } from "@/lib/catalog/rate-limit";
 import { queuedLogHref, queueSourceLabel } from "@/lib/catalog/search-queue";
 import { CancelQueuedSearch } from "@/app/logs/queued-searches";
-import { editionJobText, readEditionJob } from "@/lib/covers/job-state";
+import { EditionJobControls } from "@/app/logs/edition-controls";
+import { noteStaleEditionJob } from "@/lib/covers/facsimile-rematch";
+import { editionJobText, editionSummaryText } from "@/lib/covers/job-state";
+import { countPendingProposals } from "@/lib/covers/propose-match";
 import { prisma } from "@/lib/db";
 import { formatDate } from "@/lib/format";
 import { logFiltersFrom, logQueryString, logWhere } from "@/lib/log/query";
@@ -45,7 +48,10 @@ export default async function LogsPage({
   }
   const query = logQueryString(filters);
   const display = dateOptions(prefs, true);
-  const jobLine = editionJobText(readEditionJob());
+  const rematch = noteStaleEditionJob();
+  const jobLine = editionJobText(rematch);
+  const summaryLine = editionSummaryText(rematch);
+  const proposals = await countPendingProposals();
   let queued: { id: string; label: string; source: string; resumeAt: Date }[] = [];
   try {
     queued = await prisma.searchQueue.findMany({
@@ -62,7 +68,14 @@ export default async function LogsPage({
         <p className="max-w-sm text-sm text-mist">Events stay for {prefs.logs.retentionDays} days, then they are pruned. Times follow your display settings.</p>
       </PageHeader>
 
-      {jobLine ? <p className="mb-4 text-sm text-paper">{jobLine}</p> : null}
+      {jobLine ? <p className="mb-2 text-sm text-paper">{jobLine}</p> : null}
+      {summaryLine ? <p className="mb-4 text-sm text-mist">{summaryLine}</p> : null}
+      <EditionJobControls state={rematch?.state ?? null} />
+      <p className="mb-4 text-sm text-mist">
+        <Link href="/review" className="font-semibold text-comic">
+          Review matches{proposals > 0 ? ` (${proposals})` : ""}
+        </Link>
+      </p>
 
       <section className="mb-4 rounded-2xl bg-panel p-4 ring-1 ring-white/5">
         <h2 className="font-display text-3xl tracking-wide">Queued searches</h2>

@@ -234,7 +234,7 @@ async function runRelink(
   }
   const result = await rematchShelfCopy(row.comicId);
   if (result.outcome === "matched") {
-    await finish(row, "matched");
+    await finish(row, result.proposed ? "proposed" : "matched");
     return;
   }
   const block = result.limitBlocks.find((item) => queueSourceOf(item.source) === row.source) ?? result.limitBlocks[0];
@@ -247,11 +247,11 @@ async function runRelink(
 
 async function finish(
   row: { id: string; comicId: string; source: string; label: string },
-  status: "matched" | "empty",
+  status: "matched" | "proposed" | "empty",
 ): Promise<void> {
   const message = queueResultMessage({ label: row.label, source: row.source }, status);
   await writeLog({
-    level: status === "matched" ? "info" : "warn",
+    level: status === "empty" ? "warn" : "info",
     source: logSource(row.source),
     message,
     details: { queued: true, comicId: row.comicId, href: queueResultHref(row.comicId) },

@@ -1,12 +1,12 @@
 import { variantCoversFrom } from "@/lib/catalog/match-hits";
-import { pauseLabel, planMetronAcquire } from "@/lib/catalog/rate-limit";
+import { fullRunMetronCap, METRON_FALLBACK_DAILY, metronFullRunShare, pauseLabel, planMetronAcquire } from "@/lib/catalog/rate-limit";
 import { currentLane } from "@/lib/catalog/rate-lane";
 import { readMetronWindow, saveMetronWindow } from "@/lib/catalog/rate-store";
 import { catalogBaseCount, catalogIssueCount, distinctIssueLabels, isVariantDescriptor } from "@/lib/series-view";
 import { mapMetronDetails, type MetronDetails } from "@/lib/covers/enrich";
 import { fileBudgetStore } from "@/lib/covers/files";
 import { METRON_USER_AGENT } from "@/lib/covers/metron-headers";
-import { budgetDay, formatResumeTime, metronStatusPlan, MetronLimiter, type BudgetStore } from "@/lib/covers/limiter";
+import { budgetDay, formatResumeTime, metronStatusPlan, MetronLimiter, nextBudgetDayStart, type BudgetStore } from "@/lib/covers/limiter";
 import { coverYearOf } from "@/lib/covers/match";
 import {
   assertMetronCircuit,
@@ -67,6 +67,59 @@ export function armMetronJobBudget(): void {
 export function clearMetronJobBudget(): void {
   jobDepth = Math.max(0, jobDepth - 1);
   if (jobDepth === 0) jobUsed = 0;
+}
+
+let fullRunActive = false;
+let fullRunUsed = 0;
+let fullRunDay = "";
+
+/** A full re-match may spend one share of the sustained day. A job pause keeps the count. */
+export function armFullRunCap(input?: { used?: number; day?: string }): void {
+  fullRunActive = true;
+  fullRunUsed = input?.used != null && input.used > 0 ? Math.round(input.used) : 0;
+  fullRunDay = input?.day ?? "";
+}
+
+export function clearFullRunCap(): void {
+  fullRunActive = false;
+  fullRunUsed = 0;
+  fullRunDay = "";
+}
+
+export function fullRunMetronUsed(): { used: number; day: string } {
+  return { used: fullRunUsed, day: fullRunDay };
+}
+
+/** Refuse before the request when this full run has used its share of the day. The pause lasts until the sustained reset. */
+export function guardFullRunCall(now: number, sustainedLimit: number | null, sustainedResetAt: number | null = null): void {
+  if (!fullRunActive) return;
+  const day = budgetDay(new Date(now));
+  if (fullRunDay !== day) {
+    fullRunUsed = 0;
+    fullRunDay = day;
+  }
+  const limit = sustainedLimit != null && sustainedLimit > 0 ? sustainedLimit : METRON_FALLBACK_DAILY;
+  const share = metronFullRunShare();
+  const cap = fullRunMetronCap(limit, share);
+  if (fullRunUsed >= cap) {
+    const percent = Math.round(share * 100);
+    const resumeAt = sustainedResetAt != null && sustainedResetAt > now ? sustainedResetAt : nextBudgetDayStart(now);
+    throw new MetronBudgetError(
+      `Full re-match used ${percent}% of today's Metron budget. Pausing so searches still have room.`,
+      { budget: "Metron full run", count: fullRunUsed, resumeAt },
+    );
+  }
+}
+
+/** Count a send that acquired a slot. A burst pause never reaches this. */
+export function recordFullRunCall(now: number): void {
+  if (!fullRunActive) return;
+  const day = budgetDay(new Date(now));
+  if (fullRunDay !== day) {
+    fullRunUsed = 0;
+    fullRunDay = day;
+  }
+  fullRunUsed += 1;
 }
 
 let sharedLimiter: MetronLimiter | null = null;
@@ -247,6 +300,7 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
   const rawName = text(row.name) ?? text(row.series);
   if (!rawName) return null;
   const publisher = record(row.publisher);
+  const seriesType = text(row.series_type) ?? text(record(row.series_type)?.name);
   return {
     id: String(row.id),
     name: rawName.replace(/\s+\((?:18|19|20)\d{2}(?:\s*[-–—]\s*(?:18|19|20)\d{2})?\)\s*$/, "").trim(),
@@ -255,6 +309,7 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
     volume: whole(row.volume),
     publisher: text(publisher?.name) ?? (typeof row.publisher === "string" ? text(row.publisher) : null),
     issueCount: catalogIssueCount(row.issue_count),
+    ...(seriesType ? { seriesType } : {}),
   };
 }
 
@@ -347,7 +402,10 @@ async function getJson(transport: MetronTransport, pathOrUrl: string): Promise<M
     attempt += 1;
     assertMetronCircuit(transport.now());
     await takeJobSlot(transport.now());
+    const budgetSnap = transport.limiter.snapshot();
+    guardFullRunCall(transport.now(), budgetSnap.sustainedLimit, budgetSnap.sustainedResetAt);
     await transport.limiter.acquire(lane);
+    recordFullRunCall(transport.now());
     const url = pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? pathOrUrl : `${transport.baseUrl}${pathOrUrl}`;
     const cacheKey = metronConditionalKey(url);
     const headers: Record<string, string> = {

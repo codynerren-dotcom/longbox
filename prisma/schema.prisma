@@ -32,6 +32,8 @@ model Comic {
   addedDate          DateTime?
   coverDate          String?
   barcode            String?
+  /// ISBN-13. Backfilled from a 978/979 barcode or a 10-digit ISBN, and editable on the issue.
+  isbn               String?
   storyArc           String?
   grade              String?
   rawOrSlabbed       String?
@@ -116,11 +118,13 @@ model Comic {
   updatedAt          DateTime  @updatedAt
   priceSnapshots     PriceSnapshot[]
   searchQueues       SearchQueue[]
+  matchProposals     MatchProposal[]
 
   @@index([seriesSort])
   @@index([coreSeriesId])
   @@index([publisher])
   @@index([barcode])
+  @@index([isbn])
   @@index([storageBox])
   @@index([keyLevel])
   @@index([rawOrSlabbed])
@@ -177,6 +181,33 @@ model AppLog {
   @@index([createdAt])
   @@index([level, createdAt])
   @@index([source, createdAt])
+}
+
+/// A bulk re-match suggestion. The comic row stays as it was until Accept.
+model MatchProposal {
+  id         String   @id @default(cuid())
+  comicId    String
+  comic      Comic    @relation(fields: [comicId], references: [id], onDelete: Cascade)
+  /// metron, comicvine, or gcd.
+  provider   String
+  issueId    String
+  seriesId   String?
+  confidence Int
+  reason     String   @db.Text
+  coverUrl   String?
+  title      String
+  issueNo    String
+  variant    String?
+  /// Catalog ids and cover on the comic when the proposal was saved.
+  priorLink  Json
+  /// pending, rejected, accepted, or superseded. Rejected is not offered again. Superseded means the comic was linked by hand after the suggestion.
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([comicId, provider, issueId])
+  @@index([status])
+  @@index([comicId])
 }
 
 /// A manual search or re-link waiting for a source window to reset. One row per comic and source.
