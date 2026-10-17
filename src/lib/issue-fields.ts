@@ -54,6 +54,7 @@ export const ISSUE_FIELDS = [
   { key: "customLabel", label: "Custom label", kind: "text", group: "Copy", max: 80 },
   { key: "tags", label: "Tags", kind: "text", group: "Copy", max: 200 },
   { key: "barcode", label: "Barcode", kind: "text", group: "Copy", max: 64 },
+  { key: "isbn", label: "ISBN", kind: "text", group: "Copy", max: 17 },
   { key: "keyLevel", label: "Key", kind: "keyLevel", group: "Key" },
   { key: "keyCategory", label: "Key category", kind: "category", group: "Key", max: 80 },
   { key: "keyReason", label: "Key reason", kind: "text", group: "Key", max: 300 },

@@ -25,7 +25,7 @@ import { getPreferences, getSettings } from "@/lib/settings/service";
 import { seriesRouteId } from "@/lib/series";
 import { copiesOf, type ShelfCopy } from "@/lib/shelf-copies";
 import { groupQuantity } from "@/lib/series-view";
-import { isCollected, shelfFormatOf, tradeSearchSeries, volumeLabel, volumeNumber } from "@/lib/shelf-format";
+import { catalogMatchIssue, isCollected, tradeSearchSeries } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
@@ -55,6 +55,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
   const readDateValue = comic.readDate ? comic.readDate.toISOString().slice(0, 10) : "";
   const sourced = (field: string) => fieldCredit(comic.fieldSources, field);
   const edition = detectEdition(comic);
+  const editionMatch = catalogMatchIssue(comic);
   const matchYear = edition.reprint ? (comic.releaseYear ?? comic.coverYear ?? comic.seriesYear) : (comic.coverYear ?? comic.releaseYear ?? comic.seriesYear);
   const spent = costBasis(comic.purchasePrice, comic.quantity);
   const boxes = boxRows.map((row) => row.storageBox).filter((name): name is string => Boolean(name));
@@ -95,7 +96,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
       <div className="relative">
         <CoverTile
           title={comic.series}
-          issue={isCollected(shelfFormatOf(comic.shelfFormat)) ? volumeLabel(comic.issueNo, comic.issue) : comic.issueNo}
+          issue={collectedIssueLabel(comic)}
           coverUrl={comic.coverUrl}
           keyLevel={comic.keyLevel}
           slab={comic.rawOrSlabbed === "Slabbed"}
@@ -133,20 +134,22 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
         {comic.metronIssueId || comic.metronSeriesId || citesMetron(comic.fieldSources) ? <MetronCredit /> : null}
         <MatchPanel
           comicId={comic.id}
-          shelfFormat={comic.shelfFormat}
+          shelfFormat={editionMatch.format}
           shelfSeries={comic.series}
           query={matchQuery({
-            series: isCollected(shelfFormatOf(comic.shelfFormat))
+            series: isCollected(editionMatch.format)
               ? tradeSearchSeries(comic.series) || comic.series
               : edition.searchNames[0] || comic.series,
-            issueNo: isCollected(shelfFormatOf(comic.shelfFormat))
-              ? volumeNumber(comic.issueNo, comic.issue)
+            issueNo: isCollected(editionMatch.format)
+              ? editionMatch.number
+                ? `Vol. ${editionMatch.number}`
+                : null
               : edition.kind === "facsimile" || edition.kind === "printing"
                 ? edition.issueNo
                 : comic.issueNo,
             year: matchYear,
           })}
-          barcode={comic.barcode ?? ""}
+          barcode={(isCollected(editionMatch.format) ? comic.isbn || comic.barcode : comic.barcode) ?? ""}
           facsimile={edition.kind === "facsimile"}
           metronReady={metronReady}
           comicVineReady={Boolean(settings.comicvine.apiKey)}
@@ -212,6 +215,7 @@ export default async function IssuePage({ params }: { params: Promise<{ id: stri
               fact("Purchase store", comic.purchaseStore),
               fact("Cover date", comic.coverDate, sourced("coverDate")),
               fact("Barcode", comic.barcode, sourced("barcode")),
+              fact("ISBN", comic.isbn, sourced("isbn")),
               fact("Story arc", comic.storyArc, sourced("storyArc")),
             ]}
           />
@@ -342,11 +346,16 @@ function copyDetail(copy: ShelfCopy, currency: string, when: DateDisplay) {
   return { condition, slab: slabBits.join(" · "), price, basis, date };
 }
 
+function collectedIssueLabel(comic: { issueNo: string | null; issue: string | null; shelfFormat: string | null }): string | null {
+  const match = catalogMatchIssue(comic);
+  if (isCollected(match.format) && match.number) return `Vol. ${match.number}`;
+  return comic.issueNo;
+}
+
 function issueHeading(comic: { issueNo: string | null; issue: string | null; shelfFormat: string | null }): string {
-  if (isCollected(shelfFormatOf(comic.shelfFormat))) {
-    const label = volumeLabel(comic.issueNo, comic.issue);
-    return label === "Vol." ? "" : ` ${label}`;
-  }
+  const label = collectedIssueLabel(comic);
+  const match = catalogMatchIssue(comic);
+  if (isCollected(match.format)) return label && label !== "Vol." ? ` ${label}` : "";
   return comic.issueNo ? ` ${formatIssue(comic.issueNo)}` : "";
 }
 

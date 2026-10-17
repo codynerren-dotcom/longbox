@@ -11,20 +11,18 @@ import {
   type EditionProfile,
   type MatchCandidate,
 } from "@/lib/covers/edition";
+import { COLLECTED_METRON_MISS, readCollectedMiss, writeCollectedMiss } from "@/lib/covers/collected-miss";
 import type { CoverDecision, CoverLookup, CoverQuery, MetronIssueHit, MetronSeriesHit, MetronSeriesQuery } from "@/lib/covers/types";
 import { writeLog } from "@/lib/log/write";
 import {
+  catalogMatchIssue,
   catalogNameQueries,
   catalogSeriesQuery,
-  isbnDigits,
   isCollected,
-  metronCollectedTitle,
   metronSeriesType,
   normalizeSeriesName,
   parseShelfSeries,
   preferredSeriesHits,
-  resolveShelfFormat,
-  seriesLooksCollected,
   seriesNamesMatch,
   seriesSoloTitle,
   seriesTitleFits,
@@ -564,55 +562,36 @@ async function resolvePrintingCover(comic: CoverQuery, edition: EditionProfile, 
 
 async function resolveCollectedCover(comic: CoverQuery, format: ShelfFormat, lookup: CoverLookup): Promise<CoverDecision> {
   const seriesName = catalogSeriesQuery(tradeSearchSeries(comic.series) || comic.series.trim()).name || comic.series.trim();
-  const scored = { ...comic, series: seriesName };
-  const issueNo = volumeNumber(comic.issueNo, comic.issue) || "";
+  const issueNo = volumeNumber(comic.issueNo, comic.issue) || "1";
+  const scored = { ...comic, series: seriesName, issueNo };
   const typeName = metronSeriesType(format);
-  const isbn = isbnDigits(comic.barcode);
 
-  if (isbn) {
-    const hits = lookup.issuesByIsbn ? await lookup.issuesByIsbn(isbn) : await lookup.issuesByUpc(isbn);
-    if (hits.length > 0) {
-      if (!issueNo && hits.length === 1 && hits[0]) {
-        return { status: "matched", via: "barcode", issue: hits[0], score: 98 };
-      }
-      const decision = chooseIssue(hits, scored, issueNo, "barcode");
-      if (decision.status === "matched") return decision;
-    }
-  } else if (comic.barcode) {
-    const barcode = parseComicBarcode(comic.barcode);
-    if (barcode) {
-      let hits = await lookup.issuesByUpc(barcode.combined);
-      if (hits.length === 0 && barcode.upc && barcode.upc !== barcode.combined) {
-        hits = await lookup.issuesByUpcPrefix(barcode.upc);
-      }
-      if (hits.length > 0) {
-        const decision = chooseIssue(hits, scored, issueNo, "barcode");
-        if (decision.status === "matched") return decision;
-      }
-    }
-  }
-
-  if (!seriesName) {
+  if (!seriesName || !typeName) {
     return { status: "unmatched", reason: "A collected edition needs a series name.", score: 0 };
+  }
+  if (await readCollectedMiss(seriesName, typeName)) {
+    return { status: "unmatched", reason: COLLECTED_METRON_MISS, score: 0 };
+  }
+  if (!lookup.searchSeriesByType) {
+    await writeCollectedMiss(seriesName, typeName);
+    return { status: "unmatched", reason: COLLECTED_METRON_MISS, score: 0 };
   }
 
   let found: MetronSeriesHit[] = [];
   for (const name of catalogNameQueries(seriesName, { broad: true })) {
-    const rows = typeName && lookup.searchSeriesByType
-      ? await lookup.searchSeriesByType(name, typeName)
-      : (await lookup.searchSeries(name)).filter((row) => seriesLooksCollected(row.name, format) || metronCollectedTitle(row.name, format));
-    const named = rows.filter((row) => seriesNamesMatch(seriesName, row.name));
+    const rows = await lookup.searchSeriesByType(name, typeName);
+    const named = rows.filter((row) => {
+      if (row.seriesType && row.seriesType.toLowerCase() !== typeName.toLowerCase()) return false;
+      return seriesNamesMatch(seriesName, row.name) || (row.issueCount === 1 && seriesSoloTitle(seriesName, row.name));
+    });
     if (named.length > 0) {
       found = named;
       break;
     }
   }
   if (found.length === 0) {
-    const kind = typeName ?? "collected";
-    return { status: "unmatched", reason: `No Metron ${kind} series named ${seriesName}.`, score: 0 };
-  }
-  if (!issueNo) {
-    return { status: "unmatched", reason: `No Metron ${typeName ?? "collected"} issue for ${seriesName}.`, score: 0 };
+    await writeCollectedMiss(seriesName, typeName);
+    return { status: "unmatched", reason: COLLECTED_METRON_MISS, score: 0 };
   }
 
   const candidates = found.slice(0, 4);
@@ -670,8 +649,10 @@ async function logBarcodeStep(label: string, code: string, hits: MetronIssueHit[
 }
 
 export async function resolveCover(comic: CoverQuery, lookup: CoverLookup): Promise<CoverDecision> {
-  const shelf = resolveShelfFormat(comic);
-  if (isCollected(shelf)) return resolveCollectedCover(comic, shelf, lookup);
+  const match = catalogMatchIssue(comic);
+  if (isCollected(match.format)) {
+    return resolveCollectedCover({ ...comic, issueNo: match.number, shelfFormat: match.format }, match.format, lookup);
+  }
   const edition = detectEdition(comic);
   if (edition.kind === "facsimile") return resolveFacsimileCover(comic, edition, lookup);
   if (edition.kind === "printing") return resolvePrintingCover(comic, edition, lookup);

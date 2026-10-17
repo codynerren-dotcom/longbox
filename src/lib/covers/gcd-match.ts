@@ -11,8 +11,11 @@ import { chooseFacsimileIssue, choosePrintingIssue } from "@/lib/covers/match";
 import type { MetronDetails } from "@/lib/covers/enrich";
 import type { CoverDecision, CoverQuery, MetronIssueHit } from "@/lib/covers/types";
 import {
+  catalogMatchIssue,
   catalogNameQueries,
   catalogSeriesQuery,
+  collectedSearchTarget,
+  copyIsbn,
   gcdFormatMatches,
   parseShelfSeries,
   isbnDigits,
@@ -77,9 +80,14 @@ export async function searchGcdMatches(
   },
 ): Promise<MatchHit[]> {
   const catalog = options?.catalog ?? createGcdCatalog();
-  const format = resolveShelfFormat({ shelfFormat });
   const typed = query.trim();
   const parsed = parseMatchQuery(mode === "barcode" && !typed ? "" : query);
+  const target = collectedSearchTarget({
+    query: mode === "barcode" && !typed ? "" : query,
+    shelfFormat,
+    shelfSeries: options?.shelfSeries,
+  });
+  const format = target?.format ?? resolveShelfFormat({ shelfFormat });
   const shelf = tradeSearchSeries(options?.shelfSeries) || (options?.shelfSeries ?? "").trim();
   const series = parsed.series || (mode === "barcode" ? shelf : "") || typed;
   const named = catalogSeriesQuery(series, options?.shelfSeries);
@@ -99,7 +107,19 @@ export async function searchGcdMatches(
     return orderGcdMatchHits(issues.map((issue) => gcdHit(issue)), barcode);
   }
   if (isCollected(format) || isbnDigits(barcode)) {
-    const collected = await collectGcdCollectedIssues({ ...probe, shelfFormat: isCollected(format) ? format : "tp" }, isCollected(format) ? format : "tp", catalog);
+    const collectedFormat = isCollected(format) ? format : "tp";
+    const collected = await collectGcdCollectedIssues(
+      {
+        ...probe,
+        series: target?.series || probe.series,
+        issueNo: target?.number ?? probe.issueNo,
+        issue: target?.number ?? probe.issue,
+        shelfFormat: collectedFormat,
+        isbn: copyIsbn(null, barcode),
+      },
+      collectedFormat,
+      catalog,
+    );
     return orderGcdMatchHits(collected.map(gcdHit), barcode);
   }
   const wanted = named.name || parsed.series || series;
@@ -445,8 +465,10 @@ function barcodeConflicts(copy: string | null | undefined, issue: string | null 
 }
 
 export async function resolveGcdCover(comic: CoverQuery, catalog: GcdCatalog): Promise<CoverDecision> {
-  const shelf = resolveShelfFormat(comic);
-  if (isCollected(shelf)) return resolveGcdCollected(comic, shelf, catalog);
+  const match = catalogMatchIssue(comic);
+  if (isCollected(match.format)) {
+    return resolveGcdCollected({ ...comic, issueNo: match.number, shelfFormat: match.format }, match.format, catalog);
+  }
   const edition = detectEdition(comic);
   if (edition.kind === "facsimile") return resolveGcdFacsimile(comic, edition, catalog);
   if (edition.kind === "printing") return resolveGcdPrinting(comic, edition, catalog);
@@ -585,7 +607,7 @@ export function gcdCollectedQueries(series: string | null | undefined): string[]
 export async function collectGcdCollectedIssues(comic: CoverQuery, format: ShelfFormat, catalog: GcdCatalog): Promise<GcdIssueRow[]> {
   const seriesName = catalogSeriesQuery(tradeSearchSeries(comic.series) || comic.series.trim()).name;
   if (!seriesName) return [];
-  const isbn = isbnDigits(comic.barcode);
+  const isbn = copyIsbn(comic.isbn, comic.barcode);
   const volume = volumeNumber(comic.issueNo, comic.issue);
   const exact: GcdIssueRow[] = [];
   const fallback: GcdIssueRow[] = [];

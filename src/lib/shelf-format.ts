@@ -50,11 +50,11 @@ export function metronSeriesType(format: ShelfFormat): string | null {
   return null;
 }
 
-/** Drop a trailing TP, HC, or collected-edition word so the catalog search uses the story series. */
+/** Drop a trailing TP, TP-A, HC, or collected-edition word so the catalog search uses the story series. */
 export function tradeSearchSeries(series: string | null | undefined): string {
   return (series ?? "")
-    .replace(/\s*[([].*?(?:tpb?|hc|omnibus|graphic novel|compendium).*?[)\]]\s*$/i, "")
-    .replace(/\s*[,:]?\s*(?:tpb?|hc|omnibus|graphic novel|compendium)\s*$/i, "")
+    .replace(/\s*[([].*?(?:tpb?|hc|omnibus|gn|graphic novel|compendium).*?[)\]]\s*$/i, "")
+    .replace(/\s*[,:]?\s*(?:tpb?|hc|omnibus|gn|graphic novel|compendium)(?:\s*[- ]\s*(?:[a-z]|\d+))?\s*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -280,7 +280,24 @@ export function metronCollectedTitle(name: string, format: ShelfFormat): boolean
   return /\btpb\b|\btrade paperback\b|\btp\b/.test(text);
 }
 
-/** The volume digits from `1`, `Vol. 1`, or `Volume 1`. */
+/**
+ * CLZ files a collected copy as `TP`, `TP-A`, `HC`, or `Omnibus` on the floppy series.
+ * The letter is a cover. A bare token, or a token with only a letter, is volume 1.
+ * `TP-2` is volume 2.
+ */
+const COLLECTED_ISSUE = /^(?:#\s*)?(tpb?|hc|omnibus|gn|compendium)(?:\s*[- ]\s*([a-z]|\d+))?$/i;
+
+export function collectedIssueToken(value: string | null | undefined): { format: ShelfFormat; number: string } | null {
+  const match = COLLECTED_ISSUE.exec((value ?? "").trim());
+  if (!match) return null;
+  const kind = match[1].toLowerCase();
+  const suffix = match[2];
+  const format: ShelfFormat = kind === "hc" ? "hc" : kind === "omnibus" ? "omnibus" : kind === "gn" ? "gn" : kind === "compendium" ? "compendium" : "tp";
+  const number = suffix && /^\d+$/.test(suffix) ? String(Number(suffix)) : "1";
+  return { format, number };
+}
+
+/** The volume digits from `1`, `Vol. 1`, `TP`, or `TP-A`. */
 export function volumeNumber(issueNo: string | null | undefined, issue?: string | null): string | null {
   for (const raw of [issueNo, issue]) {
     const text = (raw ?? "").trim();
@@ -288,8 +305,56 @@ export function volumeNumber(issueNo: string | null | undefined, issue?: string 
     const vol = VOLUME_TEXT.exec(text);
     if (vol) return String(Number(vol[1]));
     if (/^\d+$/.test(text)) return String(Number(text));
+    const collected = collectedIssueToken(text);
+    if (collected) return collected.number;
   }
   return null;
+}
+
+/**
+ * Issue number and format to send a catalog. A stored trade wins.
+ * `TP-A` is still volume 1 of a trade when the format column says Comic.
+ */
+export function catalogMatchIssue(input: {
+  shelfFormat?: string | null;
+  issueNo?: string | null;
+  issue?: string | null;
+}): { format: ShelfFormat; number: string | null } {
+  const stored = resolveShelfFormat(input);
+  const token = collectedIssueToken(input.issueNo) ?? collectedIssueToken(input.issue);
+  if (isCollected(stored)) return { format: stored, number: volumeNumber(input.issueNo, input.issue) };
+  if (token) return token;
+  const raw = (input.issueNo ?? input.issue ?? "").trim();
+  return { format: "single", number: raw || null };
+}
+
+/**
+ * Series, volume, and Metron type for a collected edition.
+ * `TP` and `TP-A` become volume 1. A stored single with no trade token stays null.
+ */
+export function collectedSearchTarget(args: {
+  query?: string | null;
+  shelfFormat?: string | null;
+  shelfSeries?: string | null;
+}): { format: ShelfFormat; series: string; number: string; typeName: string } | null {
+  const parsed = parseCollectedQuery(args.query ?? "");
+  const shelfName = tradeSearchSeries(args.shelfSeries) || (args.shelfSeries ?? "").trim();
+  const seriesText = parsed.series || shelfName;
+  const named = catalogSeriesQuery(tradeSearchSeries(seriesText) || seriesText, args.shelfSeries);
+  const token = collectedIssueToken(parsed.issueNo);
+  const stored = catalogMatchIssue({
+    shelfFormat: args.shelfFormat,
+    issueNo: parsed.issueNo,
+    issue: parsed.issueNo,
+  });
+  const format = isCollected(stored.format) ? stored.format : token?.format;
+  if (!format || !isCollected(format)) return null;
+  const typeName = metronSeriesType(format);
+  const series = named.name || tradeSearchSeries(seriesText) || seriesText;
+  if (!typeName || !series) return null;
+  const fromQuery = /\bvol(?:ume)?\.?\s*\d+\b/i.test(seriesText) ? named.volume : null;
+  const number = stored.number ?? token?.number ?? (fromQuery != null ? String(fromQuery) : null) ?? "1";
+  return { format, series, number, typeName };
 }
 
 export function volumeLabel(issueNo: string | null | undefined, issue?: string | null): string {
@@ -299,19 +364,41 @@ export function volumeLabel(issueNo: string | null | undefined, issue?: string |
   return raw || "Vol.";
 }
 
-/** ISBN-13 book barcodes start with 978 or 979. Comic UPC-A codes do not. */
-export function isbnDigits(barcode: string | null | undefined): string | null {
-  if (!barcode) return null;
-  const digits = barcode.replace(/\D/g, "");
-  if (digits.length === 13 && (digits.startsWith("978") || digits.startsWith("979"))) return digits;
+/** ISBN-13 for a 978/979 book barcode or a 10-digit ISBN. Comic UPC-A codes are not ISBNs. */
+export function canonicalIsbn(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const compact = value.replace(/[\s-]/g, "").toUpperCase();
+  if (/^(?:978|979)\d{10}$/.test(compact)) return compact;
+  if (/^\d{9}[\dX]$/.test(compact)) return isbn10To13(compact);
   return null;
+}
+
+/** ISBN-13 book barcodes start with 978 or 979. A 10-digit ISBN is converted. Comic UPC-A codes do not. */
+export function isbnDigits(barcode: string | null | undefined): string | null {
+  return canonicalIsbn(barcode);
+}
+
+/** The ISBN to store and search. A 10-digit ISBN is saved as ISBN-13. */
+export function copyIsbn(isbn: string | null | undefined, barcode?: string | null): string | null {
+  return canonicalIsbn(isbn) ?? canonicalIsbn(barcode);
+}
+
+function isbn10To13(isbn10: string): string {
+  const base = `978${isbn10.slice(0, 9)}`;
+  let sum = 0;
+  for (let index = 0; index < 12; index += 1) {
+    sum += Number(base[index]) * (index % 2 === 0 ? 1 : 3);
+  }
+  return `${base}${(10 - (sum % 10)) % 10}`;
 }
 
 /** Digits-only ISBN, or the first 13 digits of a longer book barcode that starts with the ISBN. */
 export function sameIsbn(wanted: string | null | undefined, ...found: Array<string | null | undefined>): boolean {
-  const want = isbnDigits(wanted);
+  const want = canonicalIsbn(wanted);
   if (!want) return false;
   for (const value of found) {
+    const got = canonicalIsbn(value);
+    if (got && got === want) return true;
     const digits = (value ?? "").replace(/\D/g, "");
     if (!digits) continue;
     if (digits === want || (digits.length > 13 && digits.startsWith(want))) return true;
@@ -443,12 +530,48 @@ function isVolumeNumber(value: string | null | undefined): boolean {
   return VOLUME_TEXT.test((value ?? "").trim());
 }
 
-/** CLZ stores a collected copy as issue TP, HC, or TPB in the same series as the singles. */
+/** CLZ stores a collected copy as issue TP, TP-A, HC, or Omnibus in the same series as the singles. */
 function tradeIssueToken(value: string | null | undefined): ShelfFormat | null {
-  const text = (value ?? "").trim();
-  if (/^hc$/i.test(text)) return "hc";
-  if (/^tpb?$/i.test(text)) return "tp";
-  return null;
+  return collectedIssueToken(value)?.format ?? null;
+}
+
+/** Pull `TP-A` off the end of a typed query. A hashed issue number stays the issue. */
+function parseCollectedQuery(query: string): { series: string; issueNo: string | null; year: number | null } {
+  let text = query.replace(/\s+/g, " ").trim();
+  let year: number | null = null;
+  const yearMatch = text.match(/\b((?:18|19|20)\d{2})\b/);
+  if (yearMatch?.[1]) {
+    year = Number.parseInt(yearMatch[1], 10);
+    text = text.replace(yearMatch[0], " ").replace(/\s+/g, " ").trim();
+  }
+  let issueNo: string | null = null;
+  const hashed = text.match(/#\s*([0-9]+[A-Za-z]?)/);
+  if (hashed?.[1]) {
+    issueNo = hashed[1];
+    text = text.replace(hashed[0], " ").replace(/\s+/g, " ").trim();
+  }
+  if (!issueNo) {
+    const vol = text.match(/\bvol(?:ume)?\.?\s*(\d+)\s*$/i);
+    if (vol?.[1]) {
+      issueNo = String(Number(vol[1]));
+      text = text.slice(0, vol.index).replace(/[,:\s]+$/g, "").trim();
+    }
+  }
+  if (!issueNo) {
+    const bare = text.match(/(?:^|\s)([0-9]+[A-Za-z]?)(?:\s|$)/);
+    if (bare?.[1]) {
+      issueNo = bare[1];
+      text = text.replace(bare[0], " ").replace(/\s+/g, " ").trim();
+    }
+  }
+  if (!issueNo) {
+    const token = text.match(/(?:^|\s)#?\s*((?:tpb?|hc|omnibus|gn|compendium)(?:\s*[- ]\s*(?:[a-z]|\d+))?)\s*$/i);
+    if (token?.[1] && collectedIssueToken(token[1])) {
+      issueNo = token[1];
+      text = text.slice(0, token.index).replace(/\s+/g, " ").trim();
+    }
+  }
+  return { series: text, issueNo, year };
 }
 
 function proseCollected(value: unknown): string | null {

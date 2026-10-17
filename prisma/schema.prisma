@@ -32,6 +32,8 @@ model Comic {
   addedDate          DateTime?
   coverDate          String?
   barcode            String?
+  /// ISBN-13. Backfilled from a 978/979 barcode or a 10-digit ISBN, and editable on the issue.
+  isbn               String?
   storyArc           String?
   grade              String?
   rawOrSlabbed       String?
@@ -122,6 +124,7 @@ model Comic {
   @@index([coreSeriesId])
   @@index([publisher])
   @@index([barcode])
+  @@index([isbn])
   @@index([storageBox])
   @@index([keyLevel])
   @@index([rawOrSlabbed])

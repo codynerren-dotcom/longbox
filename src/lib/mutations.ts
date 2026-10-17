@@ -1,6 +1,6 @@
 import { parseComicBarcode } from "@/lib/barcode";
 import type { AddComicInput } from "@/lib/catalog/types";
-import { findByBarcode } from "@/lib/catalog/lookup";
+import { findByBarcode, findByIsbn } from "@/lib/catalog/lookup";
 import { issueNumberValue } from "@/lib/clz/parse";
 import { readFieldSources } from "@/lib/covers/enrich";
 import { prisma } from "@/lib/db";
@@ -8,7 +8,7 @@ import { issueLabel } from "@/lib/issue-fields";
 import { logIssueEdited } from "@/lib/log/events";
 import { seriesRouteId, slugify } from "@/lib/series";
 import { getPreferences } from "@/lib/settings/service";
-import { detectShelfFormat, isCollected, isShelfFormat, volumeNumber } from "@/lib/shelf-format";
+import { canonicalIsbn, detectShelfFormat, isCollected, isShelfFormat, volumeNumber } from "@/lib/shelf-format";
 import { safeImageUrl } from "@/lib/url";
 
 function addDedupeKey(input: AddComicInput, barcode: string | null): string {
@@ -30,12 +30,10 @@ export async function addComics(items: AddComicInput[], owner: string) {
 
     if (barcode) {
       const parsed = parseComicBarcode(barcode);
-      if (parsed) {
-        const existing = await findByBarcode(parsed);
-        if (existing) {
-          results.push({ id: existing.id, created: false, series: existing.series, issueNo: existing.issueNo ?? issueNo });
-          continue;
-        }
+      const existing = parsed ? await findByBarcode(parsed) : await findByIsbn(barcode);
+      if (existing) {
+        results.push({ id: existing.id, created: false, series: existing.series, issueNo: existing.issueNo ?? issueNo });
+        continue;
       }
     }
 
@@ -73,6 +71,7 @@ export async function addComics(items: AddComicInput[], owner: string) {
         variant: item.variant?.trim() || null,
         variantDescription: item.variantDescription?.trim() || null,
         barcode,
+        isbn: canonicalIsbn(barcode),
         coverUrl: safeImageUrl(item.coverUrl),
         coverDate: item.coverDate ?? null,
         plot: item.plot ?? null,

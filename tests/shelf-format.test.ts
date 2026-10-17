@@ -69,9 +69,13 @@ describe("shelf format detection", () => {
 
   it("treats Vol. numbering and an ISBN as a trade when the format column is empty", () => {
     expect(detectShelfFormat({ issue: "TP", issueNo: "TP" })).toBe("tp");
+    expect(detectShelfFormat({ issue: "TP-A", issueNo: "TP-A" })).toBe("tp");
     expect(detectShelfFormat({ issue: "TPB" })).toBe("tp");
     expect(detectShelfFormat({ issue: "HC", issueNo: "HC" })).toBe("hc");
     expect(detectShelfFormat({ format: "Comic", issue: "TP" })).toBe("single");
+    expect(detectShelfFormat({ format: "Comic", issue: "TP-A" })).toBe("single");
+    expect(volumeLabel("TP-A")).toBe("Vol. 1");
+    expect(volumeLabel("TP")).toBe("Vol. 1");
     expect(detectShelfFormat({ issue: "Vol. 1", issueNo: "Vol. 1" })).toBe("tp");
     expect(detectShelfFormat({ barcode: "9781534318331" })).toBe("tp");
     expect(volumeLabel("1")).toBe("Vol. 1");
@@ -115,7 +119,7 @@ describe("shelf format detection", () => {
 });
 
 describe("collected catalog search", () => {
-  it("looks up an ISBN and a Trade Paperback series instead of the floppy", async () => {
+  it("searches a trade by series type and does not ask Metron for the ISBN", async () => {
     const calls: string[] = [];
     const lookup: CoverLookup = {
       async issuesByUpc() {
@@ -143,23 +147,20 @@ describe("collected catalog search", () => {
       },
     };
     await resolveCover(query({ barcode: "9781534318331" }), lookup);
-    expect(calls[0]).toBe("isbn:9781534318331");
-    expect(calls.some((call) => call.startsWith("series:"))).toBe(false);
-
-    calls.length = 0;
-    await resolveCover(query(), lookup);
+    expect(calls.some((call) => call.startsWith("isbn:") || call === "upc" || call.startsWith("series:"))).toBe(false);
     expect(calls).toContain("typed:The Department of Truth:Trade Paperback");
-    expect(calls.some((call) => call.startsWith("series:"))).toBe(false);
     expect(calls).toContain("issues");
 
     calls.length = 0;
     const empty: CoverLookup = { ...lookup, async searchSeriesByType() { calls.push("typed-empty"); return []; } };
     const missed = await resolveCover(query(), empty);
     expect(missed.status).toBe("unmatched");
+    expect(missed.status === "unmatched" ? missed.reason : "").toBe("not on Metron (no collected-edition series)");
     expect(calls).toEqual(["typed-empty"]);
+    expect(calls).not.toContain("issues");
   });
 
-  it("asks Metron for series_type and isbn", async () => {
+  it("asks Metron for series_type and not an ISBN", async () => {
     const paths: string[] = [];
     const transport = metronTransport(async (url) => {
       const path = String(url);
@@ -179,7 +180,8 @@ describe("collected catalog search", () => {
 
     paths.length = 0;
     await searchMetronMatches(transport, "", "9781534318331", "barcode", "tp");
-    expect(paths[0]).toContain("/issue/?isbn=9781534318331");
+    expect(paths.some((path) => path.includes("/issue/?isbn="))).toBe(false);
+    expect(paths.some((path) => path.includes("upc="))).toBe(false);
   });
 
   it("prefers a GCD trade series and an ISBN barcode", async () => {

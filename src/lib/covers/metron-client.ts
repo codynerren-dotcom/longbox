@@ -247,6 +247,7 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
   const rawName = text(row.name) ?? text(row.series);
   if (!rawName) return null;
   const publisher = record(row.publisher);
+  const seriesType = text(row.series_type) ?? text(record(row.series_type)?.name);
   return {
     id: String(row.id),
     name: rawName.replace(/\s+\((?:18|19|20)\d{2}(?:\s*[-–—]\s*(?:18|19|20)\d{2})?\)\s*$/, "").trim(),
@@ -255,6 +256,7 @@ export function mapSeries(value: unknown): MetronSeriesHit | null {
     volume: whole(row.volume),
     publisher: text(publisher?.name) ?? (typeof row.publisher === "string" ? text(row.publisher) : null),
     issueCount: catalogIssueCount(row.issue_count),
+    ...(seriesType ? { seriesType } : {}),
   };
 }
 

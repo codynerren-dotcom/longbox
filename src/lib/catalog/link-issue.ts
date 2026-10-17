@@ -308,6 +308,7 @@ async function searchComicVine(args: {
   barcode: string;
   mode: "query" | "barcode";
   shelfSeries?: string | null;
+  shelfFormat?: string | null;
 }): Promise<MatchHit[] | { ok: false; message: string }> {
   const settings = await getSettings();
   if (!settings.comicvine.apiKey) return { ok: false, message: "Add a Comic Vine API key in Settings to search." };
@@ -317,6 +318,7 @@ async function searchComicVine(args: {
     barcode: args.barcode,
     mode: args.mode,
     shelfSeries: args.shelfSeries,
+    shelfFormat: args.shelfFormat,
   });
 }
 
