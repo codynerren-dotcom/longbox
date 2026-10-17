@@ -13,6 +13,7 @@ import {
   proposalReason,
   saveProposal,
   setProposalStoreForTests,
+  supersededProposalIds,
   unmatchedPlan,
   visibleProposals,
   type ProposalInput,
@@ -129,6 +130,23 @@ describe("propose-mode re-match", () => {
     expect(visibleProposals(rows, { provider: "all", q: "" })).toHaveLength(2);
     const linked = { ...rows[0], id: "hand", manualLink: { metronIssueId: "10", userCover: false } };
     expect(visibleProposals([...rows, linked], { provider: "all" }).map((row) => row.id)).toEqual(["m", "g"]);
+    expect(proposalBlocked(null, { metronIssueId: "user" })).toMatch(/chosen by hand/);
+    expect(proposalBlocked(null, { series: "user" })).toBeNull();
+    const batman = {
+      id: "batman",
+      provider: "metron",
+      title: "Batman",
+      issueNo: "1K",
+      variant: null,
+      reason: "Vol. 1",
+      shelf: "Batman Vol. 1 1K",
+      status: "pending",
+      manualLink: null,
+      fieldSources: { metronIssueId: "user" },
+    };
+    const titled = { ...rows[0], id: "titled", fieldSources: { series: "user" } };
+    expect(supersededProposalIds([batman, { ...batman, id: "kept", status: "accepted" }, { ...linked, status: "pending" }])).toEqual(["batman", "hand"]);
+    expect(visibleProposals([batman, titled, ...rows], { provider: "all" }).map((row) => row.id)).toEqual(["titled", "m", "g"]);
   });
 
   it("names the proposal and stores the prior link", () => {
@@ -162,6 +180,14 @@ describe("propose-mode re-match", () => {
     expect(logs).toContain("EditionJobControls");
     expect(logs).toContain("editionSummaryText");
     expect(page).toContain("manualLink");
+    expect(page).toContain("fieldSources");
+    expect(actions).toContain('status: "superseded"');
+    expect(rematch).toContain("supersedeManualProposals");
+    expect(rematch).toContain("includeInRematch");
+    const covers = readFileSync(new URL("../src/app/covers/suspect-actions.tsx", import.meta.url), "utf8");
+    expect(covers).toContain("Full re-match (propose)");
+    expect(covers).toContain("Propose re-matches");
+    expect(readFileSync(new URL("../scripts/covers-propose.ts", import.meta.url), "utf8")).toContain('"--full"');
     const controls = readFileSync(new URL("../src/app/logs/edition-controls.tsx", import.meta.url), "utf8");
     expect(controls).toContain("Resume re-match");
     expect(controls).toContain("Clear re-match");

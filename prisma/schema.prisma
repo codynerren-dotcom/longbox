@@ -200,7 +200,7 @@ model MatchProposal {
   variant    String?
   /// Catalog ids and cover on the comic when the proposal was saved.
   priorLink  Json
-  /// pending, rejected, or accepted. Rejected is not offered again.
+  /// pending, rejected, accepted, or superseded. Rejected is not offered again. Superseded means the comic was linked by hand after the suggestion.
   status     String   @default("pending")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt

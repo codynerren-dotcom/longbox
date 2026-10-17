@@ -7,7 +7,7 @@ import { hintFromBlocks, type QueueSeed } from "@/lib/catalog/search-queue";
 import { runInLane } from "@/lib/catalog/rate-lane";
 import { coverPublicPath } from "@/lib/covers/backfill";
 import { budgetPauseMessage, recordBudgetPause } from "@/lib/covers/budget-pause";
-import { calendarDay, detectEdition, suspectMatchReason } from "@/lib/covers/edition";
+import { calendarDay, detectEdition, includeInRematch, rematchRunPlan, suspectMatchReason, type RematchScope } from "@/lib/covers/edition";
 import {
   addMiss,
   armEditionPause,
@@ -26,7 +26,7 @@ import { deleteEditionJob, readEditionJob, writeEditionJob, type EditionJobWrite
 import { resolveCover, savedPrintingCover } from "@/lib/covers/match";
 import { armMetronJobBudget, clearMetronJobBudget, createMetronCoverLookup, fetchMetronIssueRecord, metronBasicAuth, metronTransport, nextMetronQueueAt, sharedMetronLimiter } from "@/lib/covers/metron-client";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
-import { priorLinkOf, priorProposalBlocked, proposalBlocked, proposalReason, REMATCH_MODE_DEFAULT, saveProposal, unmatchedPlan, type ProposalInput, type RematchMode } from "@/lib/covers/propose-match";
+import { priorLinkOf, priorProposalBlocked, proposalBlocked, proposalReason, REMATCH_MODE_DEFAULT, saveProposal, supersedeManualProposals, unmatchedPlan, type ProposalInput, type RematchMode } from "@/lib/covers/propose-match";
 import { applyEnrichment, applyGcdLink } from "@/lib/covers/run";
 import { MetronBudgetError, type CoverQuery, type MetronIssueHit } from "@/lib/covers/types";
 import { prisma } from "@/lib/db";
@@ -188,6 +188,7 @@ function writeJob(patch: Partial<EditionJobState> & { state: EditionJobState["st
     heartbeatAt: patch.heartbeatAt === undefined ? (job?.heartbeatAt ?? null) : patch.heartbeatAt,
     runId: patch.runId === undefined ? (job?.runId ?? null) : patch.runId,
     mode: patch.mode === undefined ? (job?.mode ?? null) : patch.mode,
+    scope: patch.scope === undefined ? (job?.scope ?? "suspect") : patch.scope,
     misses: patch.misses ?? job?.misses ?? {},
     updatedAt: patch.updatedAt,
   };
@@ -304,7 +305,7 @@ export function scheduleFacsimileRematch(): void {
   }
   if (persisted?.mode === "propose" || waiting) {
     beginScheduledPass(async () => {
-      await rematchAllSuspectCopies({ mode: "propose", resume: true });
+      await rematchAllSuspectCopies({ mode: "propose", resume: true, scope: persisted?.scope === "full" ? "full" : "suspect" });
       return false;
     });
     return;
@@ -428,7 +429,7 @@ export async function rematchShelfCopy(
   const comic = await prisma.comic.findUnique({ where: { id: comicId } });
   const mode = options?.mode ?? REMATCH_MODE_DEFAULT;
   if (!comic) return { ok: false, message: "That issue is not on the shelf.", outcome: "unmatched", proposed: false, notice: null, limitBlocks: [], searchedSources: [] };
-  const blocked = proposalBlocked(comic.manualLink);
+  const blocked = proposalBlocked(comic.manualLink, comic.fieldSources);
   if (blocked) {
     const message = blocked.includes("uploaded")
       ? "This cover was uploaded. Unlink the catalog id if you want, and the photo stays."
@@ -672,19 +673,24 @@ const linkedSelect = {
   metronIssueId: true,
   gcdIssueId: true,
   manualLink: true,
+  fieldSources: true,
 } as const;
 
-export async function rematchAllSuspectCopies(options?: { mode?: RematchMode; resume?: boolean }): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+export async function rematchAllSuspectCopies(options?: { mode?: RematchMode; resume?: boolean; scope?: RematchScope }): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   const existing = noteStaleEditionJob();
   if (!options?.resume && (inflight || (existing && editionRunBlocks(existing) && editionRematchLockHeld()))) {
     return { ok: false, message: "A re-match is already running.", notice: null, queueItems: [] };
   }
-  const resume = options?.resume ?? Boolean(existing && existing.state !== "finished");
+  const plan = rematchRunPlan({
+    requested: options?.scope,
+    resume: options?.resume,
+    existing: existing ? { state: existing.state, scope: existing.scope } : null,
+  });
   const owned = !inflight;
   const run = (async () => {
     armMetronJobBudget();
     try {
-      return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT, resume);
+      return await rematchAllSuspectCopiesBody(options?.mode ?? REMATCH_MODE_DEFAULT, plan.resume, plan.scope);
     } finally {
       clearMetronJobBudget();
     }
@@ -735,7 +741,7 @@ function summaryLine(input: { attempted: number; proposed: number; noCandidate: 
   return misses ? `${base} Misses: ${misses}.` : base;
 }
 
-async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean, scope: RematchScope): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   const previous = resume ? readEditionJob() : null;
   const runId = randomBytes(8).toString("hex");
   let attempted = previous?.attempted ?? 0;
@@ -748,7 +754,7 @@ async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean): 
   if (!acquireEditionRematchLock()) {
     return { ok: false, message: "A re-match is already running.", notice: null, queueItems: [] };
   }
-  const counts = () => ({ attempted, proposed, noCandidate, skipped, misses, matched: proposed, unmatched: noCandidate, cursorId, runId, mode });
+  const counts = () => ({ attempted, proposed, noCandidate, skipped, misses, matched: proposed, unmatched: noCandidate, cursorId, runId, mode, scope });
   let started = false;
   const beat = (state: EditionJobState["state"], message: string | null, resumeAt: string | null) => {
     const current = readEditionJob();
@@ -762,18 +768,20 @@ async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean): 
     if (!beat("running", "Edition re-match: running", null)) {
       return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems: [] };
     }
+    await supersedeManualProposals();
     const [comics, years, printings] = await Promise.all([
       prisma.comic.findMany({
-        where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] },
+        ...(scope === "full" ? {} : { where: { OR: [{ metronIssueId: { not: null } }, { gcdIssueId: { not: null } }] } }),
         select: linkedSelect,
         orderBy: { id: "asc" },
       }),
       readCatalogYears(),
       readPrintingCovers(),
     ]);
-    const suspects = comics.flatMap((comic) => {
+    const suspects = comics.filter((comic) => {
       const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
-      return reason ? [comic] : [];
+      const manual = Boolean(proposalBlocked(comic.manualLink, comic.fieldSources));
+      return includeInRematch({ scope, manual, suspect: Boolean(reason) });
     });
     const cursorIndex = previous?.cursorId ? suspects.findIndex((comic) => comic.id === previous.cursorId) : -1;
     if (previous?.cursorId && cursorIndex < 0) {
@@ -795,7 +803,7 @@ async function rematchAllSuspectCopiesBody(mode: RematchMode, resume: boolean): 
         return { ok: true, message: "Edition re-match cleared.", notice: null, queueItems };
       }
       attempted += 1;
-      if (proposalBlocked(comic.manualLink)) {
+      if (proposalBlocked(comic.manualLink, comic.fieldSources)) {
         skipped += 1;
         cursorId = comic.id;
         if (!beat("running", "Edition re-match: running", null)) {
@@ -976,7 +984,7 @@ async function runStoredFacsimileRematchBody(): Promise<boolean> {
       return comics.flatMap((comic) => {
         const reason = suspectMatchReason({ ...comic, catalogStoreYear: years[comic.id] ?? null, catalogPrinting: printings[comic.id] ?? null });
         if (!reason) return [];
-        const manual = Boolean(proposalBlocked(comic.manualLink));
+        const manual = Boolean(proposalBlocked(comic.manualLink, comic.fieldSources));
         return [{ id: comic.id, manual }];
       });
     },

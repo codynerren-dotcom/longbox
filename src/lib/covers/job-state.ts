@@ -12,9 +12,9 @@ const FILE_NAME = "edition-rematch.json";
 
 export type EditionJobWrite = Omit<
   EditionJobState,
-  "updatedAt" | "attempted" | "proposed" | "noCandidate" | "skipped" | "cursorId" | "heartbeatAt" | "runId" | "mode" | "misses"
+  "updatedAt" | "attempted" | "proposed" | "noCandidate" | "skipped" | "cursorId" | "heartbeatAt" | "runId" | "mode" | "scope" | "misses"
 > &
-  Partial<Pick<EditionJobState, "updatedAt" | "attempted" | "proposed" | "noCandidate" | "skipped" | "cursorId" | "heartbeatAt" | "runId" | "mode" | "misses">>;
+  Partial<Pick<EditionJobState, "updatedAt" | "attempted" | "proposed" | "noCandidate" | "skipped" | "cursorId" | "heartbeatAt" | "runId" | "mode" | "scope" | "misses">>;
 
 export function readEditionJob(dir = coversDir()): EditionJobState | null {
   try {

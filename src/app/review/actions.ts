@@ -14,13 +14,17 @@ function catalog(value: string): CatalogSource | null {
 export async function acceptProposalAction(id: string): Promise<{ ok: boolean; message: string }> {
   const row = await prisma.matchProposal.findUnique({
     where: { id },
-    include: { comic: { select: { manualLink: true } } },
+    include: { comic: { select: { manualLink: true, fieldSources: true } } },
   });
   if (!row || row.status !== "pending") return { ok: false, message: "That proposal is no longer waiting." };
   const provider = catalog(row.provider);
   if (!provider) return { ok: false, message: "That proposal has no catalog." };
-  const manual = proposalBlocked(row.comic.manualLink);
-  if (manual) return { ok: false, message: manual };
+  const manual = proposalBlocked(row.comic.manualLink, row.comic.fieldSources);
+  if (manual) {
+    await prisma.matchProposal.update({ where: { id }, data: { status: "superseded" } });
+    revalidatePath("/review");
+    return { ok: false, message: manual };
+  }
   const blocked = acceptBlocked(row.comic.manualLink, provider, row.issueId);
   if (blocked) return { ok: false, message: blocked };
   const link = readManualLink(row.comic.manualLink);

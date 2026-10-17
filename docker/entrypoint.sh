@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "DATABASE_URL is not set. Add it to the environment before starting Longbox." >&2
+  exit 1
+fi
+
 echo "Applying database migrations..."
 attempt=0
 until npx prisma migrate deploy; do

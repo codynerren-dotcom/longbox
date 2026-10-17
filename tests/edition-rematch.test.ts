@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { budgetPauseMessage } from "@/lib/covers/budget-pause";
+import { includeInRematch, rematchRunPlan } from "@/lib/covers/edition";
 import { addMiss, armEditionPause, comicsAfterCursor, EDITION_STALE_MS, editionRunBlocks, editionRunStale, editionSummaryText, missCategory, nextResumeWake } from "@/lib/covers/edition-job";
 import { editionOutcome, runFacsimilePass } from "@/lib/covers/facsimile-once";
 import { acquireEditionRematchLock, armJobResume, editionRematchLockHeld, guardEditionPass, releaseEditionRematchLock } from "@/lib/covers/facsimile-rematch";
@@ -103,6 +104,7 @@ describe("edition re-match budget pause", () => {
       heartbeatAt: new Date(start).toISOString(),
       runId: "run",
       mode: "propose" as const,
+      scope: "suspect" as const,
       misses: { "no-issue": 1 },
     };
     expect(editionRunStale(running, start + EDITION_STALE_MS)).toBe(false);
@@ -115,6 +117,22 @@ describe("edition re-match budget pause", () => {
     expect(nextResumeWake({ inflight: false, resumeAt: Number.NaN, now: Date.now(), postponedFrom: null })).toMatchObject({ kind: "error" });
     expect(comicsAfterCursor([{ id: "a" }, { id: "comic-4" }, { id: "b" }], "comic-4").map((row) => row.id)).toEqual(["b"]);
     expect(editionSummaryText(running)).toBe("Attempted 4. Proposed 2. No candidate 1. Misses: no-issue 1.");
+    const shelf = [
+      { id: "tight", manual: false, suspect: false },
+      { id: "suspect", manual: false, suspect: true },
+      { id: "hand", manual: true, suspect: true },
+      { id: "loose", manual: false, suspect: true },
+    ];
+    const pick = (scope: "suspect" | "full") => shelf.filter((row) => includeInRematch({ scope, manual: row.manual, suspect: row.suspect }));
+    const suspects = pick("suspect");
+    expect(suspects.map((row) => row.id)).toEqual(["suspect", "loose"]);
+    expect(comicsAfterCursor(suspects, null).map((row) => row.id)).toEqual(["suspect", "loose"]);
+    expect(pick("full").map((row) => row.id)).toEqual(["tight", "suspect", "loose"]);
+    expect(rematchRunPlan({ resume: true, existing: { state: "paused", scope: "suspect" } })).toEqual({ resume: true, scope: "suspect" });
+    expect(rematchRunPlan({ requested: "full", existing: { state: "paused", scope: "suspect" } })).toEqual({ resume: false, scope: "full" });
+    expect(rematchRunPlan({ requested: "full", existing: { state: "paused", scope: "full" } })).toEqual({ resume: true, scope: "full" });
+    expect(rematchRunPlan({ requested: "suspect", existing: null })).toEqual({ resume: false, scope: "suspect" });
+    expect(rematchRunPlan({ resume: true, existing: null })).toEqual({ resume: false, scope: "suspect" });
     expect(missCategory("not on Metron (no collected-edition series)")).toBe("not-on-metron");
     expect(addMiss({}, "No Metron issue for Saga.")).toEqual({ "no-issue": 1 });
   });

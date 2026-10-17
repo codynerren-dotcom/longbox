@@ -3,7 +3,8 @@ import { rematchAllSuspectCopies } from "../src/lib/covers/facsimile-rematch";
 import { prisma } from "../src/lib/db";
 
 async function main() {
-  const summary = await rematchAllSuspectCopies({ mode: "propose" });
+  const scope = process.argv.includes("--full") ? "full" : "suspect";
+  const summary = await rematchAllSuspectCopies({ mode: "propose", scope });
   console.log(summary.message);
   if (summary.notice) console.error(summary.notice);
   if (!summary.ok) process.exitCode = 1;

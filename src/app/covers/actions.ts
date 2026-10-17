@@ -86,12 +86,24 @@ export async function rematchSuspectAction(comicId: string): Promise<{ ok: boole
 
 export async function rematchAllSuspectsAction(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
   try {
-    const result = await rematchAllSuspectCopies();
+    const result = await rematchAllSuspectCopies({ scope: "suspect" });
     revalidatePath("/covers");
     revalidatePath("/", "layout");
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not re-match suspect links.";
+    return { ok: false, message, notice: null, queueItems: [] };
+  }
+}
+
+export async function rematchFullCollectionAction(): Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }> {
+  try {
+    const result = await rematchAllSuspectCopies({ scope: "full" });
+    revalidatePath("/covers");
+    revalidatePath("/", "layout");
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not re-match the collection.";
     return { ok: false, message, notice: null, queueItems: [] };
   }
 }

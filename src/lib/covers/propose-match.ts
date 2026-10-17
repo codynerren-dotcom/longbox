@@ -1,6 +1,7 @@
 import { defaultUseCover, isGcdScanHost } from "@/lib/catalog/match-row";
 import { readManualLink, type CatalogSource } from "@/lib/catalog/manual-link";
 import type { MatchHit } from "@/lib/catalog/match-hits";
+import { readFieldSources } from "@/lib/covers/enrich";
 import { needsReviewNote } from "@/lib/covers/printing-cover";
 
 /** Bulk re-match stores a proposal and leaves the comic row alone. */
@@ -8,7 +9,7 @@ export const REMATCH_MODE_DEFAULT = "propose" as const;
 
 export type RematchMode = "propose" | "apply";
 
-export type ProposalStatus = "pending" | "rejected" | "accepted";
+export type ProposalStatus = "pending" | "rejected" | "accepted" | "superseded";
 
 export type PriorLinkState = {
   metronIssueId: string | null;
@@ -42,12 +43,23 @@ export type ProposalInput = {
 
 export type ProposalSave = "saved" | "skipped" | "unchanged";
 
-/** A hand-picked catalog id or an uploaded cover is not a re-match candidate. */
-export function proposalBlocked(manualLink: unknown): string | null {
+/** A hand-picked catalog id, a user-edited catalog id, or an uploaded cover is not a re-match candidate. */
+export function proposalBlocked(manualLink: unknown, fieldSources?: unknown): string | null {
   const link = readManualLink(manualLink);
   if (link.metronIssueId || link.gcdIssueId || link.comicvineIssueId) return "This link was chosen by hand.";
   if (link.userCover) return "This cover was uploaded.";
+  if (fieldSources !== undefined) {
+    const sources = readFieldSources(fieldSources);
+    if (sources.metronIssueId === "user" || sources.gcdIssueId === "user" || sources.comicvineIssueId === "user") {
+      return "This link was chosen by hand.";
+    }
+  }
   return null;
+}
+
+/** Pending proposals whose comic was linked by hand after the suggestion was saved. */
+export function supersededProposalIds(rows: Array<{ id: string; status: string; manualLink?: unknown; fieldSources?: unknown }>): string[] {
+  return rows.filter((row) => row.status === "pending" && proposalBlocked(row.manualLink, row.fieldSources)).map((row) => row.id);
 }
 
 export function priorLinkOf(comic: {
@@ -149,14 +161,14 @@ export function priorProposalBlocked(prior: PriorLinkState): string | null {
   return null;
 }
 
-export function visibleProposals<T extends { id: string; provider: string; title: string; issueNo: string; variant: string | null; reason: string; shelf?: string | null; manualLink?: unknown }>(
+export function visibleProposals<T extends { id: string; provider: string; title: string; issueNo: string; variant: string | null; reason: string; shelf?: string | null; manualLink?: unknown; fieldSources?: unknown }>(
   rows: T[],
   filter: { provider?: string | null; q?: string | null },
 ): T[] {
   const provider = filter.provider?.trim() || "";
   const q = filter.q?.trim().toLowerCase() || "";
   return rows.filter((row) => {
-    if (proposalBlocked(row.manualLink)) return false;
+    if (proposalBlocked(row.manualLink, row.fieldSources)) return false;
     if (provider && provider !== "all" && row.provider !== provider) return false;
     if (!q) return true;
     const hay = `${row.title} ${row.issueNo} ${row.variant ?? ""} ${row.reason} ${row.shelf ?? ""}`.toLowerCase();
@@ -222,15 +234,36 @@ export async function saveProposal(input: ProposalInput): Promise<ProposalSave> 
   return "saved";
 }
 
+/** Pending suggestions for comics linked by hand since the proposal was saved. */
+export async function supersedeManualProposals(): Promise<number> {
+  if (injected) return 0;
+  const { prisma } = await import("@/lib/db");
+  const rows = await prisma.matchProposal.findMany({
+    where: { status: "pending" },
+    select: { id: true, status: true, comic: { select: { manualLink: true, fieldSources: true } } },
+  });
+  const ids = supersededProposalIds(
+    rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      manualLink: row.comic.manualLink,
+      fieldSources: row.comic.fieldSources,
+    })),
+  );
+  if (ids.length === 0) return 0;
+  await prisma.matchProposal.updateMany({ where: { id: { in: ids } }, data: { status: "superseded" } });
+  return ids.length;
+}
+
 export async function countPendingProposals(): Promise<number> {
   if (injected) return 0;
   try {
     const { prisma } = await import("@/lib/db");
     const rows = await prisma.matchProposal.findMany({
       where: { status: "pending" },
-      select: { comic: { select: { manualLink: true } } },
+      select: { comic: { select: { manualLink: true, fieldSources: true } } },
     });
-    return rows.filter((row) => !proposalBlocked(row.comic.manualLink)).length;
+    return rows.filter((row) => !proposalBlocked(row.comic.manualLink, row.comic.fieldSources)).length;
   } catch {
     return 0;
   }

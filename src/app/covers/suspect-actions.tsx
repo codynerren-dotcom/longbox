@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { rematchAllSuspectsAction, rematchSuspectAction, unlinkSuspectAction } from "@/app/covers/actions";
+import { rematchAllSuspectsAction, rematchFullCollectionAction, rematchSuspectAction, unlinkSuspectAction } from "@/app/covers/actions";
 import { queueSearchAction } from "@/app/logs/queue-actions";
 import { LimitToast } from "@/components/limit-toast";
 import type { QueueHint, QueueSeed } from "@/lib/catalog/search-queue";
@@ -62,7 +62,13 @@ export function SuspectActions({ id, manual }: { id: string; manual: boolean }) 
   );
 }
 
-export function RematchAllSuspects() {
+function RematchLaunch({
+  label,
+  action,
+}: {
+  label: string;
+  action: () => Promise<{ ok: boolean; message: string; notice: string | null; queueItems: QueueSeed[] }>;
+}) {
   const [message, setMessage] = useState("");
   const [toast, setToast] = useState("");
   const [items, setItems] = useState<QueueSeed[]>([]);
@@ -77,7 +83,7 @@ export function RematchAllSuspects() {
         className="rounded-full bg-comic px-3 py-2 text-sm font-semibold text-ink disabled:opacity-50"
         onClick={() => {
           start(async () => {
-            const result = await rematchAllSuspectsAction();
+            const result = await action();
             setOk(result.ok);
             setMessage(result.message);
             setToast(result.notice ?? "");
@@ -85,7 +91,7 @@ export function RematchAllSuspects() {
           });
         }}
       >
-        Propose re-matches
+        {label}
       </button>
       {message ? <p className={ok ? "mt-2 text-sm text-paper" : "mt-2 text-sm text-red-300"}>{message}</p> : null}
       <LimitToast
@@ -107,4 +113,12 @@ export function RematchAllSuspects() {
       />
     </div>
   );
+}
+
+export function RematchAllSuspects() {
+  return <RematchLaunch label="Propose re-matches" action={rematchAllSuspectsAction} />;
+}
+
+export function RematchFullCollection() {
+  return <RematchLaunch label="Full re-match (propose)" action={rematchFullCollectionAction} />;
 }

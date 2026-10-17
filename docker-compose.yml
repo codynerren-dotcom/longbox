@@ -5,13 +5,13 @@ services:
     environment:
       TZ: America/Chicago
       PGTZ: America/Chicago
-      POSTGRES_USER: ${POSTGRES_USER:-longbox}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-longbox}
-      POSTGRES_DB: ${POSTGRES_DB:-longbox}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     volumes:
       - longbox_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-longbox} -d ${POSTGRES_DB:-longbox}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -25,7 +25,7 @@ services:
     environment:
       TZ: America/Chicago
       PORT: "3210"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-longbox}:${POSTGRES_PASSWORD:-longbox}@db:5432/${POSTGRES_DB:-longbox}?schema=public
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       LONGBOX_USER_EMAIL: ${LONGBOX_USER_EMAIL:-cody@localhost}
       SEED_ON_EMPTY: ${SEED_ON_EMPTY:-true}
       LONGBOX_SECRET_KEY: ${LONGBOX_SECRET_KEY:-}

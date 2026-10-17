@@ -30,15 +30,16 @@ export default async function ReviewPage({ searchParams }: { searchParams: Promi
       where: { status: "pending" },
       orderBy: [{ title: "asc" }, { issueNo: "asc" }],
       include: {
-        comic: { select: { series: true, issueNo: true, issue: true, variant: true, coverFile: true, manualLink: true } },
+        comic: { select: { series: true, issueNo: true, issue: true, variant: true, coverFile: true, manualLink: true, fieldSources: true } },
       },
     });
-    const open = rows.filter((row) => !proposalBlocked(row.comic.manualLink));
+    const open = rows.filter((row) => !proposalBlocked(row.comic.manualLink, row.comic.fieldSources));
     pending = open.length;
     const visible = visibleProposals(
       open.map((row) => ({
         ...row,
         manualLink: row.comic.manualLink,
+        fieldSources: row.comic.fieldSources,
         shelf: `${row.comic.series} ${row.comic.issueNo ?? ""} ${row.comic.variant ?? ""}`,
       })),
       { provider, q },

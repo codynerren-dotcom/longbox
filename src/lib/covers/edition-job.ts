@@ -25,6 +25,7 @@ export type EditionJobState = {
   heartbeatAt: string | null;
   runId: string | null;
   mode: "propose" | "apply" | null;
+  scope: "suspect" | "full";
   misses: EditionMisses;
 };
 
@@ -171,6 +172,7 @@ export function editionJobFromUnknown(value: unknown): EditionJobState | null {
     heartbeatAt: typeof parsed.heartbeatAt === "string" ? parsed.heartbeatAt : null,
     runId: typeof parsed.runId === "string" && parsed.runId ? parsed.runId : null,
     mode: parsed.mode === "propose" || parsed.mode === "apply" ? parsed.mode : null,
+    scope: parsed.scope === "full" ? "full" : "suspect",
     misses: missesOf(parsed.misses),
   };
 }
